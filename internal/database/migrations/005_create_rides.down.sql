@@ -1,0 +1,3 @@
+DROP TABLE IF EXISTS ratings;
+DROP TABLE IF EXISTS ride_events;
+DROP TABLE IF EXISTS rides;

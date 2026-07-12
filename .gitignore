@@ -1,0 +1,6 @@
+build/
+*.osm
+*.osm.pbf
+*.geojson
+.env
+.exe
