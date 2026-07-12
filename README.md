@@ -14,39 +14,23 @@ Go + Gin ride-hailing backend with PostGIS spatial queries, pgRouting navigation
 
 ```
 cmd/server/main.go → internal/router/router.go
-                         ├── middleware (auth, rate-limit, idempotency)
-                         ├── handler (auth, rider, driver, ride, geo, health, platform)
-                         ├── service (auth, ride, dispatch, rider)
-                         ├── repository (user_repo, ride_repo, geo_repo) ← interfaces
-                         └── model (user, ride, geo, misc)
+                          ├── middleware (auth, rate-limit, idempotency, debug logging)
+                          ├── handler (health, auth, rider, driver, ride, geo, platform)
+                          ├── service (auth, fare, navigation, ride, dispatch, rider)
+                          ├── repository (user_repo, ride_repo, geo_repo, navigation_repo)
+                          ├── websocket (ride offers, ride updates, driver location)
+                          └── model (user, ride, geo, misc)
+
+internal/database (Postgres connection + migrations)
 ```
 
-## Achievements
+## Goals
 
-### Session 1 — Backend scaffold (initial build)
-
-- 9 database migration sets (20+ tables: users, rides, geo, road network, etc.)
-- 64+ API endpoints across auth, rider, driver, rides, geo, navigation, places, estimates, promotions, platform
-- Full ride state machine: `pending → accepted → driver_arrived → in_progress → completed` (cancel from pre-in_progress)
-- Dispatch system with expanding-radii search (500 m → 10 km), sequential driver offers, conflict guard
-- PostGIS `ST_DWithin` nearest-driver queries, driver/rider position upserts
-- JWT-based role middleware (`rider` / `driver`) enforcing endpoint access
-- Sliding-window rate limiter (configurable per endpoint)
-- Idempotency-key middleware (DB-backed)
-- WebSocket hub with user-scoped messaging
-- 37 integration tests (originally targeting live PostgreSQL)
-- pgRouting road network tables with elevation cost columns (cost_elev, reverse_cost_elev)
-
-### Session 2 — Test isolation + Flutter scaffold (this session)
-
-- Extracted repository interfaces (`UserRepository`, `RideRepository`, `GeoRepository`)
-- Wired all services and handlers to interfaces instead of concrete SQL repos
-- Built in-memory mock repositories (`MockUserRepo`, `MockRideRepo`, `MockGeoRepo`)
-- Rewrote test infrastructure to use mocks — tests no longer require Docker/PostgreSQL
-- **36 tests: 32 pass, 2 skip** (elevation tests that genuinely need PostGIS)
-- Added nil-guards to `HealthHandler.Readiness` and `Idempotency` middleware
-- Extracted `router.SetupWithRepos()` for swappable dependencies
-- Scaffolded Flutter rider app at [`rider_app/`](rider_app/) with `http` package and `ApiConfig`
+- Build a ride-hailing backend with PostGIS-backed geospatial queries and pgRouting-based navigation.
+- Keep rider and driver flows under one auth system with role-based access control.
+- Support the core trip lifecycle end to end: request, dispatch, accept, track, complete, and rate.
+- Provide real-time rider-driver communication through WebSockets.
+- Keep the Flutter rider app (`rider_app/`) aligned with the API surface.
 
 ## Running tests
 
@@ -83,25 +67,20 @@ make seed       # seed test data (requires running DB)
 ## Missing features & future goals
 
 ### High priority
-- **Fare calculation** — all rides created with zero fares; no distance/time/surge pricing
-- **Real-time dispatch** — driver acceptance simulated with `time.Sleep`; no WebSocket push to drivers
-- **Navigation/routing** — pgRouting `pgr_dijkstra` not wired; `/navigation/route` returns empty stub
-- **Elevation-aware routing** — `sample_elevation()` always returns 0; no DEM integration
-- **Payment integration** — tips, promos, payouts, payment methods all return `{"status":"stub"}`
-- **Token refresh & logout** — `/auth/refresh` and `/auth/logout` call the login handler
+- **Payment integration** — payment methods, tips, withdrawals, promos, and payouts are still stubbed
+- **Places/geocoding** — autocomplete, geocode, and place details return placeholder data
+- **Driver/rider extras** — vehicle documents, earnings, ratings, favorites, and preferences are mostly stubbed
+- **Safety/workflow persistence** — SOS, feedback, and device registration need durable storage and follow-up flows
+- **Social login** — OAuth flows for Google/Apple are not implemented
 
 ### Medium priority
-- **Places/geocoding** — autocomplete, geocode, details all return stubs
-- **Driver vehicle & documents** — CRUD endpoints reuse the register handler; no real logic
-- **Push notifications** — device token registration stored but never used
-- **Promotions engine** — no discount calculation applied to rides
-- **SOS workflow** — alert created but not persisted; no resolve/cancel flow
 - **Admin endpoints** — no admin dashboard or management routes
+- **Push notifications** — device token registration is exposed, but there is no delivery pipeline yet
+- **Heatmap analytics** — endpoint exists, but it still returns placeholder imagery
+- **Richer ride operations** — queueing, rider info, arrival notifications, and destination updates are thin wrappers today
 
 ### Low priority
-- **Social login** — OAuth (Google, Apple) not implemented
-- **Email/phone verification** — verification tables exist but no verification flow
-- **Rate limiting with Redis** — currently uses in-memory maps; scales to single instance only
+- **Rate limiting with Redis** — current limiters are in-memory and single-instance only
 - **CI/CD pipeline** — no GitHub Actions, Docker build, or deployment config
-- **Flutter screens** — project scaffold exists with no UI screens built yet
-- **E2E tests** — no browser or device tests for the Flutter app
+- **Flutter screens** — the companion app still needs production UI flows
+- **E2E tests** — no browser or device-level tests for the Flutter app
