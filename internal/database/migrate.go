@@ -40,7 +40,9 @@ func RunMigrations(db *sqlx.DB) error {
 		name := strings.TrimSuffix(file, ".up.sql")
 
 		var count int
-		db.Get(&count, "SELECT COUNT(*) FROM schema_migrations WHERE version = $1", version)
+		if err := db.Get(&count, "SELECT COUNT(*) FROM schema_migrations WHERE version = $1", version); err != nil {
+			return fmt.Errorf("failed to check migration version: %w", err)
+		}
 		if count > 0 {
 			continue
 		}
@@ -55,7 +57,9 @@ func RunMigrations(db *sqlx.DB) error {
 			return fmt.Errorf("failed to execute migration %s: %w", file, err)
 		}
 
-		db.Exec("INSERT INTO schema_migrations (version, name) VALUES ($1, $2)", version, name)
+		if _, err := db.Exec("INSERT INTO schema_migrations (version, name) VALUES ($1, $2)", version, name); err != nil {
+			return fmt.Errorf("failed to record migration: %w", err)
+		}
 		log.Printf("migration applied: %s", name)
 	}
 

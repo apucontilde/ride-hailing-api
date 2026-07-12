@@ -34,21 +34,21 @@ type Promotion struct {
 }
 
 type SOSAlert struct {
-	ID        string     `db:"id" json:"id"`
-	UserID    string     `db:"user_id" json:"user_id"`
-	UserRole  string     `db:"user_role" json:"user_role"`
-	RideID    *string    `db:"ride_id" json:"ride_id"`
-	Lat       float64    `db:"lat" json:"lat"`
-	Lng       float64    `db:"lng" json:"lng"`
-	Status    string     `db:"status" json:"status"`
-	CreatedAt time.Time  `db:"created_at" json:"created_at"`
+	ID        string    `db:"id" json:"id"`
+	UserID    string    `db:"user_id" json:"user_id"`
+	UserRole  string    `db:"user_role" json:"user_role"`
+	RideID    *string   `db:"ride_id" json:"ride_id"`
+	Lat       float64   `db:"lat" json:"lat"`
+	Lng       float64   `db:"lng" json:"lng"`
+	Status    string    `db:"status" json:"status"`
+	CreatedAt time.Time `db:"created_at" json:"created_at"`
 }
 
 type Feedback struct {
-	ID      string    `db:"id" json:"id"`
-	UserID  string    `db:"user_id" json:"user_id"`
-	RideID  *string   `db:"ride_id" json:"ride_id"`
-	Message string    `db:"message" json:"message"`
+	ID        string    `db:"id" json:"id"`
+	UserID    string    `db:"user_id" json:"user_id"`
+	RideID    *string   `db:"ride_id" json:"ride_id"`
+	Message   string    `db:"message" json:"message"`
 	CreatedAt time.Time `db:"created_at" json:"created_at"`
 }
 
@@ -62,11 +62,11 @@ type PasswordResetToken struct {
 }
 
 type Favorite struct {
-	ID      string    `db:"id" json:"id"`
-	RiderID string    `db:"rider_id" json:"rider_id"`
-	Name    string    `db:"name" json:"name"`
-	Lat     float64   `db:"lat" json:"lat"`
-	Lng     float64   `db:"lng" json:"lng"`
-	Address string    `db:"address" json:"address"`
+	ID        string    `db:"id" json:"id"`
+	RiderID   string    `db:"rider_id" json:"rider_id"`
+	Name      string    `db:"name" json:"name"`
+	Lat       float64   `db:"lat" json:"lat"`
+	Lng       float64   `db:"lng" json:"lng"`
+	Address   string    `db:"address" json:"address"`
 	CreatedAt time.Time `db:"created_at" json:"created_at"`
 }

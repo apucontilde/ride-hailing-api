@@ -2,6 +2,11 @@ package model
 
 import "time"
 
+type LatLng struct {
+	Lat float64 `json:"lat"`
+	Lng float64 `json:"lng"`
+}
+
 type DriverPosition struct {
 	DriverID  string    `db:"driver_id" json:"driver_id"`
 	Lat       float64   `db:"-" json:"lat"`
@@ -20,12 +25,12 @@ type RiderPosition struct {
 }
 
 type NearbyDriverResult struct {
-	DriverID   string  `db:"driver_id" json:"driver_id"`
-	Lat        float64 `json:"lat"`
-	Lng        float64 `json:"lng"`
-	Heading    float64 `db:"heading" json:"heading"`
-	Speed      float64 `db:"speed" json:"speed"`
-	DistanceM  float64 `db:"distance_m" json:"distance_m"`
+	DriverID  string  `db:"driver_id" json:"driver_id"`
+	Lat       float64 `json:"lat"`
+	Lng       float64 `json:"lng"`
+	Heading   float64 `db:"heading" json:"heading"`
+	Speed     float64 `db:"speed" json:"speed"`
+	DistanceM float64 `db:"distance_m" json:"distance_m"`
 }
 
 type RouteEdge struct {
@@ -38,10 +43,10 @@ type RouteEdge struct {
 }
 
 type RouteResponse struct {
-	Edges           []RouteEdge `json:"edges"`
-	TotalDistanceM  float64     `json:"total_distance_m"`
-	TotalDurationS  float64     `json:"total_duration_s"`
-	Polyline        string      `json:"polyline"`
-	Fallback        bool        `json:"fallback,omitempty"`
-	ElevFallback    bool        `json:"elevation_fallback,omitempty"`
+	Edges          []RouteEdge `json:"edges"`
+	TotalDistanceM float64     `json:"total_distance_m"`
+	TotalDurationS float64     `json:"total_duration_s"`
+	Polyline       string      `json:"polyline"`
+	Fallback       bool        `json:"fallback,omitempty"`
+	ElevFallback   bool        `json:"elevation_fallback,omitempty"`
 }

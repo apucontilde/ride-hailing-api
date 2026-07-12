@@ -63,6 +63,10 @@ func (s *DispatchService) sendRequestsSequentially(ride *model.Ride, drivers []m
 	for _, d := range drivers {
 		ok := s.offerRideToDriver(ride.ID, d.DriverID)
 		if ok {
+			if err := s.AcceptRide(ride.ID, d.DriverID); err != nil {
+				log.Printf("failed to accept ride %s for driver %s: %v", ride.ID, d.DriverID, err)
+				continue
+			}
 			return
 		}
 	}

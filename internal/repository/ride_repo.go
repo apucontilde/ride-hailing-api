@@ -80,7 +80,9 @@ func (r *RideRepo) FindCurrentRideByDriver(driverID string) (*model.Ride, error)
 
 func (r *RideRepo) FindRidesByRider(riderID string, limit, offset int) ([]model.Ride, int, error) {
 	var total int
-	r.db.Get(&total, "SELECT COUNT(*) FROM rides WHERE rider_id = $1", riderID)
+	if err := r.db.Get(&total, "SELECT COUNT(*) FROM rides WHERE rider_id = $1", riderID); err != nil {
+		return nil, 0, err
+	}
 
 	var rides []model.Ride
 	err := r.db.Select(&rides, `
@@ -94,7 +96,9 @@ func (r *RideRepo) FindRidesByRider(riderID string, limit, offset int) ([]model.
 
 func (r *RideRepo) FindRidesByDriver(driverID string, limit, offset int) ([]model.Ride, int, error) {
 	var total int
-	r.db.Get(&total, "SELECT COUNT(*) FROM rides WHERE driver_id = $1", driverID)
+	if err := r.db.Get(&total, "SELECT COUNT(*) FROM rides WHERE driver_id = $1", driverID); err != nil {
+		return nil, 0, err
+	}
 
 	var rides []model.Ride
 	err := r.db.Select(&rides, `
@@ -136,11 +140,21 @@ func (r *RideRepo) UpdateRideStatus(rideID, status string, timestamp *time.Time)
 }
 
 func (r *RideRepo) AssignDriver(rideID, driverID string) error {
-	_, err := r.db.Exec(`
+	res, err := r.db.Exec(`
 		UPDATE rides SET driver_id=$1, status='accepted', accepted_at=NOW(), updated_at=NOW()
 		WHERE id=$2 AND status='pending'`,
 		driverID, rideID)
-	return err
+	if err != nil {
+		return err
+	}
+	rows, err := res.RowsAffected()
+	if err != nil {
+		return err
+	}
+	if rows == 0 {
+		return fmt.Errorf("ride already accepted or not found")
+	}
+	return nil
 }
 
 func (r *RideRepo) CreateEvent(event *model.RideEvent) error {

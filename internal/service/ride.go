@@ -11,13 +11,14 @@ import (
 )
 
 type RideService struct {
-	rideRepo repository.RideRepository
-	userRepo repository.UserRepository
-	hub      *websocket.Hub
+	rideRepo    repository.RideRepository
+	userRepo    repository.UserRepository
+	hub         *websocket.Hub
+	fareService *FareService
 }
 
-func NewRideService(rideRepo repository.RideRepository, userRepo repository.UserRepository, hub *websocket.Hub) *RideService {
-	return &RideService{rideRepo: rideRepo, userRepo: userRepo, hub: hub}
+func NewRideService(rideRepo repository.RideRepository, userRepo repository.UserRepository, hub *websocket.Hub, fareSvc *FareService) *RideService {
+	return &RideService{rideRepo: rideRepo, userRepo: userRepo, hub: hub, fareService: fareSvc}
 }
 
 var validTransitions = map[string][]string{
@@ -32,6 +33,11 @@ var validTransitions = map[string][]string{
 func (s *RideService) RequestRide(riderID string, pickupLat, pickupLng, dropoffLat, dropoffLng float64,
 	pickupAddr, dropoffAddr, vehicleType, idempotencyKey string) (*model.Ride, error) {
 
+	estimate, err := s.fareService.CalculateEstimate(pickupLat, pickupLng, dropoffLat, dropoffLng, vehicleType)
+	if err != nil {
+		return nil, fmt.Errorf("failed to calculate fare estimate: %w", err)
+	}
+
 	ride := &model.Ride{
 		RiderID:        riderID,
 		PickupLat:      pickupLat,
@@ -42,6 +48,11 @@ func (s *RideService) RequestRide(riderID string, pickupLat, pickupLng, dropoffL
 		DropoffAddress: dropoffAddr,
 		VehicleType:    vehicleType,
 		IdempotencyKey: idempotencyKey,
+		BaseFare:       estimate.BaseFare,
+		DistanceFare:   estimate.DistanceFare,
+		TimeFare:       estimate.TimeFare,
+		SurgeMultiplier: estimate.SurgeMultiplier,
+		TotalFare:      estimate.Total,
 	}
 
 	if err := s.rideRepo.CreateRide(ride); err != nil {
@@ -153,6 +164,10 @@ func (s *RideService) AdvanceStatus(rideID, newStatus, actor string) (*model.Rid
 		},
 	}
 	if newStatus == "completed" {
+		// In a real system, we would get actual distance/time from GPS logs
+		// Here we'll just assume it's 10% different from the estimate for demonstration
+		ride.TotalFare = ride.TotalFare * 1.1 
+
 		msg.Data = websocket.RideUpdateData{
 			RideID:    rideID,
 			Status:    newStatus,

@@ -12,6 +12,7 @@ type GeoRepository interface {
 	UpsertDriverPosition(driverID string, lat, lng, heading, speed float64, status string) error
 	UpsertRiderPosition(riderID string, lat, lng float64) error
 	FindNearbyDrivers(lat, lng float64, radiusM float64, limit int) ([]model.NearbyDriverResult, error)
+	CountNearbyDrivers(lat, lng float64, radiusM float64) (int, error)
 	GetDriverLocation(driverID string) (*model.NearbyDriverResult, error)
 	MarkStaleDriversOffline() error
 }
@@ -100,6 +101,25 @@ func (r *GeoRepo) GetDriverLocation(driverID string) (*model.NearbyDriverResult,
 		return nil, fmt.Errorf("driver location not found: %w", err)
 	}
 	return result, nil
+}
+
+func (r *GeoRepo) CountNearbyDrivers(lat, lng float64, radiusM float64) (int, error) {
+	var count int
+	query := `
+		SELECT COUNT(*)
+		FROM driver_positions
+		WHERE status = 'online'
+		  AND updated_at > NOW() - INTERVAL '30 seconds'
+		  AND ST_DWithin(
+				location,
+				ST_SetSRID(ST_MakePoint($1, $2), 4326)::GEOGRAPHY,
+				$3
+			  )`
+	err := r.db.Get(&count, query, lng, lat, radiusM)
+	if err != nil {
+		return 0, fmt.Errorf("failed to count nearby drivers: %w", err)
+	}
+	return count, nil
 }
 
 func (r *GeoRepo) MarkStaleDriversOffline() error {

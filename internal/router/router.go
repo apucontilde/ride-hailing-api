@@ -18,11 +18,12 @@ func Setup(cfg *config.Config, db *sqlx.DB) *gin.Engine {
 		repository.NewUserRepo(db),
 		repository.NewRideRepo(db),
 		repository.NewGeoRepo(db),
+		repository.NewNavigationRepo(db),
 		db,
 	)
 }
 
-func SetupWithRepos(cfg *config.Config, userRepo repository.UserRepository, rideRepo repository.RideRepository, geoRepo repository.GeoRepository, db *sqlx.DB) *gin.Engine {
+func SetupWithRepos(cfg *config.Config, userRepo repository.UserRepository, rideRepo repository.RideRepository, geoRepo repository.GeoRepository, navRepo repository.NavigationRepository, db *sqlx.DB) *gin.Engine {
 	r := gin.Default()
 
 	r.Use(cors.Default())
@@ -35,9 +36,11 @@ func SetupWithRepos(cfg *config.Config, userRepo repository.UserRepository, ride
 	wsHub := websocket.NewHub()
 
 	// Services
+	navService := service.NewNavigationService(navRepo)
+	fareService := service.NewFareService(geoRepo, navService)
 	authService := service.NewAuthService(cfg, userRepo)
 	riderService := service.NewRiderService(userRepo)
-	rideService := service.NewRideService(rideRepo, userRepo, wsHub)
+	rideService := service.NewRideService(rideRepo, userRepo, wsHub, fareService)
 	dispatchService := service.NewDispatchService(rideRepo, geoRepo, userRepo, wsHub)
 	wsHub.SetDispatchHandler(dispatchService)
 
@@ -48,7 +51,7 @@ func SetupWithRepos(cfg *config.Config, userRepo repository.UserRepository, ride
 	driverHandler := handler.NewDriverHandler(userRepo)
 	geoHandler := handler.NewGeoHandler(geoRepo, rideRepo, wsHub)
 	rideHandler := handler.NewRideHandler(rideService, dispatchService, rideRepo)
-	platformHandler := handler.NewPlatformHandler()
+	platformHandler := handler.NewPlatformHandler(navService)
 
 	// Middleware
 	authMw := middleware.AuthRequired(authService)

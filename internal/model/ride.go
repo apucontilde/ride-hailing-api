@@ -3,19 +3,19 @@ package model
 import "time"
 
 type Ride struct {
-	ID              string     `db:"id" json:"id"`
-	RiderID         string     `db:"rider_id" json:"rider_id"`
-	DriverID        *string    `db:"driver_id" json:"driver_id"`
-	Status          string     `db:"status" json:"status"`
-	PickupLat       float64    `db:"pickup_lat" json:"pickup_lat"`
-	PickupLng       float64    `db:"pickup_lng" json:"pickup_lng"`
-	DropoffLat      float64    `db:"dropoff_lat" json:"dropoff_lat"`
-	DropoffLng      float64    `db:"dropoff_lng" json:"dropoff_lng"`
-	PickupAddress   string     `db:"pickup_address" json:"pickup_address"`
-	DropoffAddress  string     `db:"dropoff_address" json:"dropoff_address"`
-	VehicleType     string     `db:"vehicle_type" json:"vehicle_type"`
-	CancellationFee float64    `db:"cancellation_fee" json:"cancellation_fee"`
-	IdempotencyKey  string     `db:"idempotency_key" json:"-"`
+	ID              string  `db:"id" json:"id"`
+	RiderID         string  `db:"rider_id" json:"rider_id"`
+	DriverID        *string `db:"driver_id" json:"driver_id"`
+	Status          string  `db:"status" json:"status"`
+	PickupLat       float64 `db:"pickup_lat" json:"pickup_lat"`
+	PickupLng       float64 `db:"pickup_lng" json:"pickup_lng"`
+	DropoffLat      float64 `db:"dropoff_lat" json:"dropoff_lat"`
+	DropoffLng      float64 `db:"dropoff_lng" json:"dropoff_lng"`
+	PickupAddress   string  `db:"pickup_address" json:"pickup_address"`
+	DropoffAddress  string  `db:"dropoff_address" json:"dropoff_address"`
+	VehicleType     string  `db:"vehicle_type" json:"vehicle_type"`
+	CancellationFee float64 `db:"cancellation_fee" json:"cancellation_fee"`
+	IdempotencyKey  string  `db:"idempotency_key" json:"-"`
 
 	BaseFare        float64 `db:"base_fare" json:"base_fare"`
 	DistanceFare    float64 `db:"distance_fare" json:"distance_fare"`

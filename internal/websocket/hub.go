@@ -97,7 +97,9 @@ func (h *Hub) HandleWS(c *gin.Context) {
 				RideID string `json:"ride_id"`
 			}
 			if json.Unmarshal(incoming.Data, &data) == nil && h.dispatchHandler != nil {
-				h.dispatchHandler.HandleAccept(client.UserID, data.RideID)
+				if err := h.dispatchHandler.HandleAccept(client.UserID, data.RideID); err != nil {
+					log.Printf("failed to handle ride accept: %v", err)
+				}
 			}
 		case "ride.decline":
 			var data struct {
@@ -107,7 +109,9 @@ func (h *Hub) HandleWS(c *gin.Context) {
 				h.dispatchHandler.HandleDecline(client.UserID, data.RideID)
 			}
 		case "ping":
-			client.SendJSON(map[string]string{"type": "pong"})
+			if err := client.SendJSON(map[string]string{"type": "pong"}); err != nil {
+				log.Printf("failed to send pong: %v", err)
+			}
 		}
 	}
 }
@@ -124,7 +128,9 @@ func (h *Hub) SendToUser(userID string, msg interface{}) {
 	client, ok := h.clients[userID]
 	h.mu.RUnlock()
 	if ok {
-		client.SendJSON(msg)
+		if err := client.SendJSON(msg); err != nil {
+			log.Printf("failed to send message to user %s: %v", userID, err)
+		}
 	}
 }
 
@@ -133,7 +139,9 @@ func (h *Hub) BroadcastToRole(role string, msg interface{}) {
 	defer h.mu.RUnlock()
 	for _, client := range h.clients {
 		if client.Role == role {
-			client.SendJSON(msg)
+			if err := client.SendJSON(msg); err != nil {
+				log.Printf("failed to send message to role %s: %v", role, err)
+			}
 		}
 	}
 }

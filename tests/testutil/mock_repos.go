@@ -600,6 +600,25 @@ func (m *MockGeoRepo) GetDriverLocation(driverID string) (*model.NearbyDriverRes
 	}, nil
 }
 
+func (m *MockGeoRepo) CountNearbyDrivers(lat, lng float64, radiusM float64) (int, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	count := 0
+	for _, d := range m.drivers {
+		if d.status != "online" {
+			continue
+		}
+		if time.Since(d.updatedAt) > 30*time.Second {
+			continue
+		}
+		dist := haversine(lat, lng, d.lat, d.lng) * 1000
+		if dist <= radiusM {
+			count++
+		}
+	}
+	return count, nil
+}
+
 func (m *MockGeoRepo) MarkStaleDriversOffline() error {
 	m.mu.Lock()
 	defer m.mu.Unlock()

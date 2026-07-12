@@ -45,8 +45,9 @@ func NewTestServerE() (*TestServer, error) {
 	userRepo := NewMockUserRepo()
 	rideRepo := NewMockRideRepo()
 	geoRepo := NewMockGeoRepo()
+	navRepo := NewMockNavigationRepo()
 
-	r := router.SetupWithRepos(cfg, userRepo, rideRepo, geoRepo, nil)
+	r := router.SetupWithRepos(cfg, userRepo, rideRepo, geoRepo, navRepo, nil)
 
 	ts := &TestServer{
 		Server:     httptest.NewServer(r),

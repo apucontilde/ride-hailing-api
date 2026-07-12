@@ -1,15 +1,19 @@
 package handler
 
 import (
+	"fmt"
 	"net/http"
 
 	"github.com/gin-gonic/gin"
+	"ride-hailing-api/internal/service"
 )
 
-type PlatformHandler struct{}
+type PlatformHandler struct {
+	navSvc *service.NavigationService
+}
 
-func NewPlatformHandler() *PlatformHandler {
-	return &PlatformHandler{}
+func NewPlatformHandler(navSvc *service.NavigationService) *PlatformHandler {
+	return &PlatformHandler{navSvc: navSvc}
 }
 
 func (h *PlatformHandler) SOS(c *gin.Context) {
@@ -102,11 +106,35 @@ func (h *PlatformHandler) UpdateDestination(c *gin.Context) {
 }
 
 func (h *PlatformHandler) NavigationRoute(c *gin.Context) {
+	fromLat := c.Query("from_lat")
+	fromLng := c.Query("from_lng")
+	toLat := c.Query("to_lat")
+	toLng := c.Query("to_lng")
+
+	// In a real app, we would parse these as float64.
+	// Using dummy values for now since they are strings in Query().
+	// But I should actually parse them.
+	var fLat, fLng, tLat, tLng float64
+	fmt.Sscanf(fromLat, "%f", &fLat)
+	fmt.Sscanf(fromLng, "%f", &fLng)
+	fmt.Sscanf(toLat, "%f", &tLat)
+	fmt.Sscanf(toLng, "%f", &tLng)
+
+	route, err := h.navSvc.GetRoute(fLat, fLng, tLat, tLng)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+
+	var coords []gin.H
+	for _, p := range route.Polyline {
+		coords = append(coords, gin.H{"lat": p.Lat, "lng": p.Lng})
+	}
+
 	c.JSON(http.StatusOK, gin.H{
-		"edges":            []interface{}{},
-		"total_distance_m": 0,
-		"total_duration_s": 0,
-		"polyline":         "",
+		"polyline":         coords,
+		"total_distance_m": route.DistanceMeters,
+		"total_duration_s": route.DurationSecs,
 	})
 }
 

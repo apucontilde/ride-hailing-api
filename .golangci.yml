@@ -1,0 +1,21 @@
+linters-settings:
+  govet:
+    check-shadowing: true
+  revive:
+    severity: warning
+    confidence: 0.8
+
+linters:
+  disable-all: true
+  enable:
+    - errcheck
+    - govet
+    - staticcheck
+    - unused
+    - revive
+    - gocritic
+    - gofmt
+
+run:
+  timeout: 5m
+  tests: true
