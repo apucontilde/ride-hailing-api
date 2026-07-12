@@ -1,6 +1,7 @@
 package websocket
 
 import (
+	"encoding/json"
 	"log"
 	"net/http"
 	"sync"
@@ -8,6 +9,11 @@ import (
 	"github.com/gin-gonic/gin"
 	"github.com/gorilla/websocket"
 )
+
+type DispatchHandler interface {
+	HandleAccept(driverID, rideID string) error
+	HandleDecline(driverID, rideID string)
+}
 
 var upgrader = websocket.Upgrader{
 	CheckOrigin: func(r *http.Request) bool { return true },
@@ -27,14 +33,19 @@ func (c *Client) SendJSON(v interface{}) error {
 }
 
 type Hub struct {
-	mu      sync.RWMutex
-	clients map[string]*Client
+	mu              sync.RWMutex
+	clients         map[string]*Client
+	dispatchHandler DispatchHandler
 }
 
 func NewHub() *Hub {
 	return &Hub{
 		clients: make(map[string]*Client),
 	}
+}
+
+func (h *Hub) SetDispatchHandler(dh DispatchHandler) {
+	h.dispatchHandler = dh
 }
 
 func (h *Hub) HandleWS(c *gin.Context) {
@@ -67,11 +78,45 @@ func (h *Hub) HandleWS(c *gin.Context) {
 	}()
 
 	for {
-		_, _, err := conn.ReadMessage()
+		_, msgBytes, err := conn.ReadMessage()
 		if err != nil {
 			break
 		}
+
+		var incoming struct {
+			Type string          `json:"type"`
+			Data json.RawMessage `json:"data"`
+		}
+		if json.Unmarshal(msgBytes, &incoming) != nil {
+			continue
+		}
+
+		switch incoming.Type {
+		case "ride.accept":
+			var data struct {
+				RideID string `json:"ride_id"`
+			}
+			if json.Unmarshal(incoming.Data, &data) == nil && h.dispatchHandler != nil {
+				h.dispatchHandler.HandleAccept(client.UserID, data.RideID)
+			}
+		case "ride.decline":
+			var data struct {
+				RideID string `json:"ride_id"`
+			}
+			if json.Unmarshal(incoming.Data, &data) == nil && h.dispatchHandler != nil {
+				h.dispatchHandler.HandleDecline(client.UserID, data.RideID)
+			}
+		case "ping":
+			client.SendJSON(map[string]string{"type": "pong"})
+		}
 	}
+}
+
+func (h *Hub) IsConnected(userID string) bool {
+	h.mu.RLock()
+	_, ok := h.clients[userID]
+	h.mu.RUnlock()
+	return ok
 }
 
 func (h *Hub) SendToUser(userID string, msg interface{}) {

@@ -1,20 +1,34 @@
 package service
 
 import (
+	"fmt"
 	"log"
+	"strconv"
+	"sync"
 	"time"
 
 	"ride-hailing-api/internal/model"
 	"ride-hailing-api/internal/repository"
+	"ride-hailing-api/internal/websocket"
 )
 
 type DispatchService struct {
-	rideRepo repository.RideRepository
-	geoRepo  repository.GeoRepository
+	rideRepo      repository.RideRepository
+	geoRepo       repository.GeoRepository
+	userRepo      repository.UserRepository
+	hub           *websocket.Hub
+	offerChannels   map[string]chan bool
+	offerChannelsMu sync.Mutex
 }
 
-func NewDispatchService(rideRepo repository.RideRepository, geoRepo repository.GeoRepository) *DispatchService {
-	return &DispatchService{rideRepo: rideRepo, geoRepo: geoRepo}
+func NewDispatchService(rideRepo repository.RideRepository, geoRepo repository.GeoRepository, userRepo repository.UserRepository, hub *websocket.Hub) *DispatchService {
+	return &DispatchService{
+		rideRepo:      rideRepo,
+		geoRepo:       geoRepo,
+		userRepo:      userRepo,
+		hub:           hub,
+		offerChannels: make(map[string]chan bool),
+	}
 }
 
 type RideRequest struct {
@@ -53,23 +67,61 @@ func (s *DispatchService) sendRequestsSequentially(ride *model.Ride, drivers []m
 		}
 	}
 
-	s.rideRepo.UpdateRideStatus(ride.ID, "no_driver_available", nil)
-	log.Printf("ride %s: all drivers declined", ride.ID)
+	current, err := s.rideRepo.FindByID(ride.ID)
+	if err == nil && current.Status == "pending" {
+		s.rideRepo.UpdateRideStatus(ride.ID, "no_driver_available", nil)
+		log.Printf("ride %s: all drivers declined", ride.ID)
+	}
 }
 
 func (s *DispatchService) offerRideToDriver(rideID, driverID string) bool {
-	acceptCh := make(chan bool, 1)
+	if !s.hub.IsConnected(driverID) {
+		time.Sleep(100 * time.Millisecond)
+		return false
+	}
 
-	go func() {
-		time.Sleep(30 * time.Second)
-		acceptCh <- false
+	ch := make(chan bool, 1)
+
+	s.offerChannelsMu.Lock()
+	s.offerChannels[rideID] = ch
+	s.offerChannelsMu.Unlock()
+
+	defer func() {
+		s.offerChannelsMu.Lock()
+		delete(s.offerChannels, rideID)
+		s.offerChannelsMu.Unlock()
 	}()
 
+	s.hub.SendToUser(driverID, websocket.OutgoingMessage{
+		Type: "ride.offer",
+		Data: map[string]string{"ride_id": rideID},
+	})
+
 	select {
-	case <-acceptCh:
+	case result := <-ch:
+		return result
+	case <-time.After(30 * time.Second):
 		return false
-	case <-time.After(100 * time.Millisecond):
-		return false
+	}
+}
+
+func (s *DispatchService) HandleAccept(driverID, rideID string) error {
+	s.offerChannelsMu.Lock()
+	ch, ok := s.offerChannels[rideID]
+	s.offerChannelsMu.Unlock()
+	if !ok {
+		return fmt.Errorf("no active offer for ride %s", rideID)
+	}
+	ch <- true
+	return nil
+}
+
+func (s *DispatchService) HandleDecline(driverID, rideID string) {
+	s.offerChannelsMu.Lock()
+	ch, ok := s.offerChannels[rideID]
+	s.offerChannelsMu.Unlock()
+	if ok {
+		ch <- false
 	}
 }
 
@@ -93,6 +145,57 @@ func (s *DispatchService) AcceptRide(rideID, driverID string) error {
 		ToStatus:   "accepted",
 		Actor:      "driver",
 	})
+
+	driver, _ := s.userRepo.FindDriverByID(driverID)
+	var driverInfo *websocket.DriverInfo
+	if driver != nil {
+		rating, _ := strconv.ParseFloat(driver.RatingSummary, 64)
+		vehicle, _ := s.rideRepo.FindVehicleByDriverID(driverID)
+		var vehicleInfo *websocket.VehicleInfo
+		if vehicle != nil {
+			vehicleInfo = &websocket.VehicleInfo{
+				Make:        vehicle.Make,
+				Model:       vehicle.Model,
+				Color:       vehicle.Color,
+				PlateNumber: vehicle.PlateNumber,
+			}
+		}
+		loc, _ := s.geoRepo.GetDriverLocation(driverID)
+		var locInfo *websocket.LatLng
+		if loc != nil {
+			locInfo = &websocket.LatLng{
+				Lat:     loc.Lat,
+				Lng:     loc.Lng,
+				Heading: loc.Heading,
+			}
+		}
+		driverInfo = &websocket.DriverInfo{
+			ID:        driver.UserID,
+			FirstName: driver.FirstName,
+			PhotoURL:  driver.PhotoURL,
+			Rating:    rating,
+			Vehicle:   vehicleInfo,
+			Location:  locInfo,
+		}
+	}
+
+	pickup := &websocket.PlaceInfo{Lat: ride.PickupLat, Lng: ride.PickupLng, Address: ride.PickupAddress}
+	dropoff := &websocket.PlaceInfo{Lat: ride.DropoffLat, Lng: ride.DropoffLng, Address: ride.DropoffAddress}
+
+	msg := websocket.OutgoingMessage{
+		Type: "ride.updated",
+		Data: websocket.RideUpdateData{
+			RideID:     rideID,
+			Status:     "accepted",
+			Timestamp:  time.Now(),
+			Driver:     driverInfo,
+			Pickup:     pickup,
+			Dropoff:    dropoff,
+			EtaSeconds: 300,
+		},
+	}
+	s.hub.SendToUser(ride.RiderID, msg)
+	s.hub.SendToUser(driverID, msg)
 
 	return nil
 }

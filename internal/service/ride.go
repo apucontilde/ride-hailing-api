@@ -7,15 +7,17 @@ import (
 
 	"ride-hailing-api/internal/model"
 	"ride-hailing-api/internal/repository"
+	"ride-hailing-api/internal/websocket"
 )
 
 type RideService struct {
 	rideRepo repository.RideRepository
 	userRepo repository.UserRepository
+	hub      *websocket.Hub
 }
 
-func NewRideService(rideRepo repository.RideRepository, userRepo repository.UserRepository) *RideService {
-	return &RideService{rideRepo: rideRepo, userRepo: userRepo}
+func NewRideService(rideRepo repository.RideRepository, userRepo repository.UserRepository, hub *websocket.Hub) *RideService {
+	return &RideService{rideRepo: rideRepo, userRepo: userRepo, hub: hub}
 }
 
 var validTransitions = map[string][]string{
@@ -53,6 +55,25 @@ func (s *RideService) RequestRide(riderID string, pickupLat, pickupLng, dropoffL
 		Actor:      "rider",
 	})
 
+	s.hub.SendToUser(riderID, websocket.OutgoingMessage{
+		Type: "ride.updated",
+		Data: websocket.RideUpdateData{
+			RideID:    ride.ID,
+			Status:    "pending",
+			Timestamp: time.Now(),
+			Pickup: &websocket.PlaceInfo{
+				Lat:     pickupLat,
+				Lng:     pickupLng,
+				Address: pickupAddr,
+			},
+			Dropoff: &websocket.PlaceInfo{
+				Lat:     dropoffLat,
+				Lng:     dropoffLng,
+				Address: dropoffAddr,
+			},
+		},
+	})
+
 	return ride, nil
 }
 
@@ -80,6 +101,21 @@ func (s *RideService) CancelRide(rideID, actor string) (*model.Ride, error) {
 	})
 
 	ride.Status = "cancelled"
+
+	msg := websocket.OutgoingMessage{
+		Type: "ride.updated",
+		Data: websocket.RideUpdateData{
+			RideID:      rideID,
+			Status:      "cancelled",
+			Timestamp:   time.Now(),
+			CancelledBy: actor,
+		},
+	}
+	s.hub.SendToUser(ride.RiderID, msg)
+	if ride.DriverID != nil {
+		s.hub.SendToUser(*ride.DriverID, msg)
+	}
+
 	return ride, nil
 }
 
@@ -107,6 +143,34 @@ func (s *RideService) AdvanceStatus(rideID, newStatus, actor string) (*model.Rid
 	})
 
 	ride.Status = newStatus
+
+	msg := websocket.OutgoingMessage{
+		Type: "ride.updated",
+		Data: websocket.RideUpdateData{
+			RideID:    rideID,
+			Status:    newStatus,
+			Timestamp: time.Now(),
+		},
+	}
+	if newStatus == "completed" {
+		msg.Data = websocket.RideUpdateData{
+			RideID:    rideID,
+			Status:    newStatus,
+			Timestamp: time.Now(),
+			Fare: &websocket.FareInfo{
+				BaseFare:        ride.BaseFare,
+				DistanceFare:    ride.DistanceFare,
+				TimeFare:        ride.TimeFare,
+				SurgeMultiplier: ride.SurgeMultiplier,
+				Total:           ride.TotalFare,
+			},
+		}
+	}
+	s.hub.SendToUser(ride.RiderID, msg)
+	if ride.DriverID != nil {
+		s.hub.SendToUser(*ride.DriverID, msg)
+	}
+
 	return ride, nil
 }
 

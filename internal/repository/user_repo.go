@@ -20,6 +20,13 @@ type UserRepository interface {
 	FindDriverByID(userID string) (*model.Driver, error)
 	UpdateDriver(driver *model.Driver) error
 	SoftDeleteUser(userID string) error
+	CreateRefreshToken(token *model.RefreshToken) error
+	FindRefreshTokenByHash(hash string) (*model.RefreshToken, error)
+	RevokeRefreshToken(id string) error
+	CreatePasswordResetToken(token *model.PasswordResetToken) error
+	FindPasswordResetTokenByHash(hash string) (*model.PasswordResetToken, error)
+	RevokePasswordResetToken(id string) error
+	RevokeUserPasswordResetTokens(userID string) error
 }
 
 var _ UserRepository = (*UserRepo)(nil)
@@ -121,5 +128,54 @@ func (r *UserRepo) UpdateDriver(driver *model.Driver) error {
 
 func (r *UserRepo) SoftDeleteUser(userID string) error {
 	_, err := r.db.Exec("UPDATE users SET status='deleted', updated_at=NOW() WHERE id=$1", userID)
+	return err
+}
+
+func (r *UserRepo) CreateRefreshToken(token *model.RefreshToken) error {
+	_, err := r.db.Exec(`
+		INSERT INTO refresh_tokens (user_id, token_hash, expires_at)
+		VALUES ($1, $2, $3)`,
+		token.UserID, token.TokenHash, token.ExpiresAt)
+	return err
+}
+
+func (r *UserRepo) FindRefreshTokenByHash(hash string) (*model.RefreshToken, error) {
+	t := &model.RefreshToken{}
+	err := r.db.Get(t, "SELECT * FROM refresh_tokens WHERE token_hash = $1 AND revoked = FALSE LIMIT 1", hash)
+	if err != nil {
+		return nil, fmt.Errorf("refresh token not found: %w", err)
+	}
+	return t, nil
+}
+
+func (r *UserRepo) RevokeRefreshToken(id string) error {
+	_, err := r.db.Exec("UPDATE refresh_tokens SET revoked = TRUE WHERE id = $1", id)
+	return err
+}
+
+func (r *UserRepo) CreatePasswordResetToken(token *model.PasswordResetToken) error {
+	_, err := r.db.Exec(`
+		INSERT INTO password_reset_tokens (user_id, token_hash, expires_at)
+		VALUES ($1, $2, $3)`,
+		token.UserID, token.TokenHash, token.ExpiresAt)
+	return err
+}
+
+func (r *UserRepo) FindPasswordResetTokenByHash(hash string) (*model.PasswordResetToken, error) {
+	t := &model.PasswordResetToken{}
+	err := r.db.Get(t, "SELECT * FROM password_reset_tokens WHERE token_hash = $1 AND used = FALSE LIMIT 1", hash)
+	if err != nil {
+		return nil, fmt.Errorf("password reset token not found: %w", err)
+	}
+	return t, nil
+}
+
+func (r *UserRepo) RevokePasswordResetToken(id string) error {
+	_, err := r.db.Exec("UPDATE password_reset_tokens SET used = TRUE WHERE id = $1", id)
+	return err
+}
+
+func (r *UserRepo) RevokeUserPasswordResetTokens(userID string) error {
+	_, err := r.db.Exec("UPDATE password_reset_tokens SET used = TRUE WHERE user_id = $1 AND used = FALSE", userID)
 	return err
 }

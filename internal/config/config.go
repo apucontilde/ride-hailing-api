@@ -29,7 +29,8 @@ type Config struct {
 	RateLimitGeneral  int
 	RateLimitWindow   time.Duration
 
-	DEMFilePath string
+	DEMFilePath  string
+	DebugLogging bool
 }
 
 func Load() *Config {
@@ -56,7 +57,8 @@ func Load() *Config {
 		RateLimitGeneral:  getInt("RATE_LIMIT_GENERAL", 100),
 		RateLimitWindow:   getDuration("RATE_LIMIT_WINDOW", 60*time.Second),
 
-		DEMFilePath: getEnv("DEM_FILE_PATH", ""),
+		DEMFilePath:  getEnv("DEM_FILE_PATH", ""),
+		DebugLogging: getEnv("DEBUG_LOGGING", "false") == "true",
 	}
 }
 

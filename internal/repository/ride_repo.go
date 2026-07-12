@@ -20,6 +20,7 @@ type RideRepository interface {
 	AssignDriver(rideID, driverID string) error
 	CreateEvent(event *model.RideEvent) error
 	CreateRating(rating *model.Rating) error
+	FindVehicleByDriverID(driverID string) (*model.DriverVehicle, error)
 }
 
 var _ RideRepository = (*RideRepo)(nil)
@@ -148,6 +149,15 @@ func (r *RideRepo) CreateEvent(event *model.RideEvent) error {
 		VALUES ($1, $2, $3, $4, $5)`,
 		event.RideID, event.FromStatus, event.ToStatus, event.Actor, event.Reason)
 	return err
+}
+
+func (r *RideRepo) FindVehicleByDriverID(driverID string) (*model.DriverVehicle, error) {
+	v := &model.DriverVehicle{}
+	err := r.db.Get(v, "SELECT * FROM driver_vehicles WHERE driver_id = $1 AND is_active = true ORDER BY created_at DESC LIMIT 1", driverID)
+	if err != nil {
+		return nil, fmt.Errorf("vehicle not found: %w", err)
+	}
+	return v, nil
 }
 
 func (r *RideRepo) CreateRating(rating *model.Rating) error {

@@ -3,6 +3,8 @@ package tests
 import (
 	"net/http"
 	"testing"
+
+	"ride-hailing-api/tests/testutil"
 )
 
 func TestDriverRideQueue(t *testing.T) {
@@ -81,6 +83,9 @@ func TestDriverAcceptRide(t *testing.T) {
 	parseJSON(t, driverLogin.Body, &driverLoginResult)
 	driverToken = driverLoginResult.AccessToken
 
+	conn := ts.DialWS(t, riderToken)
+	defer conn.Close()
+
 	createResp := ts.DoRequest("POST", "/api/v1/rides", riderToken, map[string]float64{
 		"pickup_lat":  40.7128,
 		"pickup_lng":  -74.0060,
@@ -94,8 +99,20 @@ func TestDriverAcceptRide(t *testing.T) {
 	}
 	parseJSON(t, createResp.Body, &createResult)
 
+	// Consume the "pending" push from ride creation
+	testutil.ReadWSMessage(t, conn)
+
 	acceptResp := ts.DoRequest("POST", "/api/v1/driver/rides/"+createResult.Ride.ID+"/accept", driverToken, nil)
 	acceptResp.AssertStatus(t, http.StatusOK)
+
+	msg := testutil.ReadWSMessage(t, conn)
+	if msg["type"] != "ride.updated" {
+		t.Errorf("expected type 'ride.updated', got %v", msg["type"])
+	}
+	data := msg["data"].(map[string]interface{})
+	if data["status"] != "accepted" {
+		t.Errorf("expected status 'accepted', got %v", data["status"])
+	}
 }
 
 func TestDriverAcceptAlreadyTaken(t *testing.T) {

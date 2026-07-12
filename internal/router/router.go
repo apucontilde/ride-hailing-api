@@ -1,6 +1,7 @@
 package router
 
 import (
+	"github.com/gin-contrib/cors"
 	"github.com/gin-gonic/gin"
 	"github.com/jmoiron/sqlx"
 
@@ -24,18 +25,28 @@ func Setup(cfg *config.Config, db *sqlx.DB) *gin.Engine {
 func SetupWithRepos(cfg *config.Config, userRepo repository.UserRepository, rideRepo repository.RideRepository, geoRepo repository.GeoRepository, db *sqlx.DB) *gin.Engine {
 	r := gin.Default()
 
+	r.Use(cors.Default())
+
+	if cfg.DebugLogging {
+		r.Use(middleware.DebugLogger())
+	}
+
+	// WebSocket hub (created here, injected into services that push)
+	wsHub := websocket.NewHub()
+
 	// Services
 	authService := service.NewAuthService(cfg, userRepo)
 	riderService := service.NewRiderService(userRepo)
-	rideService := service.NewRideService(rideRepo, userRepo)
-	dispatchService := service.NewDispatchService(rideRepo, geoRepo)
+	rideService := service.NewRideService(rideRepo, userRepo, wsHub)
+	dispatchService := service.NewDispatchService(rideRepo, geoRepo, userRepo, wsHub)
+	wsHub.SetDispatchHandler(dispatchService)
 
 	// Handlers
 	healthHandler := handler.NewHealthHandler(db)
 	authHandler := handler.NewAuthHandler(authService)
 	riderHandler := handler.NewRiderHandler(riderService, userRepo)
 	driverHandler := handler.NewDriverHandler(userRepo)
-	geoHandler := handler.NewGeoHandler(geoRepo)
+	geoHandler := handler.NewGeoHandler(geoRepo, rideRepo, wsHub)
 	rideHandler := handler.NewRideHandler(rideService, dispatchService, rideRepo)
 	platformHandler := handler.NewPlatformHandler()
 
@@ -56,13 +67,13 @@ func SetupWithRepos(cfg *config.Config, userRepo repository.UserRepository, ride
 	auth := r.Group("/api/v1/auth")
 	auth.POST("/register", registerRL.Middleware(), authHandler.Register)
 	auth.POST("/login", loginRL.Middleware(), authHandler.Login)
-	auth.POST("/refresh", authMw, authHandler.Login)
-	auth.POST("/logout", authMw, authHandler.Login)
-	auth.POST("/forgot-password", loginRL.Middleware(), authHandler.Login)
-	auth.POST("/reset-password", authMw, authHandler.Login)
-	auth.POST("/verify-email", authMw, authHandler.Login)
-	auth.POST("/verify-phone", authMw, authHandler.Login)
-	auth.POST("/social", loginRL.Middleware(), authHandler.Login)
+	auth.POST("/refresh", generalRL.Middleware(), authHandler.Refresh)
+	auth.POST("/logout", generalRL.Middleware(), authMw, authHandler.Logout)
+	auth.POST("/forgot-password", generalRL.Middleware(), authHandler.ForgotPassword)
+	auth.POST("/reset-password", generalRL.Middleware(), authHandler.ResetPassword)
+	auth.POST("/verify-email", generalRL.Middleware(), authMw, authHandler.VerifyEmail)
+	auth.POST("/verify-phone", generalRL.Middleware(), authMw, authHandler.VerifyPhone)
+	auth.POST("/social", loginRL.Middleware(), authHandler.SocialLogin)
 
 	// Rider
 	rider := r.Group("/api/v1/rider")
@@ -92,8 +103,8 @@ func SetupWithRepos(cfg *config.Config, userRepo repository.UserRepository, ride
 	driver.PUT("/me/status", driverHandler.UpdateStatus)
 	driver.GET("/me/documents", platformHandler.StubPayment)
 	driver.POST("/me/documents", platformHandler.StubPayment)
-	driver.GET("/me/vehicle", driverHandler.Register)
-	driver.PUT("/me/vehicle", driverHandler.Register)
+	driver.GET("/me/vehicle", platformHandler.StubPayment)
+	driver.PUT("/me/vehicle", platformHandler.StubPayment)
 	driver.GET("/me/earnings", platformHandler.StubPayment)
 	driver.GET("/ratings", platformHandler.StubPayment)
 
@@ -175,8 +186,7 @@ func SetupWithRepos(cfg *config.Config, userRepo repository.UserRepository, ride
 	// Driver earnings withdraw (stub)
 	r.POST("/api/v1/driver/earnings/withdraw", authMw, middleware.RequireRole("driver"), platformHandler.StubPayment)
 
-	// WebSocket
-	wsHub := websocket.NewHub()
+	// WebSocket endpoint (hub created above)
 	r.GET("/ws", authMw, wsHub.HandleWS)
 
 	return r

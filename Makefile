@@ -18,7 +18,7 @@ build:
 	go build -o $(BUILD_DIR)/$(APP_NAME) ./cmd/server
 
 run:
-	go run ./cmd/server
+	DEBUG_LOGGING=true go run ./cmd/server
 
 test:
 	go test -v -count=1 ./...

@@ -52,6 +52,15 @@ type Feedback struct {
 	CreatedAt time.Time `db:"created_at" json:"created_at"`
 }
 
+type PasswordResetToken struct {
+	ID        string    `db:"id" json:"id"`
+	UserID    string    `db:"user_id" json:"user_id"`
+	TokenHash string    `db:"token_hash" json:"-"`
+	ExpiresAt time.Time `db:"expires_at" json:"expires_at"`
+	Used      bool      `db:"used" json:"-"`
+	CreatedAt time.Time `db:"created_at" json:"created_at"`
+}
+
 type Favorite struct {
 	ID      string    `db:"id" json:"id"`
 	RiderID string    `db:"rider_id" json:"rider_id"`

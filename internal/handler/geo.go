@@ -7,14 +7,17 @@ import (
 	"github.com/gin-gonic/gin"
 
 	"ride-hailing-api/internal/repository"
+	"ride-hailing-api/internal/websocket"
 )
 
 type GeoHandler struct {
 	geoRepo repository.GeoRepository
+	rideRepo repository.RideRepository
+	wsHub   *websocket.Hub
 }
 
-func NewGeoHandler(geoRepo repository.GeoRepository) *GeoHandler {
-	return &GeoHandler{geoRepo: geoRepo}
+func NewGeoHandler(geoRepo repository.GeoRepository, rideRepo repository.RideRepository, wsHub *websocket.Hub) *GeoHandler {
+	return &GeoHandler{geoRepo: geoRepo, rideRepo: rideRepo, wsHub: wsHub}
 }
 
 type locationUpdate struct {
@@ -40,6 +43,21 @@ func (h *GeoHandler) UpdateDriverLocation(c *gin.Context) {
 	if err := h.geoRepo.UpsertDriverPosition(driverID.(string), req.Lat, req.Lng, req.Heading, req.Speed, "online"); err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": gin.H{"code": "INTERNAL", "message": "failed to update location"}})
 		return
+	}
+
+	activeRide, err := h.rideRepo.FindCurrentRideByDriver(driverID.(string))
+	if err == nil {
+		h.wsHub.SendToUser(activeRide.RiderID, websocket.OutgoingMessage{
+			Type: "driver.location",
+			Data: websocket.DriverLocationData{
+				RideID:   activeRide.ID,
+				DriverID: driverID.(string),
+				Lat:      req.Lat,
+				Lng:      req.Lng,
+				Heading:  req.Heading,
+				Speed:    req.Speed,
+			},
+		})
 	}
 
 	c.Status(http.StatusNoContent)

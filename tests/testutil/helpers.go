@@ -7,7 +7,9 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"testing"
+	"time"
 
+	"github.com/gorilla/websocket"
 	"github.com/jmoiron/sqlx"
 
 	"ride-hailing-api/internal/config"
@@ -206,4 +208,37 @@ func nestedKeys(key string) []string {
 		keys = append(keys, current)
 	}
 	return keys
+}
+
+func ParseJSON(t *testing.T, data []byte, v interface{}) {
+	t.Helper()
+	if err := json.Unmarshal(data, v); err != nil {
+		t.Fatalf("failed to parse json: %v", err)
+	}
+}
+
+func (ts *TestServer) DialWS(t *testing.T, token string) *websocket.Conn {
+	t.Helper()
+	wsURL := "ws" + ts.URL[4:] + "/ws"
+	header := http.Header{}
+	header.Set("Authorization", "Bearer "+token)
+	conn, _, err := websocket.DefaultDialer.Dial(wsURL, header)
+	if err != nil {
+		t.Fatalf("websocket dial failed: %v", err)
+	}
+	return conn
+}
+
+func ReadWSMessage(t *testing.T, conn *websocket.Conn) map[string]interface{} {
+	t.Helper()
+	conn.SetReadDeadline(time.Now().Add(3 * time.Second))
+	_, msgBytes, err := conn.ReadMessage()
+	if err != nil {
+		t.Fatalf("websocket read failed: %v", err)
+	}
+	var msg map[string]interface{}
+	if err := json.Unmarshal(msgBytes, &msg); err != nil {
+		t.Fatalf("failed to parse ws message: %v", err)
+	}
+	return msg
 }

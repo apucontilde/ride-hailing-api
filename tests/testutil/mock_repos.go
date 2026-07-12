@@ -19,19 +19,23 @@ func newID() string {
 // --- MockUserRepo ---
 
 type MockUserRepo struct {
-	mu      sync.Mutex
-	users   map[string]*model.User
-	riders  map[string]*model.Rider
-	drivers map[string]*model.Driver
-	byEmail map[string]string
+	mu                sync.Mutex
+	users             map[string]*model.User
+	riders            map[string]*model.Rider
+	drivers           map[string]*model.Driver
+	byEmail           map[string]string
+	refreshTokens     map[string]*model.RefreshToken
+	passwordResetTokens map[string]*model.PasswordResetToken
 }
 
 func NewMockUserRepo() *MockUserRepo {
 	return &MockUserRepo{
-		users:   make(map[string]*model.User),
-		riders:  make(map[string]*model.Rider),
-		drivers: make(map[string]*model.Driver),
-		byEmail: make(map[string]string),
+		users:         make(map[string]*model.User),
+		riders:        make(map[string]*model.Rider),
+		drivers:       make(map[string]*model.Driver),
+		byEmail:       make(map[string]string),
+		refreshTokens:       make(map[string]*model.RefreshToken),
+		passwordResetTokens: make(map[string]*model.PasswordResetToken),
 	}
 }
 
@@ -185,20 +189,105 @@ func (m *MockUserRepo) SoftDeleteUser(userID string) error {
 	return nil
 }
 
+func (m *MockUserRepo) CreateRefreshToken(token *model.RefreshToken) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	id := newID()
+	token.ID = id
+	token.CreatedAt = time.Now()
+	m.refreshTokens[token.TokenHash] = token
+	return nil
+}
+
+func (m *MockUserRepo) FindRefreshTokenByHash(hash string) (*model.RefreshToken, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	t, ok := m.refreshTokens[hash]
+	if !ok || t.Revoked {
+		return nil, fmt.Errorf("refresh token not found")
+	}
+	if time.Now().After(t.ExpiresAt) {
+		return nil, fmt.Errorf("refresh token expired")
+	}
+	cp := *t
+	return &cp, nil
+}
+
+func (m *MockUserRepo) RevokeRefreshToken(id string) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	for _, t := range m.refreshTokens {
+		if t.ID == id {
+			t.Revoked = true
+			return nil
+		}
+	}
+	return nil
+}
+
+func (m *MockUserRepo) CreatePasswordResetToken(token *model.PasswordResetToken) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	id := newID()
+	token.ID = id
+	token.CreatedAt = time.Now()
+	m.passwordResetTokens[token.TokenHash] = token
+	return nil
+}
+
+func (m *MockUserRepo) FindPasswordResetTokenByHash(hash string) (*model.PasswordResetToken, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	t, ok := m.passwordResetTokens[hash]
+	if !ok || t.Used {
+		return nil, fmt.Errorf("password reset token not found")
+	}
+	if time.Now().After(t.ExpiresAt) {
+		return nil, fmt.Errorf("password reset token expired")
+	}
+	cp := *t
+	return &cp, nil
+}
+
+func (m *MockUserRepo) RevokePasswordResetToken(id string) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	for _, t := range m.passwordResetTokens {
+		if t.ID == id {
+			t.Used = true
+			return nil
+		}
+	}
+	return nil
+}
+
+func (m *MockUserRepo) RevokeUserPasswordResetTokens(userID string) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	for _, t := range m.passwordResetTokens {
+		if t.UserID == userID && !t.Used {
+			t.Used = true
+		}
+	}
+	return nil
+}
+
 // --- MockRideRepo ---
 
 type MockRideRepo struct {
-	mu      sync.Mutex
-	rides   map[string]*model.Ride
-	events  []*model.RideEvent
-	ratings []*model.Rating
+	mu       sync.Mutex
+	rides    map[string]*model.Ride
+	events   []*model.RideEvent
+	ratings  []*model.Rating
+	vehicles map[string]*model.DriverVehicle
 }
 
 func NewMockRideRepo() *MockRideRepo {
 	return &MockRideRepo{
-		rides:   make(map[string]*model.Ride),
-		events:  make([]*model.RideEvent, 0),
-		ratings: make([]*model.Rating, 0),
+		rides:    make(map[string]*model.Ride),
+		events:   make([]*model.RideEvent, 0),
+		ratings:  make([]*model.Rating, 0),
+		vehicles: make(map[string]*model.DriverVehicle),
 	}
 }
 
@@ -381,6 +470,29 @@ func (m *MockRideRepo) CreateRating(rating *model.Rating) error {
 	rating.CreatedAt = time.Now()
 	m.ratings = append(m.ratings, rating)
 	return nil
+}
+
+func (m *MockRideRepo) FindVehicleByDriverID(driverID string) (*model.DriverVehicle, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	v, ok := m.vehicles[driverID]
+	if !ok {
+		m.vehicles[driverID] = &model.DriverVehicle{
+			ID:          newID(),
+			DriverID:    driverID,
+			Make:        "Toyota",
+			Model:       "Camry",
+			Color:       "White",
+			PlateNumber: "ABC-1234",
+			IsActive:    true,
+			CreatedAt:   time.Now(),
+			UpdatedAt:   time.Now(),
+		}
+		cp := *m.vehicles[driverID]
+		return &cp, nil
+	}
+	cp := *v
+	return &cp, nil
 }
 
 // --- MockGeoRepo ---
