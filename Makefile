@@ -1,4 +1,4 @@
-.PHONY: all build run test test-integration lint clean docker-up docker-down migrate-up migrate-down seed import-osm download-osm
+.PHONY: all build run test test-integration lint clean docker-up docker-down migrate-up migrate-down seed import-osm download-osm export-places
 
 APP_NAME=ride-hailing-api
 BUILD_DIR=./build
@@ -40,3 +40,6 @@ import-osm:
 
 download-osm:
 	./scripts/download-osm.sh
+
+export-places:
+	./scripts/export-places.sh

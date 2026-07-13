@@ -31,6 +31,11 @@ type Config struct {
 
 	DEMFilePath  string
 	DebugLogging bool
+
+	PlacesSeedOnStart  bool
+	PlacesGeoJSONPath  string
+	PlacesMaxRadiusM   float64
+	PlacesDefaultLimit int
 }
 
 func Load() *Config {
@@ -59,6 +64,11 @@ func Load() *Config {
 
 		DEMFilePath:  getEnv("DEM_FILE_PATH", ""),
 		DebugLogging: getEnv("DEBUG_LOGGING", "false") == "true",
+
+		PlacesSeedOnStart:  getEnv("PLACES_SEED_ON_START", "true") == "true",
+		PlacesGeoJSONPath:  getEnv("PLACES_GEOJSON_PATH", "data/places.geojson"),
+		PlacesMaxRadiusM:   float64(getInt("PLACES_MAX_RADIUS_M", 50000)),
+		PlacesDefaultLimit: getInt("PLACES_DEFAULT_LIMIT", 10),
 	}
 }
 

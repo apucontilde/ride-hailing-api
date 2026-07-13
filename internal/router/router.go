@@ -19,14 +19,22 @@ func Setup(cfg *config.Config, db *sqlx.DB) *gin.Engine {
 		repository.NewRideRepo(db),
 		repository.NewGeoRepo(db),
 		repository.NewNavigationRepo(db),
+		repository.NewPlacesRepo(db),
 		db,
 	)
 }
 
-func SetupWithRepos(cfg *config.Config, userRepo repository.UserRepository, rideRepo repository.RideRepository, geoRepo repository.GeoRepository, navRepo repository.NavigationRepository, db *sqlx.DB) *gin.Engine {
+func SetupWithRepos(cfg *config.Config, userRepo repository.UserRepository, rideRepo repository.RideRepository, geoRepo repository.GeoRepository, navRepo repository.NavigationRepository, placesRepo repository.PlacesRepository, db *sqlx.DB) *gin.Engine {
 	r := gin.Default()
 
-	r.Use(cors.Default())
+	// Allow all origins for dev and explicitly permit the Authorization header,
+	// otherwise browser CORS preflights (Flutter Web) block authed GETs.
+	r.Use(cors.New(cors.Config{
+		AllowAllOrigins: true,
+		AllowMethods:    []string{"GET", "POST", "PUT", "PATCH", "DELETE", "HEAD", "OPTIONS"},
+		AllowHeaders:    []string{"Origin", "Content-Type", "Accept", "Authorization"},
+		ExposeHeaders:   []string{"Content-Length"},
+	}))
 
 	if cfg.DebugLogging {
 		r.Use(middleware.DebugLogger())
@@ -51,7 +59,7 @@ func SetupWithRepos(cfg *config.Config, userRepo repository.UserRepository, ride
 	driverHandler := handler.NewDriverHandler(userRepo)
 	geoHandler := handler.NewGeoHandler(geoRepo, rideRepo, wsHub)
 	rideHandler := handler.NewRideHandler(rideService, dispatchService, rideRepo)
-	platformHandler := handler.NewPlatformHandler(navService)
+	platformHandler := handler.NewPlatformHandler(navService, placesRepo, cfg.PlacesMaxRadiusM, cfg.PlacesDefaultLimit)
 
 	// Middleware
 	authMw := middleware.AuthRequired(authService)

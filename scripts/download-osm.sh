@@ -5,11 +5,15 @@ DATA_DIR="$(cd "$(dirname "$0")/../data" && pwd)"
 OSM_URL="https://download.geofabrik.de/central-america/costa-rica-latest.osm.pbf"
 RAW_PBF="$DATA_DIR/costa-rica-latest.osm.pbf"
 OUTPUT_PBF="$DATA_DIR/san-jose.osm.pbf"
-BOUNDARY="$DATA_DIR/san-jose.geojson"
 
-if [ ! -f "$BOUNDARY" ]; then
-  echo "ERROR: Boundary polygon not found at $BOUNDARY"
-  exit 1
+# San José province bounding box (minlon,minlat,maxlon,maxlat). This avoids
+# needing a separate boundary-polygon file. Swap for a precise .poly and use
+# `osmium extract -p san-jose.poly` if you want exact province borders.
+SAN_JOSE_BBOX="-84.50,9.00,-83.50,10.20"
+
+if [ -f "$OUTPUT_PBF" ]; then
+  echo "==> $OUTPUT_PBF already exists, skipping download+extract."
+  exit 0
 fi
 
 if ! command -v wget &>/dev/null && ! command -v curl &>/dev/null; then
@@ -32,8 +36,8 @@ else
   curl -C - -o "$RAW_PBF" "$OSM_URL"
 fi
 
-echo "==> Extracting San José province..."
-osmium extract -p "$BOUNDARY" "$RAW_PBF" -o "$OUTPUT_PBF"
+echo "==> Extracting San José province (bbox: $SAN_JOSE_BBOX)..."
+osmium extract -b "$SAN_JOSE_BBOX" "$RAW_PBF" -o "$OUTPUT_PBF"
 
 echo "==> Cleaning up full extract..."
 rm -f "$RAW_PBF"

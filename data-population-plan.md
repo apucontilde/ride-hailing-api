@@ -7,7 +7,7 @@ Downloads the Costa Rica OSM extract and extracts San José province.
 
 **Source:** Geofabrik — `costa-rica-latest.osm.pbf` (~300 MB)
 
-**Boundary:** San José province polygon must be available as `data/san-jose.geojson`.
+**Boundary:** San José is extracted by bounding box (`-84.50,9.00,-83.50,10.20`) via `osmium extract -b`, so no separate boundary-polygon file is required. Swap for a precise `.poly` with `osmium extract -p` if exact province borders are needed.
 
 ```powershell
 # data/download-osm.ps1

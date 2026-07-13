@@ -2,18 +2,24 @@ package handler
 
 import (
 	"fmt"
+	"log"
 	"net/http"
+	"strconv"
 
 	"github.com/gin-gonic/gin"
+	"ride-hailing-api/internal/repository"
 	"ride-hailing-api/internal/service"
 )
 
 type PlatformHandler struct {
-	navSvc *service.NavigationService
+	navSvc       *service.NavigationService
+	placesRepo   repository.PlacesRepository
+	maxRadiusM   float64
+	defaultLimit int
 }
 
-func NewPlatformHandler(navSvc *service.NavigationService) *PlatformHandler {
-	return &PlatformHandler{navSvc: navSvc}
+func NewPlatformHandler(navSvc *service.NavigationService, placesRepo repository.PlacesRepository, maxRadiusM float64, defaultLimit int) *PlatformHandler {
+	return &PlatformHandler{navSvc: navSvc, placesRepo: placesRepo, maxRadiusM: maxRadiusM, defaultLimit: defaultLimit}
 }
 
 func (h *PlatformHandler) SOS(c *gin.Context) {
@@ -77,7 +83,51 @@ func (h *PlatformHandler) ApplyPromotion(c *gin.Context) {
 }
 
 func (h *PlatformHandler) PlacesAutocomplete(c *gin.Context) {
-	c.JSON(http.StatusOK, gin.H{"predictions": []interface{}{}})
+	log.Printf("[places] autocomplete request lat=%s lng=%s radius=%s q=%q limit=%s",
+		c.Query("lat"), c.Query("lng"), c.Query("radius"), c.Query("q"), c.Query("limit"))
+
+	lat, err := strconv.ParseFloat(c.Query("lat"), 64)
+	if err != nil {
+		c.JSON(http.StatusUnprocessableEntity, gin.H{"error": gin.H{"code": "VALIDATION_ERROR", "message": "invalid lat"}})
+		return
+	}
+	lng, err := strconv.ParseFloat(c.Query("lng"), 64)
+	if err != nil {
+		c.JSON(http.StatusUnprocessableEntity, gin.H{"error": gin.H{"code": "VALIDATION_ERROR", "message": "invalid lng"}})
+		return
+	}
+
+	radius := 1000.0
+	if r := c.Query("radius"); r != "" {
+		radius, _ = strconv.ParseFloat(r, 64)
+	}
+	if radius > h.maxRadiusM {
+		radius = h.maxRadiusM
+	}
+
+	query := c.Query("q")
+
+	limit := h.defaultLimit
+	if l := c.Query("limit"); l != "" {
+		limit, _ = strconv.Atoi(l)
+	}
+	if limit > 50 {
+		limit = 50
+	}
+	if limit <= 0 {
+		limit = h.defaultLimit
+	}
+
+	places, err := h.placesRepo.FindNearbyPlaces(lat, lng, radius, query, limit)
+	if err != nil {
+		log.Printf("[places] autocomplete error: %v", err)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": gin.H{"code": "INTERNAL", "message": "failed to query places"}})
+		return
+	}
+
+	log.Printf("[places] autocomplete returning %d places (lat=%.5f lng=%.5f radius=%.0f q=%q)",
+		len(places), lat, lng, radius, query)
+	c.JSON(http.StatusOK, gin.H{"places": places})
 }
 
 func (h *PlatformHandler) PlacesGeocode(c *gin.Context) {

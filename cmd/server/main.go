@@ -21,6 +21,10 @@ func main() {
 		log.Fatalf("failed to run migrations: %v", err)
 	}
 
+	if err := database.SeedPlaces(db, cfg); err != nil {
+		log.Fatalf("failed to seed places: %v", err)
+	}
+
 	r := router.Setup(cfg, db)
 
 	addr := ":" + cfg.ServerPort

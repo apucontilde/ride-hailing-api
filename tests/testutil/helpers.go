@@ -26,6 +26,7 @@ type TestServer struct {
 	UserRepo   *MockUserRepo
 	RideRepo   *MockRideRepo
 	GeoRepo    *MockGeoRepo
+	PlacesRepo *MockPlacesRepo
 }
 
 type TestResponse struct {
@@ -46,8 +47,9 @@ func NewTestServerE() (*TestServer, error) {
 	rideRepo := NewMockRideRepo()
 	geoRepo := NewMockGeoRepo()
 	navRepo := NewMockNavigationRepo()
+	placesRepo := NewMockPlacesRepo()
 
-	r := router.SetupWithRepos(cfg, userRepo, rideRepo, geoRepo, navRepo, nil)
+	r := router.SetupWithRepos(cfg, userRepo, rideRepo, geoRepo, navRepo, placesRepo, nil)
 
 	ts := &TestServer{
 		Server:     httptest.NewServer(r),
@@ -56,6 +58,7 @@ func NewTestServerE() (*TestServer, error) {
 		UserRepo:   userRepo,
 		RideRepo:   rideRepo,
 		GeoRepo:    geoRepo,
+		PlacesRepo: placesRepo,
 	}
 
 	return ts, nil
