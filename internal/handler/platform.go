@@ -2,7 +2,6 @@ package handler
 
 import (
 	"fmt"
-	"log"
 	"net/http"
 	"strconv"
 
@@ -54,6 +53,7 @@ func (h *PlatformHandler) SOS(c *gin.Context) {
 	userID, _ := c.Get("user_id")
 	var req sosRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
+		_ = c.Error(fmt.Errorf("[sos] validation error (user=%v): %w", userID, err))
 		c.JSON(http.StatusUnprocessableEntity, gin.H{"error": gin.H{"code": "VALIDATION_ERROR", "message": err.Error()}})
 		return
 	}
@@ -81,8 +81,10 @@ func (h *PlatformHandler) SOS(c *gin.Context) {
 //	@Failure	422		{object}	ErrorResponse	"Validation error"
 //	@Router		/api/v1/feedback [post]
 func (h *PlatformHandler) Feedback(c *gin.Context) {
+	userID, _ := c.Get("user_id")
 	var req feedbackRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
+		_ = c.Error(fmt.Errorf("[feedback] validation error (user=%v): %w", userID, err))
 		c.JSON(http.StatusUnprocessableEntity, gin.H{"error": gin.H{"code": "VALIDATION_ERROR", "message": err.Error()}})
 		return
 	}
@@ -102,8 +104,10 @@ func (h *PlatformHandler) Feedback(c *gin.Context) {
 //	@Failure	422		{object}	ErrorResponse	"Validation error"
 //	@Router		/api/v1/devices [post]
 func (h *PlatformHandler) DeviceRegister(c *gin.Context) {
+	userID, _ := c.Get("user_id")
 	var req deviceRegisterRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
+		_ = c.Error(fmt.Errorf("[devices] register validation error (user=%v): %w", userID, err))
 		c.JSON(http.StatusUnprocessableEntity, gin.H{"error": gin.H{"code": "VALIDATION_ERROR", "message": err.Error()}})
 		return
 	}
@@ -163,23 +167,25 @@ func (h *PlatformHandler) ApplyPromotion(c *gin.Context) {
 //	@Failure	500		{object}	ErrorResponse	"Query failed"
 //	@Router		/api/v1/places/autocomplete [get]
 func (h *PlatformHandler) PlacesAutocomplete(c *gin.Context) {
-	log.Printf("[places] autocomplete request lat=%s lng=%s radius=%s q=%q limit=%s",
-		c.Query("lat"), c.Query("lng"), c.Query("radius"), c.Query("q"), c.Query("limit"))
-
 	lat, err := strconv.ParseFloat(c.Query("lat"), 64)
 	if err != nil {
+		_ = c.Error(fmt.Errorf("[places] autocomplete invalid lat value=%q: %w", c.Query("lat"), err))
 		c.JSON(http.StatusUnprocessableEntity, gin.H{"error": gin.H{"code": "VALIDATION_ERROR", "message": "invalid lat"}})
 		return
 	}
 	lng, err := strconv.ParseFloat(c.Query("lng"), 64)
 	if err != nil {
+		_ = c.Error(fmt.Errorf("[places] autocomplete invalid lng value=%q: %w", c.Query("lng"), err))
 		c.JSON(http.StatusUnprocessableEntity, gin.H{"error": gin.H{"code": "VALIDATION_ERROR", "message": "invalid lng"}})
 		return
 	}
 
 	radius := 1000.0
 	if r := c.Query("radius"); r != "" {
-		radius, _ = strconv.ParseFloat(r, 64)
+		radius, err = strconv.ParseFloat(r, 64)
+		if err != nil {
+			_ = c.Error(fmt.Errorf("[places] autocomplete invalid radius value=%q: %w", r, err))
+		}
 	}
 	if radius > h.maxRadiusM {
 		radius = h.maxRadiusM
@@ -189,7 +195,11 @@ func (h *PlatformHandler) PlacesAutocomplete(c *gin.Context) {
 
 	limit := h.defaultLimit
 	if l := c.Query("limit"); l != "" {
-		limit, _ = strconv.Atoi(l)
+		var atoiErr error
+		limit, atoiErr = strconv.Atoi(l)
+		if atoiErr != nil {
+			_ = c.Error(fmt.Errorf("[places] autocomplete invalid limit value=%q: %w", l, atoiErr))
+		}
 	}
 	if limit > 50 {
 		limit = 50
@@ -200,13 +210,11 @@ func (h *PlatformHandler) PlacesAutocomplete(c *gin.Context) {
 
 	places, err := h.placesRepo.FindNearbyPlaces(lat, lng, radius, query, limit)
 	if err != nil {
-		log.Printf("[places] autocomplete error: %v", err)
+		_ = c.Error(fmt.Errorf("[places] autocomplete query failed: %w", err))
 		c.JSON(http.StatusInternalServerError, gin.H{"error": gin.H{"code": "INTERNAL", "message": "failed to query places"}})
 		return
 	}
 
-	log.Printf("[places] autocomplete returning %d places (lat=%.5f lng=%.5f radius=%.0f q=%q)",
-		len(places), lat, lng, radius, query)
 	c.JSON(http.StatusOK, gin.H{"places": places})
 }
 
@@ -225,23 +233,25 @@ func (h *PlatformHandler) PlacesAutocomplete(c *gin.Context) {
 //	@Failure		500		{object}	ErrorResponse	"Query failed"
 //	@Router			/api/v1/places/geocode [get]
 func (h *PlatformHandler) PlacesGeocode(c *gin.Context) {
-	log.Printf("[places] geocode request lat=%s lng=%s radius=%s",
-		c.Query("lat"), c.Query("lng"), c.Query("radius"))
-
 	lat, err := strconv.ParseFloat(c.Query("lat"), 64)
 	if err != nil {
+		_ = c.Error(fmt.Errorf("[places] geocode invalid lat value=%q: %w", c.Query("lat"), err))
 		c.JSON(http.StatusUnprocessableEntity, gin.H{"error": gin.H{"code": "VALIDATION_ERROR", "message": "invalid lat"}})
 		return
 	}
 	lng, err := strconv.ParseFloat(c.Query("lng"), 64)
 	if err != nil {
+		_ = c.Error(fmt.Errorf("[places] geocode invalid lng value=%q: %w", c.Query("lng"), err))
 		c.JSON(http.StatusUnprocessableEntity, gin.H{"error": gin.H{"code": "VALIDATION_ERROR", "message": "invalid lng"}})
 		return
 	}
 
 	radius := 500.0
 	if r := c.Query("radius"); r != "" {
-		radius, _ = strconv.ParseFloat(r, 64)
+		radius, err = strconv.ParseFloat(r, 64)
+		if err != nil {
+			_ = c.Error(fmt.Errorf("[places] geocode invalid radius value=%q: %w", r, err))
+		}
 	}
 	if radius > h.maxRadiusM {
 		radius = h.maxRadiusM
@@ -249,13 +259,11 @@ func (h *PlatformHandler) PlacesGeocode(c *gin.Context) {
 
 	place, err := h.placesRepo.ReverseGeocode(lat, lng, radius)
 	if err != nil {
-		log.Printf("[places] geocode error: %v", err)
+		_ = c.Error(fmt.Errorf("[places] geocode query failed: %w", err))
 		c.JSON(http.StatusInternalServerError, gin.H{"error": gin.H{"code": "INTERNAL", "message": "failed to query places"}})
 		return
 	}
 
-	log.Printf("[places] geocode returning %v (lat=%.5f lng=%.5f radius=%.0f)",
-		place != nil, lat, lng, radius)
 	c.JSON(http.StatusOK, gin.H{"place": place})
 }
 
@@ -299,6 +307,7 @@ func (h *PlatformHandler) EstimatesPrice(c *gin.Context) {
 		case "sedan", "suv", "luxury":
 			vehicleTypes = []string{vt}
 		default:
+			_ = c.Error(fmt.Errorf("[estimates] invalid vehicle_type=%q", vt))
 			c.JSON(http.StatusUnprocessableEntity, gin.H{"error": gin.H{"code": "VALIDATION_ERROR", "message": "invalid vehicle_type"}})
 			return
 		}
@@ -308,6 +317,8 @@ func (h *PlatformHandler) EstimatesPrice(c *gin.Context) {
 	for _, vt := range vehicleTypes {
 		est, err := h.fareSvc.CalculateEstimate(pickupLat, pickupLng, dropoffLat, dropoffLng, vt)
 		if err != nil {
+			_ = c.Error(fmt.Errorf("[estimates] price failed vt=%s pickup=(%.5f,%.5f) dropoff=(%.5f,%.5f): %w",
+				vt, pickupLat, pickupLng, dropoffLat, dropoffLng, err))
 			c.JSON(http.StatusInternalServerError, gin.H{"error": gin.H{"code": "INTERNAL", "message": "failed to compute estimate"}})
 			return
 		}
@@ -350,6 +361,8 @@ func (h *PlatformHandler) EstimatesETA(c *gin.Context) {
 
 	route, err := h.navSvc.GetRoute(fromLat, fromLng, toLat, toLng)
 	if err != nil {
+		_ = c.Error(fmt.Errorf("[estimates] eta route failed from=(%.5f,%.5f) to=(%.5f,%.5f): %w",
+			fromLat, fromLng, toLat, toLng, err))
 		c.JSON(http.StatusInternalServerError, gin.H{"error": gin.H{"code": "INTERNAL", "message": "failed to calculate route"}})
 		return
 	}
@@ -396,13 +409,22 @@ func (h *PlatformHandler) NavigationRoute(c *gin.Context) {
 	// Using dummy values for now since they are strings in Query().
 	// But I should actually parse them.
 	var fLat, fLng, tLat, tLng float64
-	fmt.Sscanf(fromLat, "%f", &fLat)
-	fmt.Sscanf(fromLng, "%f", &fLng)
-	fmt.Sscanf(toLat, "%f", &tLat)
-	fmt.Sscanf(toLng, "%f", &tLng)
+	if _, err := fmt.Sscanf(fromLat, "%f", &fLat); err != nil {
+		_ = c.Error(fmt.Errorf("[navigation] route invalid from_lat value=%q: %w", fromLat, err))
+	}
+	if _, err := fmt.Sscanf(fromLng, "%f", &fLng); err != nil {
+		_ = c.Error(fmt.Errorf("[navigation] route invalid from_lng value=%q: %w", fromLng, err))
+	}
+	if _, err := fmt.Sscanf(toLat, "%f", &tLat); err != nil {
+		_ = c.Error(fmt.Errorf("[navigation] route invalid to_lat value=%q: %w", toLat, err))
+	}
+	if _, err := fmt.Sscanf(toLng, "%f", &tLng); err != nil {
+		_ = c.Error(fmt.Errorf("[navigation] route invalid to_lng value=%q: %w", toLng, err))
+	}
 
 	route, err := h.navSvc.GetRoute(fLat, fLng, tLat, tLng)
 	if err != nil {
+		_ = c.Error(fmt.Errorf("[navigation] route failed from=(%.5f,%.5f) to=(%.5f,%.5f): %w", fLat, fLng, tLat, tLng, err))
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}
@@ -516,6 +538,7 @@ func (h *PlatformHandler) parseCoordinates(c *gin.Context, keys paramSet) (lat1,
 	for _, key := range [4]string{keys.lat1, keys.lng1, keys.lat2, keys.lng2} {
 		v, err := strconv.ParseFloat(c.Query(key), 64)
 		if err != nil {
+			_ = c.Error(fmt.Errorf("[estimates] invalid %s value=%q: %w", key, c.Query(key), err))
 			c.JSON(http.StatusUnprocessableEntity, gin.H{"error": gin.H{"code": "VALIDATION_ERROR", "message": "invalid " + key}})
 			return 0, 0, 0, 0, false
 		}

@@ -47,6 +47,10 @@ func SetupWithRepos(cfg *config.Config, userRepo repository.UserRepository, ride
 		ExposeHeaders:   []string{"Content-Length"},
 	}))
 
+	// Always log handler errors (c.Error) so server-side failures stay visible
+	// in production; must run before DebugLogger so they share the request_id.
+	r.Use(middleware.ErrorLogger())
+
 	if cfg.DebugLogging {
 		r.Use(middleware.DebugLogger())
 	}
