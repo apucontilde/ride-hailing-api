@@ -1,6 +1,7 @@
 package repository
 
 import (
+	"database/sql"
 	"fmt"
 	"strings"
 
@@ -11,6 +12,7 @@ import (
 
 type PlacesRepository interface {
 	FindNearbyPlaces(lat, lng, radiusM float64, query string, limit int) ([]model.NearbyPlaceResult, error)
+	ReverseGeocode(lat, lng, radiusM float64) (*model.NearbyPlaceResult, error)
 	CountPlaces() (int, error)
 	BulkInsert(places []model.PlaceSeed) (int, error)
 }
@@ -41,6 +43,29 @@ func (r *PlacesRepo) FindNearbyPlaces(lat, lng, radiusM float64, query string, l
 		return nil, fmt.Errorf("failed to find nearby places: %w", err)
 	}
 	return results, nil
+}
+
+// ReverseGeocode returns the nearest place to the given coordinates within
+// radiusM, or (nil, nil) when no place is close enough.
+func (r *PlacesRepo) ReverseGeocode(lat, lng, radiusM float64) (*model.NearbyPlaceResult, error) {
+	result := &model.NearbyPlaceResult{}
+	query := `
+		SELECT id, name, category, address,
+		       ST_X(location::GEOMETRY) AS lng,
+		       ST_Y(location::GEOMETRY) AS lat,
+		       ST_Distance(location, ST_SetSRID(ST_MakePoint($1,$2),4326)::GEOGRAPHY) AS distance_m
+		FROM places
+		WHERE ST_DWithin(location, ST_SetSRID(ST_MakePoint($1,$2),4326)::GEOGRAPHY, $3)
+		ORDER BY distance_m ASC
+		LIMIT 1`
+	err := r.db.Get(result, query, lng, lat, radiusM)
+	if err == sql.ErrNoRows {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, fmt.Errorf("failed to reverse geocode: %w", err)
+	}
+	return result, nil
 }
 
 func (r *PlacesRepo) CountPlaces() (int, error) {

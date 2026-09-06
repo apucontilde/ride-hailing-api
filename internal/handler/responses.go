@@ -106,6 +106,12 @@ type PlacesResponse struct {
 	Places interface{} `json:"places"`
 }
 
+// GeocodeResponse is returned by GET /api/v1/places/geocode. Place is null
+// when no known place is within the search radius of the pin.
+type GeocodeResponse struct {
+	Place interface{} `json:"place"`
+}
+
 // Estimate is a single price estimate by vehicle type.
 type Estimate struct {
 	VehicleType  string  `json:"vehicle_type"`

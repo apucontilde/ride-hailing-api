@@ -69,6 +69,10 @@ definitions:
                     $ref: '#/definitions/handler.Estimate'
                 type: array
         type: object
+    handler.GeocodeResponse:
+        properties:
+            place: {}
+        type: object
     handler.HealthResponse:
         properties:
             status:
@@ -1540,17 +1544,42 @@ paths:
                 - places
     /api/v1/places/geocode:
         get:
+            description: Returns the nearest known place to the given coordinates, used to turn a map pin into an address.
             operationId: getPlaces-geocode
+            parameters:
+                - description: Latitude
+                  in: query
+                  name: lat
+                  required: true
+                  type: number
+                - description: Longitude
+                  in: query
+                  name: lng
+                  required: true
+                  type: number
+                - default: 500
+                  description: Search radius in meters (default 500, capped at the configured max)
+                  in: query
+                  name: radius
+                  type: number
             produces:
                 - application/json
             responses:
                 "200":
-                    description: OK
+                    description: place is null when nothing is found within the radius
                     schema:
-                        $ref: '#/definitions/handler.PlacesResponse'
+                        $ref: '#/definitions/handler.GeocodeResponse'
+                "422":
+                    description: Invalid parameters
+                    schema:
+                        $ref: '#/definitions/handler.ErrorResponse'
+                "500":
+                    description: Query failed
+                    schema:
+                        $ref: '#/definitions/handler.ErrorResponse'
             security:
                 - BearerAuth: []
-            summary: Geocode a coordinate into a place (stub)
+            summary: Reverse-geocode a coordinate into a place
             tags:
                 - places
     /api/v1/promotions:

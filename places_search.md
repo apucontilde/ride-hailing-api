@@ -201,7 +201,7 @@ func (h *PlatformHandler) PlacesAutocomplete(c *gin.Context) {
 	}
 	c.JSON(http.StatusOK, gin.H{"places": places})
 }
-- Leave PlacesGeocode/PlacesDetails as stubs (out of scope) or optionally implement details via a GetPlaceByID. Note as optional.
+- Leave PlacesDetails as a stub (out of scope); PlacesGeocode is now implemented (nearest place within radius, see places_repo.ReverseGeocode / handler.PlacesGeocode). Optionally implement details via a GetPlaceByID. Note as optional.
 T8. Router wiring + tests
 In internal/router/router.go:
 - Setup (lines 16-24): add repository.NewPlacesRepo(db) to the args passed to SetupWithRepos.

@@ -105,3 +105,56 @@ func TestPlacesAutocomplete(t *testing.T) {
 		loginResult.AccessToken, nil)
 	bad.AssertStatus(t, http.StatusUnprocessableEntity)
 }
+
+func TestPlacesGeocode(t *testing.T) {
+	ts.PostJSON("/api/v1/auth/register", map[string]string{
+		"email":    "rider.geo@test.com",
+		"phone":    "+2727272727",
+		"password": "SecurePass1",
+	})
+	loginResp := ts.PostJSON("/api/v1/auth/login", map[string]string{
+		"email":    "rider.geo@test.com",
+		"password": "SecurePass1",
+	})
+	var loginResult struct {
+		AccessToken string `json:"access_token"`
+	}
+	parseJSON(t, loginResp.Body, &loginResult)
+
+	addr := "Av. Central, San José"
+	ts.PlacesRepo.Seed(model.PlaceSeed{
+		OSMType:  "node",
+		OSMID:    2,
+		Name:     "Museo Nacional",
+		Category: "tourism",
+		Address:  &addr,
+		Lat:      9.98,
+		Lng:      -84.05,
+	})
+
+	// A pin on top of the place returns it as the nearest match.
+	resp := ts.DoRequest("GET", "/api/v1/places/geocode?lat=9.98&lng=-84.05",
+		loginResult.AccessToken, nil)
+	resp.AssertStatus(t, http.StatusOK)
+	resp.AssertJSONHas(t, "place.name", "Museo Nacional")
+	resp.AssertJSONHas(t, "place.address", addr)
+
+	// A pin with no place within the (default 500m) radius yields a null place.
+	far := ts.DoRequest("GET", "/api/v1/places/geocode?lat=9.95&lng=-84.10",
+		loginResult.AccessToken, nil)
+	far.AssertStatus(t, http.StatusOK)
+	far.AssertJSONHas(t, "place")
+	far.AssertJSONMissing(t, "place.name")
+
+	// Missing/invalid lat is a validation error.
+	bad := ts.DoRequest("GET", "/api/v1/places/geocode?lng=-84.08",
+		loginResult.AccessToken, nil)
+	bad.AssertStatus(t, http.StatusUnprocessableEntity)
+
+	// An explicit radius rescues a pin just outside the default 500m radius
+	// (~0.005deg lat offset from the place ≈ 555m away).
+	out := ts.DoRequest("GET", "/api/v1/places/geocode?lat=9.9850&lng=-84.05&radius=2000",
+		loginResult.AccessToken, nil)
+	out.AssertStatus(t, http.StatusOK)
+	out.AssertJSONHas(t, "place.name", "Museo Nacional")
+}

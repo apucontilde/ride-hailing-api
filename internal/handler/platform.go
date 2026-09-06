@@ -202,14 +202,51 @@ func (h *PlatformHandler) PlacesAutocomplete(c *gin.Context) {
 }
 
 // PlacesGeocode godoc
-//	@Summary	Geocode a coordinate into a place (stub)
-//	@Tags		places
-//	@Produce	json
-//	@Security	BearerAuth
-//	@Success	200	{object}	PlacesResponse
-//	@Router		/api/v1/places/geocode [get]
+//	@Summary		Reverse-geocode a coordinate into a place
+//	@Description	Returns the nearest known place to the given coordinates, used to turn a map pin into an address.
+//	@Tags			places
+//	@Produce		json
+//	@Security		BearerAuth
+//	@Param			lat		query		number			true	"Latitude"
+//	@Param			lng		query		number			true	"Longitude"
+//	@Param			radius	query		number			false	"Search radius in meters (default 500, capped at the configured max)"	default(500)
+//	@Success		200		{object}	GeocodeResponse	"place is null when nothing is found within the radius"
+//	@Failure		422		{object}	ErrorResponse	"Invalid parameters"
+//	@Failure		500		{object}	ErrorResponse	"Query failed"
+//	@Router			/api/v1/places/geocode [get]
 func (h *PlatformHandler) PlacesGeocode(c *gin.Context) {
-	c.JSON(http.StatusOK, gin.H{"place": nil})
+	log.Printf("[places] geocode request lat=%s lng=%s radius=%s",
+		c.Query("lat"), c.Query("lng"), c.Query("radius"))
+
+	lat, err := strconv.ParseFloat(c.Query("lat"), 64)
+	if err != nil {
+		c.JSON(http.StatusUnprocessableEntity, gin.H{"error": gin.H{"code": "VALIDATION_ERROR", "message": "invalid lat"}})
+		return
+	}
+	lng, err := strconv.ParseFloat(c.Query("lng"), 64)
+	if err != nil {
+		c.JSON(http.StatusUnprocessableEntity, gin.H{"error": gin.H{"code": "VALIDATION_ERROR", "message": "invalid lng"}})
+		return
+	}
+
+	radius := 500.0
+	if r := c.Query("radius"); r != "" {
+		radius, _ = strconv.ParseFloat(r, 64)
+	}
+	if radius > h.maxRadiusM {
+		radius = h.maxRadiusM
+	}
+
+	place, err := h.placesRepo.ReverseGeocode(lat, lng, radius)
+	if err != nil {
+		log.Printf("[places] geocode error: %v", err)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": gin.H{"code": "INTERNAL", "message": "failed to query places"}})
+		return
+	}
+
+	log.Printf("[places] geocode returning %v (lat=%.5f lng=%.5f radius=%.0f)",
+		place != nil, lat, lng, radius)
+	c.JSON(http.StatusOK, gin.H{"place": place})
 }
 
 // PlacesDetails godoc

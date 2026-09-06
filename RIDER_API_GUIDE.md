@@ -212,8 +212,8 @@ GET /api/v1/geo/nearby-drivers?lat=-23.5505&lng=-46.6333&radius=5000&limit=20
 | Method | Path | Auth | Notes |
 |---|---|---|---|
 | GET | `/api/v1/navigation/route` | Yes | Returns route polyline, distance, and duration |
-| GET | `/api/v1/places/autocomplete` | Yes | Stub |
-| GET | `/api/v1/places/geocode` | Yes | Stub |
+| GET | `/api/v1/places/autocomplete` | Yes | Search nearby places (`lat`,`lng`,`q`,`radius`,`limit`) |
+| GET | `/api/v1/places/geocode` | Yes | Reverse-geocode a pin to the nearest place (`lat`,`lng`,`radius`); `place` is null when nothing matches |
 | GET | `/api/v1/places/details` | Yes | Stub |
 | GET | `/api/v1/estimates/price` | Yes | Returns static pricing tiers |
 | GET | `/api/v1/estimates/eta` | Yes | Stub ETA endpoint |

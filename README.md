@@ -68,7 +68,7 @@ make seed       # seed test data (requires running DB)
 
 ### High priority
 - **Payment integration** — payment methods, tips, withdrawals, promos, and payouts are still stubbed
-- **Places/geocoding** — autocomplete, geocode, and place details return placeholder data
+- **Places/geocoding** — autocomplete works; geocode reverse-maps a pin to the nearest place, and place details still return placeholder data
 - **Driver/rider extras** — vehicle documents, earnings, ratings, favorites, and preferences are mostly stubbed
 - **Safety/workflow persistence** — SOS, feedback, and device registration need durable storage and follow-up flows
 - **Social login** — OAuth flows for Google/Apple are not implemented
