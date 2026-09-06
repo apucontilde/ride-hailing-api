@@ -65,6 +65,17 @@ func (s *FareService) calculateSurge(lat, lng float64) float64 {
 	return 1.0
 }
 
+// getRates returns the base, per-km and per-minute rate card for a vehicle type.
+//
+// The rates stay hardcoded deliberately: the quoted fare is snapshotted onto the
+// rides row at booking (RideService.RequestRide), so this tariff is only the
+// multiplier source. Nothing edits it at runtime, and vehicle_type is a closed
+// enum (sedan|suv|luxury, validated in handler/platform.go). Move these to a
+// versioned fare_rates DB table (effective dates + audit) the moment we add
+// GPS-based completion fares, earnings/withdraw, or per-region/time-of-day
+// pricing; the rides fare snapshot stays untouched
+// Rates returns the base fare and per-km/per-minute rates for a vehicle type,
+// so callers can surface the breakdown alongside a computed estimate.
 func (s *FareService) getRates(vehicleType string) (base, distRate, timeRate float64) {
 	switch vehicleType {
 	case "suv":

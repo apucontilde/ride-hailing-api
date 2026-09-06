@@ -16,16 +16,18 @@ type DispatchService struct {
 	rideRepo      repository.RideRepository
 	geoRepo       repository.GeoRepository
 	userRepo      repository.UserRepository
+	navSvc        *NavigationService
 	hub           *websocket.Hub
 	offerChannels   map[string]chan bool
 	offerChannelsMu sync.Mutex
 }
 
-func NewDispatchService(rideRepo repository.RideRepository, geoRepo repository.GeoRepository, userRepo repository.UserRepository, hub *websocket.Hub) *DispatchService {
+func NewDispatchService(rideRepo repository.RideRepository, geoRepo repository.GeoRepository, userRepo repository.UserRepository, hub *websocket.Hub, navSvc *NavigationService) *DispatchService {
 	return &DispatchService{
 		rideRepo:      rideRepo,
 		geoRepo:       geoRepo,
 		userRepo:      userRepo,
+		navSvc:        navSvc,
 		hub:           hub,
 		offerChannels: make(map[string]chan bool),
 	}
@@ -151,6 +153,11 @@ func (s *DispatchService) AcceptRide(rideID, driverID string) error {
 	})
 
 	driver, _ := s.userRepo.FindDriverByID(driverID)
+	// Real driver→pickup ETA (US-6): the rider sees how long until
+	// the matched driver arrives, computed from the live route engine.
+	// Falls back to the placeholder 300s only when routing or the driver
+	// location is unavailable.
+	etaSeconds := 300
 	var driverInfo *websocket.DriverInfo
 	if driver != nil {
 		rating, _ := strconv.ParseFloat(driver.RatingSummary, 64)
@@ -171,6 +178,9 @@ func (s *DispatchService) AcceptRide(rideID, driverID string) error {
 				Lat:     loc.Lat,
 				Lng:     loc.Lng,
 				Heading: loc.Heading,
+			}
+			if route, err := s.navSvc.GetRoute(loc.Lat, loc.Lng, ride.PickupLat, ride.PickupLng); err == nil && route.DurationSecs > 0 {
+				etaSeconds = route.DurationSecs
 			}
 		}
 		driverInfo = &websocket.DriverInfo{
@@ -195,7 +205,7 @@ func (s *DispatchService) AcceptRide(rideID, driverID string) error {
 			Driver:     driverInfo,
 			Pickup:     pickup,
 			Dropoff:    dropoff,
-			EtaSeconds: 300,
+			EtaSeconds: etaSeconds,
 		},
 	}
 	s.hub.SendToUser(ride.RiderID, msg)

@@ -60,7 +60,7 @@ func SetupWithRepos(cfg *config.Config, userRepo repository.UserRepository, ride
 	authService := service.NewAuthService(cfg, userRepo)
 	riderService := service.NewRiderService(userRepo)
 	rideService := service.NewRideService(rideRepo, userRepo, wsHub, fareService)
-	dispatchService := service.NewDispatchService(rideRepo, geoRepo, userRepo, wsHub)
+	dispatchService := service.NewDispatchService(rideRepo, geoRepo, userRepo, wsHub, navService)
 	wsHub.SetDispatchHandler(dispatchService)
 
 	// Handlers
@@ -70,7 +70,7 @@ func SetupWithRepos(cfg *config.Config, userRepo repository.UserRepository, ride
 	driverHandler := handler.NewDriverHandler(userRepo)
 	geoHandler := handler.NewGeoHandler(geoRepo, rideRepo, wsHub)
 	rideHandler := handler.NewRideHandler(rideService, dispatchService, rideRepo)
-	platformHandler := handler.NewPlatformHandler(navService, placesRepo, cfg.PlacesMaxRadiusM, cfg.PlacesDefaultLimit)
+	platformHandler := handler.NewPlatformHandler(navService, fareService, placesRepo, cfg.PlacesMaxRadiusM, cfg.PlacesDefaultLimit)
 
 	// Middleware
 	authMw := middleware.AuthRequired(authService)

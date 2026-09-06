@@ -48,9 +48,17 @@ definitions:
         properties:
             base_fare:
                 type: number
+            distance_fare:
+                type: number
             distance_rate:
                 type: number
+            surge_multiplier:
+                type: number
+            time_fare:
+                type: number
             time_rate:
+                type: number
+            total:
                 type: number
             vehicle_type:
                 type: string
@@ -1216,7 +1224,29 @@ paths:
                 - geo
     /api/v1/estimates/eta:
         get:
+            description: Returns travel seconds and distance for a route between two coordinates, computed from the live routing engine.
             operationId: getEstimates-eta
+            parameters:
+                - description: Origin latitude
+                  in: query
+                  name: from_lat
+                  required: true
+                  type: number
+                - description: Origin longitude
+                  in: query
+                  name: from_lng
+                  required: true
+                  type: number
+                - description: Destination latitude
+                  in: query
+                  name: to_lat
+                  required: true
+                  type: number
+                - description: Destination longitude
+                  in: query
+                  name: to_lng
+                  required: true
+                  type: number
             produces:
                 - application/json
             responses:
@@ -1224,14 +1254,48 @@ paths:
                     description: OK
                     schema:
                         $ref: '#/definitions/handler.EstimatesETAResponse'
+                "422":
+                    description: Invalid parameters
+                    schema:
+                        $ref: '#/definitions/handler.ErrorResponse'
+                "500":
+                    description: Routing failed
+                    schema:
+                        $ref: '#/definitions/handler.ErrorResponse'
             security:
                 - BearerAuth: []
-            summary: Get an ETA estimate
+            summary: Get a route-based ETA estimate
             tags:
                 - estimates
     /api/v1/estimates/price:
         get:
+            description: Computes base + distance + time fare with surge for each vehicle type, using the live routing engine.
             operationId: getEstimates-price
+            parameters:
+                - description: Pickup latitude
+                  in: query
+                  name: pickup_lat
+                  required: true
+                  type: number
+                - description: Pickup longitude
+                  in: query
+                  name: pickup_lng
+                  required: true
+                  type: number
+                - description: Dropoff latitude
+                  in: query
+                  name: dropoff_lat
+                  required: true
+                  type: number
+                - description: Dropoff longitude
+                  in: query
+                  name: dropoff_lng
+                  required: true
+                  type: number
+                - description: Limit to one type (sedan|suv|luxury); all types when omitted
+                  in: query
+                  name: vehicle_type
+                  type: string
             produces:
                 - application/json
             responses:
@@ -1239,6 +1303,14 @@ paths:
                     description: OK
                     schema:
                         $ref: '#/definitions/handler.EstimatesPriceResponse'
+                "422":
+                    description: Invalid parameters
+                    schema:
+                        $ref: '#/definitions/handler.ErrorResponse'
+                "500":
+                    description: Failed to compute estimate
+                    schema:
+                        $ref: '#/definitions/handler.ErrorResponse'
             security:
                 - BearerAuth: []
             summary: Get price estimates by vehicle type
@@ -1333,15 +1405,49 @@ paths:
                 - geo
     /api/v1/geo/eta:
         get:
+            description: Returns travel seconds and distance for a route between two coordinates, computed from the live routing engine.
             operationId: getGeo-eta
+            parameters:
+                - description: Origin latitude
+                  in: query
+                  name: from_lat
+                  required: true
+                  type: number
+                - description: Origin longitude
+                  in: query
+                  name: from_lng
+                  required: true
+                  type: number
+                - description: Destination latitude
+                  in: query
+                  name: to_lat
+                  required: true
+                  type: number
+                - description: Destination longitude
+                  in: query
+                  name: to_lng
+                  required: true
+                  type: number
+            produces:
+                - application/json
             responses:
                 "200":
                     description: OK
+                    schema:
+                        $ref: '#/definitions/handler.EstimatesETAResponse'
+                "422":
+                    description: Invalid parameters
+                    schema:
+                        $ref: '#/definitions/handler.ErrorResponse'
+                "500":
+                    description: Routing failed
+                    schema:
+                        $ref: '#/definitions/handler.ErrorResponse'
             security:
                 - BearerAuth: []
-            summary: GET /api/v1/geo/eta
+            summary: Get a route-based ETA estimate
             tags:
-                - geo
+                - estimates
     /api/v1/geo/isochrone:
         get:
             operationId: getGeo-isochrone

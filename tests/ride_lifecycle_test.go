@@ -109,8 +109,8 @@ func TestDriverAcceptsRide(t *testing.T) {
 	if accepted["status"] != "accepted" {
 		t.Errorf("expected status 'accepted', got %v", accepted["status"])
 	}
-	if accepted["eta_seconds"] != float64(300) {
-		t.Errorf("expected eta_seconds 300, got %v", accepted["eta_seconds"])
+	if accepted["eta_seconds"] != float64(454) {
+		t.Errorf("expected eta_seconds 454 (mock route 5000m/11mps), got %v", accepted["eta_seconds"])
 	}
 	driver := accepted["driver"].(map[string]interface{})
 	if driver["id"] == "" {

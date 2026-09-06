@@ -6,20 +6,22 @@ import (
 	"net/http"
 	"strconv"
 
-	"github.com/gin-gonic/gin"
 	"ride-hailing-api/internal/repository"
 	"ride-hailing-api/internal/service"
+
+	"github.com/gin-gonic/gin"
 )
 
 type PlatformHandler struct {
 	navSvc       *service.NavigationService
+	fareSvc      *service.FareService
 	placesRepo   repository.PlacesRepository
 	maxRadiusM   float64
 	defaultLimit int
 }
 
-func NewPlatformHandler(navSvc *service.NavigationService, placesRepo repository.PlacesRepository, maxRadiusM float64, defaultLimit int) *PlatformHandler {
-	return &PlatformHandler{navSvc: navSvc, placesRepo: placesRepo, maxRadiusM: maxRadiusM, defaultLimit: defaultLimit}
+func NewPlatformHandler(navSvc *service.NavigationService, fareSvc *service.FareService, placesRepo repository.PlacesRepository, maxRadiusM float64, defaultLimit int) *PlatformHandler {
+	return &PlatformHandler{navSvc: navSvc, fareSvc: fareSvc, placesRepo: placesRepo, maxRadiusM: maxRadiusM, defaultLimit: defaultLimit}
 }
 
 type sosRequest struct {
@@ -38,6 +40,7 @@ type deviceRegisterRequest struct {
 }
 
 // SOS godoc
+//
 //	@Summary	Send an SOS alert
 //	@Tags		platform
 //	@Accept		json
@@ -58,15 +61,16 @@ func (h *PlatformHandler) SOS(c *gin.Context) {
 	c.JSON(http.StatusCreated, gin.H{
 		"message": "SOS alert received",
 		"alert": gin.H{
-			"user_id":  userID,
-			"lat":      req.Lat,
-			"lng":      req.Lng,
-			"status":   "active",
+			"user_id": userID,
+			"lat":     req.Lat,
+			"lng":     req.Lng,
+			"status":  "active",
 		},
 	})
 }
 
 // Feedback godoc
+//
 //	@Summary	Submit user feedback
 //	@Tags		platform
 //	@Accept		json
@@ -87,6 +91,7 @@ func (h *PlatformHandler) Feedback(c *gin.Context) {
 }
 
 // DeviceRegister godoc
+//
 //	@Summary	Register a push notification device
 //	@Tags		platform
 //	@Accept		json
@@ -107,6 +112,7 @@ func (h *PlatformHandler) DeviceRegister(c *gin.Context) {
 }
 
 // DeviceUnregister godoc
+//
 //	@Summary	Unregister a push notification device
 //	@Tags		platform
 //	@Security	BearerAuth
@@ -118,6 +124,7 @@ func (h *PlatformHandler) DeviceUnregister(c *gin.Context) {
 }
 
 // PromotionsList godoc
+//
 //	@Summary	List available promotions
 //	@Tags		promotions
 //	@Produce	json
@@ -129,6 +136,7 @@ func (h *PlatformHandler) PromotionsList(c *gin.Context) {
 }
 
 // ApplyPromotion godoc
+//
 //	@Summary	Apply a promotion (stub)
 //	@Tags		promotions
 //	@Produce	json
@@ -140,6 +148,7 @@ func (h *PlatformHandler) ApplyPromotion(c *gin.Context) {
 }
 
 // PlacesAutocomplete godoc
+//
 //	@Summary	Autocomplete places near coordinates
 //	@Tags		places
 //	@Produce	json
@@ -202,6 +211,7 @@ func (h *PlatformHandler) PlacesAutocomplete(c *gin.Context) {
 }
 
 // PlacesGeocode godoc
+//
 //	@Summary		Reverse-geocode a coordinate into a place
 //	@Description	Returns the nearest known place to the given coordinates, used to turn a map pin into an address.
 //	@Tags			places
@@ -250,6 +260,7 @@ func (h *PlatformHandler) PlacesGeocode(c *gin.Context) {
 }
 
 // PlacesDetails godoc
+//
 //	@Summary	Get place details (stub)
 //	@Tags		places
 //	@Produce	json
@@ -261,33 +272,96 @@ func (h *PlatformHandler) PlacesDetails(c *gin.Context) {
 }
 
 // EstimatesPrice godoc
-//	@Summary	Get price estimates by vehicle type
-//	@Tags		estimates
-//	@Produce	json
-//	@Security	BearerAuth
-//	@Success	200	{object}	EstimatesPriceResponse
-//	@Router		/api/v1/estimates/price [get]
+//
+//	@Summary		Get price estimates by vehicle type
+//	@Description	Computes base + distance + time fare with surge for each vehicle type, using the live routing engine.
+//	@Tags			estimates
+//	@Produce		json
+//	@Security		BearerAuth
+//	@Param			pickup_lat		query		number	true	"Pickup latitude"
+//	@Param			pickup_lng		query		number	true	"Pickup longitude"
+//	@Param			dropoff_lat		query		number	true	"Dropoff latitude"
+//	@Param			dropoff_lng		query		number	true	"Dropoff longitude"
+//	@Param			vehicle_type	query		string	false	"Limit to one type (sedan|suv|luxury); all types when omitted"
+//	@Success		200				{object}	EstimatesPriceResponse
+//	@Failure		422				{object}	ErrorResponse	"Invalid parameters"
+//	@Failure		500				{object}	ErrorResponse	"Failed to compute estimate"
+//	@Router			/api/v1/estimates/price [get]
 func (h *PlatformHandler) EstimatesPrice(c *gin.Context) {
-	c.JSON(http.StatusOK, gin.H{
-		"estimates": []gin.H{
-			{"vehicle_type": "sedan", "base_fare": 5.0, "distance_rate": 1.5, "time_rate": 0.5},
-			{"vehicle_type": "suv", "base_fare": 8.0, "distance_rate": 2.0, "time_rate": 0.7},
-		},
-	})
+	pickupLat, pickupLng, dropoffLat, dropoffLng, ok := h.parseCoordinates(c, pickupDropoffKeys)
+	if !ok {
+		return
+	}
+
+	vehicleTypes := []string{"sedan", "suv", "luxury"}
+	if vt := c.Query("vehicle_type"); vt != "" {
+		switch vt {
+		case "sedan", "suv", "luxury":
+			vehicleTypes = []string{vt}
+		default:
+			c.JSON(http.StatusUnprocessableEntity, gin.H{"error": gin.H{"code": "VALIDATION_ERROR", "message": "invalid vehicle_type"}})
+			return
+		}
+	}
+
+	estimates := make([]Estimate, 0, len(vehicleTypes))
+	for _, vt := range vehicleTypes {
+		est, err := h.fareSvc.CalculateEstimate(pickupLat, pickupLng, dropoffLat, dropoffLng, vt)
+		if err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": gin.H{"code": "INTERNAL", "message": "failed to compute estimate"}})
+			return
+		}
+		estimates = append(estimates, Estimate{
+			VehicleType:     vt,
+			BaseFare:        est.BaseFare,
+			DistanceRate:    est.DistanceFare,
+			TimeRate:        est.TimeFare,
+			DistanceFare:    est.DistanceFare,
+			TimeFare:        est.TimeFare,
+			SurgeMultiplier: est.SurgeMultiplier,
+			Total:           est.Total,
+		})
+	}
+
+	c.JSON(http.StatusOK, gin.H{"estimates": estimates})
 }
 
 // EstimatesETA godoc
-//	@Summary	Get an ETA estimate
-//	@Tags		estimates
-//	@Produce	json
-//	@Security	BearerAuth
-//	@Success	200	{object}	EstimatesETAResponse
-//	@Router		/api/v1/estimates/eta [get]
+//
+//	@Summary		Get a route-based ETA estimate
+//	@Description	Returns travel seconds and distance for a route between two coordinates, computed from the live routing engine.
+//	@Tags			estimates
+//	@Produce		json
+//	@Security		BearerAuth
+//	@Param			from_lat	query		number	true	"Origin latitude"
+//	@Param			from_lng	query		number	true	"Origin longitude"
+//	@Param			to_lat		query		number	true	"Destination latitude"
+//	@Param			to_lng		query		number	true	"Destination longitude"
+//	@Success		200			{object}	EstimatesETAResponse
+//	@Failure		422			{object}	ErrorResponse	"Invalid parameters"
+//	@Failure		500			{object}	ErrorResponse	"Routing failed"
+//	@Router			/api/v1/estimates/eta [get]
+//	@Router			/api/v1/geo/eta [get]
 func (h *PlatformHandler) EstimatesETA(c *gin.Context) {
-	c.JSON(http.StatusOK, gin.H{"eta_seconds": 300, "distance_meters": 5000})
+	fromLat, fromLng, toLat, toLng, ok := h.parseCoordinates(c, fromToKeys)
+	if !ok {
+		return
+	}
+
+	route, err := h.navSvc.GetRoute(fromLat, fromLng, toLat, toLng)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": gin.H{"code": "INTERNAL", "message": "failed to calculate route"}})
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{
+		"eta_seconds":     route.DurationSecs,
+		"distance_meters": route.DistanceMeters,
+	})
 }
 
 // UpdateDestination godoc
+//
 //	@Summary	Update a ride's destination (stub)
 //	@Tags		rides
 //	@Produce	json
@@ -300,6 +374,7 @@ func (h *PlatformHandler) UpdateDestination(c *gin.Context) {
 }
 
 // NavigationRoute godoc
+//
 //	@Summary	Get a route between two coordinates
 //	@Tags		navigation
 //	@Produce	json
@@ -345,6 +420,7 @@ func (h *PlatformHandler) NavigationRoute(c *gin.Context) {
 }
 
 // Heatmap godoc
+//
 //	@Summary	Get a heatmap tile (stub)
 //	@Tags		platform
 //	@Produce	json
@@ -356,6 +432,7 @@ func (h *PlatformHandler) Heatmap(c *gin.Context) {
 }
 
 // DriverRideQueue godoc
+//
 //	@Summary	Get the driver's ride queue
 //	@Tags		driver
 //	@Produce	json
@@ -367,6 +444,7 @@ func (h *PlatformHandler) DriverRideQueue(c *gin.Context) {
 }
 
 // DriverRiderInfo godoc
+//
 //	@Summary	Get rider info for a driver's ride
 //	@Tags		driver
 //	@Produce	json
@@ -379,6 +457,7 @@ func (h *PlatformHandler) DriverRiderInfo(c *gin.Context) {
 }
 
 // ArrivalNotification godoc
+//
 //	@Summary	Notify the rider that the driver has arrived
 //	@Tags		driver
 //	@Produce	json
@@ -391,6 +470,7 @@ func (h *PlatformHandler) ArrivalNotification(c *gin.Context) {
 }
 
 // Version godoc
+//
 //	@Summary	Get the API version
 //	@Tags		platform
 //	@Produce	json
@@ -401,6 +481,7 @@ func (h *PlatformHandler) Version(c *gin.Context) {
 }
 
 // StubPayment godoc
+//
 //	@Summary		Not yet implemented (stub)
 //	@Description	Placeholder for endpoints pending payment integration and other future work.
 //	@Tags			platform
@@ -413,4 +494,41 @@ func (h *PlatformHandler) StubPayment(c *gin.Context) {
 		"status":  "stub",
 		"message": "Payment integration pending",
 	})
+}
+
+// paramSet defines the four query-string keys that name lat/lng for two points.
+type paramSet struct {
+	lat1 string // e.g. "pickup_lat" or "from_lat"
+	lng1 string
+	lat2 string
+	lng2 string
+}
+
+var (
+	pickupDropoffKeys = paramSet{"pickup_lat", "pickup_lng", "dropoff_lat", "dropoff_lng"}
+	fromToKeys        = paramSet{"from_lat", "from_lng", "to_lat", "to_lng"}
+)
+
+// parseCoordinates parses two lat/lng pairs from query params using the given
+// key set. On the first missing/invalid value it writes the 422 response and
+// returns ok=false.
+func (h *PlatformHandler) parseCoordinates(c *gin.Context, keys paramSet) (lat1, lng1, lat2, lng2 float64, ok bool) {
+	for _, key := range [4]string{keys.lat1, keys.lng1, keys.lat2, keys.lng2} {
+		v, err := strconv.ParseFloat(c.Query(key), 64)
+		if err != nil {
+			c.JSON(http.StatusUnprocessableEntity, gin.H{"error": gin.H{"code": "VALIDATION_ERROR", "message": "invalid " + key}})
+			return 0, 0, 0, 0, false
+		}
+		switch key {
+		case keys.lat1:
+			lat1 = v
+		case keys.lng1:
+			lng1 = v
+		case keys.lat2:
+			lat2 = v
+		case keys.lng2:
+			lng2 = v
+		}
+	}
+	return lat1, lng1, lat2, lng2, true
 }

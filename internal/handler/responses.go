@@ -114,10 +114,14 @@ type GeocodeResponse struct {
 
 // Estimate is a single price estimate by vehicle type.
 type Estimate struct {
-	VehicleType  string  `json:"vehicle_type"`
-	BaseFare     float64 `json:"base_fare"`
-	DistanceRate float64 `json:"distance_rate"`
-	TimeRate     float64 `json:"time_rate"`
+	VehicleType     string  `json:"vehicle_type"`
+	BaseFare        float64 `json:"base_fare"`
+	DistanceRate    float64 `json:"distance_rate"`
+	TimeRate        float64 `json:"time_rate"`
+	DistanceFare    float64 `json:"distance_fare"`
+	TimeFare        float64 `json:"time_fare"`
+	SurgeMultiplier float64 `json:"surge_multiplier"`
+	Total           float64 `json:"total"`
 }
 
 // EstimatesPriceResponse is returned by GET /api/v1/estimates/price.
