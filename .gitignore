@@ -3,4 +3,5 @@ build/
 *.osm.pbf
 *.geojson
 .env
-.exe
+*.exe
+*.out

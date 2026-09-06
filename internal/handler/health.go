@@ -15,10 +15,25 @@ func NewHealthHandler(db *sqlx.DB) *HealthHandler {
 	return &HealthHandler{db: db}
 }
 
+// Liveness godoc
+//	@Summary		Liveness probe
+//	@Description	Returns the liveness status of the server process.
+//	@Tags			health
+//	@Produce		json
+//	@Success		200	{object}	HealthResponse
+//	@Router			/health [get]
 func (h *HealthHandler) Liveness(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"status": "ok"})
 }
 
+// Readiness godoc
+//	@Summary		Readiness probe
+//	@Description	Returns readiness status including dependency checks (database, redis).
+//	@Tags			health
+//	@Produce		json
+//	@Success		200	{object}	ReadinessResponse
+//	@Failure		503	{object}	ReadinessResponse
+//	@Router			/health/ready [get]
 func (h *HealthHandler) Readiness(c *gin.Context) {
 	status := "ok"
 	code := http.StatusOK

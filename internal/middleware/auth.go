@@ -1,6 +1,7 @@
 package middleware
 
 import (
+	"log"
 	"net/http"
 	"strings"
 
@@ -20,6 +21,7 @@ func AuthRequired(svc *service.AuthService) gin.HandlerFunc {
 		}
 
 		token := strings.TrimPrefix(header, "Bearer ")
+		log.Printf("[DEBUG] AUTH header %s", header)
 		if token == header {
 			c.AbortWithStatusJSON(http.StatusUnauthorized, gin.H{
 				"error": gin.H{"code": "UNAUTHORIZED", "message": "invalid authorization format"},

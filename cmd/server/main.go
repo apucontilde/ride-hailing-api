@@ -1,3 +1,12 @@
+//	@title						Ride-Hailing API
+//	@version					0.1.0
+//	@description				Go + Gin ride-hailing backend: auth, rides, driver dispatch, geolocation, navigation, and places.
+//	@host						localhost:8080
+//	@BasePath					/
+//	@securityDefinitions.apikey	BearerAuth
+//	@in							header
+//	@name						Authorization
+//	@description				JWT access token. Include as `Authorization: Bearer <token>`.
 package main
 
 import (

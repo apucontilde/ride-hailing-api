@@ -35,6 +35,27 @@ type rideRequest struct {
 	VehicleType    string  `json:"vehicle_type"`
 }
 
+type updateRideStatusRequest struct {
+	Status string `json:"status" binding:"required"`
+}
+
+type rateRideRequest struct {
+	Score   int    `json:"score" binding:"required"`
+	Comment string `json:"comment"`
+}
+
+// CreateRide godoc
+//	@Summary		Request a new ride
+//	@Description	Creates a ride request and dispatches it to nearby drivers.
+//	@Tags			rides
+//	@Accept			json
+//	@Produce		json
+//	@Security		BearerAuth
+//	@Param			body	body		rideRequest	true	"Ride request"
+//	@Success		201		{object}	RideResponse
+//	@Failure		422		{object}	ErrorResponse	"Validation error"
+//	@Failure		500		{object}	ErrorResponse	"Failed to create ride"
+//	@Router			/api/v1/rides [post]
 func (h *RideHandler) CreateRide(c *gin.Context) {
 	riderID, _ := c.Get("user_id")
 
@@ -68,6 +89,14 @@ func (h *RideHandler) CreateRide(c *gin.Context) {
 	c.JSON(http.StatusCreated, gin.H{"ride": ride})
 }
 
+// GetCurrentRide godoc
+//	@Summary		Get the current ride for the authenticated user
+//	@Description	Returns the active ride for the current rider or driver, or `null`.
+//	@Tags			rides
+//	@Produce		json
+//	@Security		BearerAuth
+//	@Success		200	{object}	RideResponse
+//	@Router			/api/v1/rides/current [get]
 func (h *RideHandler) GetCurrentRide(c *gin.Context) {
 	userID, _ := c.Get("user_id")
 	role, _ := c.Get("role")
@@ -89,6 +118,15 @@ func (h *RideHandler) GetCurrentRide(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"ride": ride})
 }
 
+// GetRideByID godoc
+//	@Summary	Get a ride by ID
+//	@Tags		rides
+//	@Produce	json
+//	@Security	BearerAuth
+//	@Param		id	path		string	true	"Ride ID"
+//	@Success	200	{object}	RideResponse
+//	@Failure	404	{object}	ErrorResponse	"Ride not found"
+//	@Router		/api/v1/rides/{id} [get]
 func (h *RideHandler) GetRideByID(c *gin.Context) {
 	id := c.Param("id")
 	ride, err := h.rideRepo.FindByID(id)
@@ -99,6 +137,17 @@ func (h *RideHandler) GetRideByID(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"ride": ride})
 }
 
+// GetRideHistory godoc
+//	@Summary		List ride history
+//	@Description	Returns a paginated list of past rides for the current rider or driver.
+//	@Tags			rides
+//	@Produce		json
+//	@Security		BearerAuth
+//	@Param			page		query		int	false	"Page number"				default(1)
+//	@Param			per_page	query		int	false	"Items per page (max 50)"	default(20)
+//	@Success		200			{object}	RideListResponse
+//	@Failure		500			{object}	ErrorResponse	"Query failed"
+//	@Router			/api/v1/rides/history [get]
 func (h *RideHandler) GetRideHistory(c *gin.Context) {
 	userID, _ := c.Get("user_id")
 	role, _ := c.Get("role")
@@ -139,6 +188,15 @@ func (h *RideHandler) GetRideHistory(c *gin.Context) {
 	})
 }
 
+// CancelRide godoc
+//	@Summary	Cancel a ride
+//	@Tags		rides
+//	@Produce	json
+//	@Security	BearerAuth
+//	@Param		id	path		string	true	"Ride ID"
+//	@Success	200	{object}	RideResponse
+//	@Failure	400	{object}	ErrorResponse	"Ride cannot be cancelled"
+//	@Router		/api/v1/rides/{id}/cancel [post]
 func (h *RideHandler) CancelRide(c *gin.Context) {
 	id := c.Param("id")
 	actor, _ := c.Get("role")
@@ -152,13 +210,23 @@ func (h *RideHandler) CancelRide(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"ride": ride})
 }
 
+// AdvanceStatus godoc
+//	@Summary	Advance a ride to the next status
+//	@Tags		rides
+//	@Accept		json
+//	@Produce	json
+//	@Security	BearerAuth
+//	@Param		id		path		string					true	"Ride ID"
+//	@Param		body	body		updateRideStatusRequest	true	"New status"
+//	@Success	200		{object}	RideResponse
+//	@Failure	400		{object}	ErrorResponse	"Invalid status transition"
+//	@Failure	422		{object}	ErrorResponse	"Validation error"
+//	@Router		/api/v1/rides/{id}/status [put]
 func (h *RideHandler) AdvanceStatus(c *gin.Context) {
 	id := c.Param("id")
 	actor, _ := c.Get("role")
 
-	var req struct {
-		Status string `json:"status" binding:"required"`
-	}
+	var req updateRideStatusRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
 		c.JSON(http.StatusUnprocessableEntity, gin.H{"error": gin.H{"code": "VALIDATION_ERROR", "message": err.Error()}})
 		return
@@ -173,15 +241,26 @@ func (h *RideHandler) AdvanceStatus(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"ride": ride})
 }
 
+// RateRide godoc
+//	@Summary		Rate a completed ride
+//	@Description	Submits a 1-5 rating for the other party on a completed ride.
+//	@Tags			rides
+//	@Accept			json
+//	@Produce		json
+//	@Security		BearerAuth
+//	@Param			id		path		string			true	"Ride ID"
+//	@Param			body	body		rateRideRequest	true	"Rating payload"
+//	@Success		200		{object}	MessageResponse
+//	@Failure		400		{object}	ErrorResponse	"Invalid rating"
+//	@Failure		404		{object}	ErrorResponse	"Ride not found"
+//	@Failure		422		{object}	ErrorResponse	"Validation error"
+//	@Router			/api/v1/rides/{id}/rate [post]
 func (h *RideHandler) RateRide(c *gin.Context) {
 	id := c.Param("id")
 	actor, _ := c.Get("role")
 	userID, _ := c.Get("user_id")
 
-	var req struct {
-		Score   int    `json:"score" binding:"required"`
-		Comment string `json:"comment"`
-	}
+	var req rateRideRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
 		c.JSON(http.StatusUnprocessableEntity, gin.H{"error": gin.H{"code": "VALIDATION_ERROR", "message": err.Error()}})
 		return
@@ -213,6 +292,16 @@ func (h *RideHandler) RateRide(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"message": "rating submitted"})
 }
 
+// AcceptRide godoc
+//	@Summary	Accept a dispatched ride offer
+//	@Tags		rides
+//	@Produce	json
+//	@Security	BearerAuth
+//	@Param		id	path		string	true	"Ride ID"
+//	@Success	200	{object}	MessageResponse
+//	@Failure	400	{object}	ErrorResponse	"Cannot accept ride"
+//	@Failure	409	{object}	ErrorResponse	"Ride already taken"
+//	@Router		/api/v1/rides/{id}/accept [post]
 func (h *RideHandler) AcceptRide(c *gin.Context) {
 	id := c.Param("id")
 	driverID, _ := c.Get("user_id")
@@ -229,6 +318,15 @@ func (h *RideHandler) AcceptRide(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"message": "ride accepted"})
 }
 
+// GetRideReceipt godoc
+//	@Summary	Get the fare breakdown for a ride
+//	@Tags		rides
+//	@Produce	json
+//	@Security	BearerAuth
+//	@Param		id	path		string	true	"Ride ID"
+//	@Success	200	{object}	RideReceiptResponse
+//	@Failure	404	{object}	ErrorResponse	"Ride not found"
+//	@Router		/api/v1/rides/{id}/receipt [get]
 func (h *RideHandler) GetRideReceipt(c *gin.Context) {
 	id := c.Param("id")
 	ride, err := h.rideRepo.FindByID(id)
@@ -248,6 +346,14 @@ func (h *RideHandler) GetRideReceipt(c *gin.Context) {
 	})
 }
 
+// TipDriver godoc
+//	@Summary	Tip a driver (stub)
+//	@Tags		rides
+//	@Produce	json
+//	@Security	BearerAuth
+//	@Param		id	path		string	true	"Ride ID"
+//	@Success	200	{object}	StubResponse
+//	@Router		/api/v1/rides/{id}/tip [post]
 func (h *RideHandler) TipDriver(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{
 		"status":  "stub",

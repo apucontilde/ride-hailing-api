@@ -19,6 +19,25 @@ func NewRiderHandler(riderService *service.RiderService, userRepo repository.Use
 	return &RiderHandler{riderService: riderService, userRepo: userRepo}
 }
 
+type updateRiderRequest struct {
+	FirstName string `json:"first_name"`
+	LastName  string `json:"last_name"`
+	PhotoURL  string `json:"photo_url"`
+	Phone     string `json:"phone"`
+}
+
+type updateStatusRequest struct {
+	Status string `json:"status" binding:"required"`
+}
+
+// GetProfile godoc
+//	@Summary	Get the rider profile
+//	@Tags		rider
+//	@Produce	json
+//	@Security	BearerAuth
+//	@Success	200	{object}	RiderProfileResponse
+//	@Failure	404	{object}	ErrorResponse	"Rider not found"
+//	@Router		/api/v1/rider/me [get]
 func (h *RiderHandler) GetProfile(c *gin.Context) {
 	userID, _ := c.Get("user_id")
 	rider, err := h.userRepo.FindRiderByID(userID.(string))
@@ -33,14 +52,19 @@ func (h *RiderHandler) GetProfile(c *gin.Context) {
 	})
 }
 
+// UpdateProfile godoc
+//	@Summary	Update the rider profile
+//	@Tags		rider
+//	@Accept		json
+//	@Produce	json
+//	@Security	BearerAuth
+//	@Param		body	body		updateRiderRequest	true	"Profile fields to update"
+//	@Success	200		{object}	RiderResponse
+//	@Failure	422		{object}	ErrorResponse	"Validation error"
+//	@Router		/api/v1/rider/me [put]
 func (h *RiderHandler) UpdateProfile(c *gin.Context) {
 	userID, _ := c.Get("user_id")
-	var body struct {
-		FirstName string `json:"first_name"`
-		LastName  string `json:"last_name"`
-		PhotoURL  string `json:"photo_url"`
-		Phone     string `json:"phone"`
-	}
+	var body updateRiderRequest
 	if err := c.ShouldBindJSON(&body); err != nil {
 		c.JSON(http.StatusUnprocessableEntity, gin.H{"error": gin.H{"code": "VALIDATION_ERROR", "message": err.Error()}})
 		return
@@ -61,11 +85,19 @@ func (h *RiderHandler) UpdateProfile(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"rider": rider})
 }
 
+// UpdateStatus godoc
+//	@Summary	Update the rider status
+//	@Tags		rider
+//	@Accept		json
+//	@Produce	json
+//	@Security	BearerAuth
+//	@Param		body	body		updateStatusRequest	true	"New status (e.g. idle)"
+//	@Success	200		{object}	RiderResponse
+//	@Failure	422		{object}	ErrorResponse	"Validation error"
+//	@Router		/api/v1/rider/me/status [put]
 func (h *RiderHandler) UpdateStatus(c *gin.Context) {
 	userID, _ := c.Get("user_id")
-	var body struct {
-		Status string `json:"status" binding:"required"`
-	}
+	var body updateStatusRequest
 	if err := c.ShouldBindJSON(&body); err != nil {
 		c.JSON(http.StatusUnprocessableEntity, gin.H{"error": gin.H{"code": "VALIDATION_ERROR", "message": err.Error()}})
 		return
@@ -77,6 +109,14 @@ func (h *RiderHandler) UpdateStatus(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"rider": rider})
 }
 
+// DeleteAccount godoc
+//	@Summary		Deactivate the rider account
+//	@Description	Soft-deletes the authenticated user's account.
+//	@Tags			rider
+//	@Produce		json
+//	@Security		BearerAuth
+//	@Success		200	{object}	MessageResponse
+//	@Router			/api/v1/rider/me [delete]
 func (h *RiderHandler) DeleteAccount(c *gin.Context) {
 	userID, _ := c.Get("user_id")
 	h.userRepo.SoftDeleteUser(userID.(string))

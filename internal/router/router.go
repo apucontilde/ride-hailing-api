@@ -1,9 +1,15 @@
 package router
 
 import (
+	"net/http"
+	"os"
+
 	"github.com/gin-contrib/cors"
 	"github.com/gin-gonic/gin"
 	"github.com/jmoiron/sqlx"
+	swaggerFiles "github.com/swaggo/files"
+	ginSwagger "github.com/swaggo/gin-swagger"
+	"github.com/swaggo/swag"
 
 	"ride-hailing-api/internal/config"
 	"ride-hailing-api/internal/handler"
@@ -12,6 +18,11 @@ import (
 	"ride-hailing-api/internal/service"
 	"ride-hailing-api/internal/websocket"
 )
+
+// swaggerDoc serves the spec registered with the swaggo/swag registry.
+type swaggerDoc string
+
+func (d swaggerDoc) ReadDoc() string { return string(d) }
 
 func Setup(cfg *config.Config, db *sqlx.DB) *gin.Engine {
 	return SetupWithRepos(cfg,
@@ -199,6 +210,17 @@ func SetupWithRepos(cfg *config.Config, userRepo repository.UserRepository, ride
 
 	// WebSocket endpoint (hub created above)
 	r.GET("/ws", authMw, wsHub.HandleWS)
+
+	// OpenAPI / Swagger UI (serves the generated docs/swagger.json)
+	if swag.GetSwagger(swag.Name) == nil {
+		if spec, err := os.ReadFile("docs/swagger.json"); err == nil {
+			swag.Register(swag.Name, swaggerDoc(spec))
+		}
+	}
+	r.GET("/docs", func(c *gin.Context) {
+		c.Redirect(http.StatusMovedPermanently, "/docs/index.html")
+	})
+	r.GET("/docs/*any", ginSwagger.WrapHandler(swaggerFiles.Handler))
 
 	return r
 }

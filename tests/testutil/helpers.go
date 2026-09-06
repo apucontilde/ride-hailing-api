@@ -221,6 +221,14 @@ func ParseJSON(t *testing.T, data []byte, v interface{}) {
 	}
 }
 
+// DialWS connects a websocket for the authenticated user and returns only once
+// the server has finished registering the client and entered its read loop.
+// The /ws upgrader replies 101 as soon as the handshake completes, but
+// hub.HandleWS registers the client a moment later; any push sent before that
+// (e.g. the pending ride.updated) is silently dropped and the test's read
+// times out. Waiting for a pong — which the server can only send from inside
+// its read loop — makes registration deterministic and is the fix for this
+// suite's intermittent WS read timeouts.
 func (ts *TestServer) DialWS(t *testing.T, token string) *websocket.Conn {
 	t.Helper()
 	wsURL := "ws" + ts.URL[4:] + "/ws"
@@ -230,7 +238,23 @@ func (ts *TestServer) DialWS(t *testing.T, token string) *websocket.Conn {
 	if err != nil {
 		t.Fatalf("websocket dial failed: %v", err)
 	}
-	return conn
+	if err := conn.WriteJSON(map[string]string{"type": "ping"}); err != nil {
+		t.Fatalf("readiness ping failed: %v", err)
+	}
+	conn.SetReadDeadline(time.Now().Add(5 * time.Second))
+	for {
+		_, msgBytes, err := conn.ReadMessage()
+		if err != nil {
+			t.Fatalf("readiness ping failed: %v", err)
+		}
+		var msg map[string]interface{}
+		if err := json.Unmarshal(msgBytes, &msg); err != nil {
+			t.Fatalf("failed to parse ws message: %v", err)
+		}
+		if msg["type"] == "pong" {
+			return conn
+		}
+	}
 }
 
 func ReadWSMessage(t *testing.T, conn *websocket.Conn) map[string]interface{} {

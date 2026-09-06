@@ -22,12 +22,34 @@ func NewPlatformHandler(navSvc *service.NavigationService, placesRepo repository
 	return &PlatformHandler{navSvc: navSvc, placesRepo: placesRepo, maxRadiusM: maxRadiusM, defaultLimit: defaultLimit}
 }
 
+type sosRequest struct {
+	Lat float64 `json:"lat" binding:"required"`
+	Lng float64 `json:"lng" binding:"required"`
+}
+
+type feedbackRequest struct {
+	Message string  `json:"message" binding:"required"`
+	RideID  *string `json:"ride_id"`
+}
+
+type deviceRegisterRequest struct {
+	Token    string `json:"token" binding:"required"`
+	Platform string `json:"platform" binding:"required"`
+}
+
+// SOS godoc
+//	@Summary	Send an SOS alert
+//	@Tags		platform
+//	@Accept		json
+//	@Produce	json
+//	@Security	BearerAuth
+//	@Param		body	body		sosRequest	true	"SOS request"
+//	@Success	201		{object}	SOSResponse
+//	@Failure	422		{object}	ErrorResponse	"Validation error"
+//	@Router		/api/v1/sos [post]
 func (h *PlatformHandler) SOS(c *gin.Context) {
 	userID, _ := c.Get("user_id")
-	var req struct {
-		Lat float64 `json:"lat" binding:"required"`
-		Lng float64 `json:"lng" binding:"required"`
-	}
+	var req sosRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
 		c.JSON(http.StatusUnprocessableEntity, gin.H{"error": gin.H{"code": "VALIDATION_ERROR", "message": err.Error()}})
 		return
@@ -44,11 +66,18 @@ func (h *PlatformHandler) SOS(c *gin.Context) {
 	})
 }
 
+// Feedback godoc
+//	@Summary	Submit user feedback
+//	@Tags		platform
+//	@Accept		json
+//	@Produce	json
+//	@Security	BearerAuth
+//	@Param		body	body		feedbackRequest	true	"Feedback request"
+//	@Success	201		{object}	MessageResponse
+//	@Failure	422		{object}	ErrorResponse	"Validation error"
+//	@Router		/api/v1/feedback [post]
 func (h *PlatformHandler) Feedback(c *gin.Context) {
-	var req struct {
-		Message string  `json:"message" binding:"required"`
-		RideID  *string `json:"ride_id"`
-	}
+	var req feedbackRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
 		c.JSON(http.StatusUnprocessableEntity, gin.H{"error": gin.H{"code": "VALIDATION_ERROR", "message": err.Error()}})
 		return
@@ -57,11 +86,18 @@ func (h *PlatformHandler) Feedback(c *gin.Context) {
 	c.JSON(http.StatusCreated, gin.H{"message": "feedback submitted"})
 }
 
+// DeviceRegister godoc
+//	@Summary	Register a push notification device
+//	@Tags		platform
+//	@Accept		json
+//	@Produce	json
+//	@Security	BearerAuth
+//	@Param		body	body		deviceRegisterRequest	true	"Device registration request"
+//	@Success	201		{object}	MessageResponse
+//	@Failure	422		{object}	ErrorResponse	"Validation error"
+//	@Router		/api/v1/devices [post]
 func (h *PlatformHandler) DeviceRegister(c *gin.Context) {
-	var req struct {
-		Token    string `json:"token" binding:"required"`
-		Platform string `json:"platform" binding:"required"`
-	}
+	var req deviceRegisterRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
 		c.JSON(http.StatusUnprocessableEntity, gin.H{"error": gin.H{"code": "VALIDATION_ERROR", "message": err.Error()}})
 		return
@@ -70,18 +106,53 @@ func (h *PlatformHandler) DeviceRegister(c *gin.Context) {
 	c.JSON(http.StatusCreated, gin.H{"message": "device registered"})
 }
 
+// DeviceUnregister godoc
+//	@Summary	Unregister a push notification device
+//	@Tags		platform
+//	@Security	BearerAuth
+//	@Param		token	path	string	true	"Device token"
+//	@Success	204		"No content"
+//	@Router		/api/v1/devices/{token} [delete]
 func (h *PlatformHandler) DeviceUnregister(c *gin.Context) {
 	c.JSON(http.StatusNoContent, nil)
 }
 
+// PromotionsList godoc
+//	@Summary	List available promotions
+//	@Tags		promotions
+//	@Produce	json
+//	@Security	BearerAuth
+//	@Success	200	{object}	PromotionsResponse
+//	@Router		/api/v1/promotions [get]
 func (h *PlatformHandler) PromotionsList(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"promotions": []interface{}{}})
 }
 
+// ApplyPromotion godoc
+//	@Summary	Apply a promotion (stub)
+//	@Tags		promotions
+//	@Produce	json
+//	@Security	BearerAuth
+//	@Success	200	{object}	MessageResponse
+//	@Router		/api/v1/promotions/apply [post]
 func (h *PlatformHandler) ApplyPromotion(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"message": "promotion applied (stub)"})
 }
 
+// PlacesAutocomplete godoc
+//	@Summary	Autocomplete places near coordinates
+//	@Tags		places
+//	@Produce	json
+//	@Security	BearerAuth
+//	@Param		lat		query		number	true	"Latitude"
+//	@Param		lng		query		number	true	"Longitude"
+//	@Param		q		query		string	false	"Free-text search query"
+//	@Param		radius	query		number	false	"Search radius in meters"	default(1000)
+//	@Param		limit	query		int		false	"Maximum results (max 50)"	default(10)
+//	@Success	200		{object}	PlacesResponse
+//	@Failure	422		{object}	ErrorResponse	"Invalid parameters"
+//	@Failure	500		{object}	ErrorResponse	"Query failed"
+//	@Router		/api/v1/places/autocomplete [get]
 func (h *PlatformHandler) PlacesAutocomplete(c *gin.Context) {
 	log.Printf("[places] autocomplete request lat=%s lng=%s radius=%s q=%q limit=%s",
 		c.Query("lat"), c.Query("lng"), c.Query("radius"), c.Query("q"), c.Query("limit"))
@@ -130,14 +201,35 @@ func (h *PlatformHandler) PlacesAutocomplete(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"places": places})
 }
 
+// PlacesGeocode godoc
+//	@Summary	Geocode a coordinate into a place (stub)
+//	@Tags		places
+//	@Produce	json
+//	@Security	BearerAuth
+//	@Success	200	{object}	PlacesResponse
+//	@Router		/api/v1/places/geocode [get]
 func (h *PlatformHandler) PlacesGeocode(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"place": nil})
 }
 
+// PlacesDetails godoc
+//	@Summary	Get place details (stub)
+//	@Tags		places
+//	@Produce	json
+//	@Security	BearerAuth
+//	@Success	200	{object}	PlacesResponse
+//	@Router		/api/v1/places/details [get]
 func (h *PlatformHandler) PlacesDetails(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"place": nil})
 }
 
+// EstimatesPrice godoc
+//	@Summary	Get price estimates by vehicle type
+//	@Tags		estimates
+//	@Produce	json
+//	@Security	BearerAuth
+//	@Success	200	{object}	EstimatesPriceResponse
+//	@Router		/api/v1/estimates/price [get]
 func (h *PlatformHandler) EstimatesPrice(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{
 		"estimates": []gin.H{
@@ -147,14 +239,41 @@ func (h *PlatformHandler) EstimatesPrice(c *gin.Context) {
 	})
 }
 
+// EstimatesETA godoc
+//	@Summary	Get an ETA estimate
+//	@Tags		estimates
+//	@Produce	json
+//	@Security	BearerAuth
+//	@Success	200	{object}	EstimatesETAResponse
+//	@Router		/api/v1/estimates/eta [get]
 func (h *PlatformHandler) EstimatesETA(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"eta_seconds": 300, "distance_meters": 5000})
 }
 
+// UpdateDestination godoc
+//	@Summary	Update a ride's destination (stub)
+//	@Tags		rides
+//	@Produce	json
+//	@Security	BearerAuth
+//	@Param		id	path		string	true	"Ride ID"
+//	@Success	200	{object}	MessageResponse
+//	@Router		/api/v1/rides/{id}/destination [put]
 func (h *PlatformHandler) UpdateDestination(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"message": "destination updated"})
 }
 
+// NavigationRoute godoc
+//	@Summary	Get a route between two coordinates
+//	@Tags		navigation
+//	@Produce	json
+//	@Security	BearerAuth
+//	@Param		from_lat	query		number	true	"Origin latitude"
+//	@Param		from_lng	query		number	true	"Origin longitude"
+//	@Param		to_lat		query		number	true	"Destination latitude"
+//	@Param		to_lng		query		number	true	"Destination longitude"
+//	@Success	200			{object}	NavigationRouteResponse
+//	@Failure	500			{object}	ErrorResponse	"Routing failed"
+//	@Router		/api/v1/navigation/route [get]
 func (h *PlatformHandler) NavigationRoute(c *gin.Context) {
 	fromLat := c.Query("from_lat")
 	fromLng := c.Query("from_lng")
@@ -188,26 +307,70 @@ func (h *PlatformHandler) NavigationRoute(c *gin.Context) {
 	})
 }
 
+// Heatmap godoc
+//	@Summary	Get a heatmap tile (stub)
+//	@Tags		platform
+//	@Produce	json
+//	@Security	BearerAuth
+//	@Success	200	{object}	HeatmapResponse
+//	@Router		/api/v1/heatmap [get]
 func (h *PlatformHandler) Heatmap(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"tiles": "data:image/png;base64,..."})
 }
 
+// DriverRideQueue godoc
+//	@Summary	Get the driver's ride queue
+//	@Tags		driver
+//	@Produce	json
+//	@Security	BearerAuth
+//	@Success	200	{object}	QueueResponse
+//	@Router		/api/v1/driver/rides/queue [get]
 func (h *PlatformHandler) DriverRideQueue(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"queue": []interface{}{}})
 }
 
+// DriverRiderInfo godoc
+//	@Summary	Get rider info for a driver's ride
+//	@Tags		driver
+//	@Produce	json
+//	@Security	BearerAuth
+//	@Param		id	path		string	true	"Ride ID"
+//	@Success	200	{object}	DriverRiderInfoResponse
+//	@Router		/api/v1/driver/rides/{id}/rider [get]
 func (h *PlatformHandler) DriverRiderInfo(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"rider": gin.H{"name": "Rider", "rating": 5.0}})
 }
 
+// ArrivalNotification godoc
+//	@Summary	Notify the rider that the driver has arrived
+//	@Tags		driver
+//	@Produce	json
+//	@Security	BearerAuth
+//	@Param		id	path		string	true	"Ride ID"
+//	@Success	200	{object}	MessageResponse
+//	@Router		/api/v1/driver/rides/{id}/notify-arrival [post]
 func (h *PlatformHandler) ArrivalNotification(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"message": "rider notified of arrival"})
 }
 
+// Version godoc
+//	@Summary	Get the API version
+//	@Tags		platform
+//	@Produce	json
+//	@Success	200	{object}	VersionResponse
+//	@Router		/api/v1/version [get]
 func (h *PlatformHandler) Version(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"version": "0.1.0", "commit": "development"})
 }
 
+// StubPayment godoc
+//	@Summary		Not yet implemented (stub)
+//	@Description	Placeholder for endpoints pending payment integration and other future work.
+//	@Tags			platform
+//	@Produce		json
+//	@Security		BearerAuth
+//	@Success		200	{object}	StubResponse
+//	@Router			/api/v1/rider/me/preferences [get]
 func (h *PlatformHandler) StubPayment(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{
 		"status":  "stub",

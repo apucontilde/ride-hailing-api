@@ -1,0 +1,3367 @@
+{
+  "basePath": "/",
+  "definitions": {
+    "handler.DriverLocationResponse": {
+      "properties": {
+        "driver_id": {
+          "type": "string"
+        },
+        "heading": {
+          "type": "number"
+        },
+        "lat": {
+          "type": "number"
+        },
+        "lng": {
+          "type": "number"
+        },
+        "speed": {
+          "type": "number"
+        },
+        "status": {
+          "type": "string"
+        },
+        "updated_at": {
+          "type": "string"
+        }
+      },
+      "type": "object"
+    },
+    "handler.DriverResponse": {
+      "properties": {
+        "driver": {
+          "$ref": "#/definitions/model.Driver"
+        }
+      },
+      "type": "object"
+    },
+    "handler.DriverRiderInfoResponse": {
+      "properties": {
+        "rider": {
+          "properties": {
+            "name": {
+              "type": "string"
+            },
+            "rating": {
+              "type": "number"
+            }
+          },
+          "type": "object"
+        }
+      },
+      "type": "object"
+    },
+    "handler.ErrorDetail": {
+      "properties": {
+        "code": {
+          "type": "string"
+        },
+        "message": {
+          "type": "string"
+        }
+      },
+      "type": "object"
+    },
+    "handler.ErrorResponse": {
+      "properties": {
+        "error": {
+          "$ref": "#/definitions/handler.ErrorDetail"
+        }
+      },
+      "type": "object"
+    },
+    "handler.Estimate": {
+      "properties": {
+        "base_fare": {
+          "type": "number"
+        },
+        "distance_rate": {
+          "type": "number"
+        },
+        "time_rate": {
+          "type": "number"
+        },
+        "vehicle_type": {
+          "type": "string"
+        }
+      },
+      "type": "object"
+    },
+    "handler.EstimatesETAResponse": {
+      "properties": {
+        "distance_meters": {
+          "type": "integer"
+        },
+        "eta_seconds": {
+          "type": "integer"
+        }
+      },
+      "type": "object"
+    },
+    "handler.EstimatesPriceResponse": {
+      "properties": {
+        "estimates": {
+          "items": {
+            "$ref": "#/definitions/handler.Estimate"
+          },
+          "type": "array"
+        }
+      },
+      "type": "object"
+    },
+    "handler.HealthResponse": {
+      "properties": {
+        "status": {
+          "type": "string"
+        }
+      },
+      "type": "object"
+    },
+    "handler.HeatmapResponse": {
+      "properties": {
+        "tiles": {
+          "type": "string"
+        }
+      },
+      "type": "object"
+    },
+    "handler.LoginResponse": {
+      "properties": {
+        "access_token": {
+          "type": "string"
+        },
+        "refresh_token": {
+          "type": "string"
+        },
+        "user": {
+          "$ref": "#/definitions/handler.UserSummary"
+        }
+      },
+      "type": "object"
+    },
+    "handler.MessageResponse": {
+      "properties": {
+        "message": {
+          "type": "string"
+        }
+      },
+      "type": "object"
+    },
+    "handler.NavigationRouteResponse": {
+      "properties": {
+        "polyline": {
+          "items": {
+            "$ref": "#/definitions/handler.PolylinePoint"
+          },
+          "type": "array"
+        },
+        "total_distance_m": {
+          "type": "number"
+        },
+        "total_duration_s": {
+          "type": "number"
+        }
+      },
+      "type": "object"
+    },
+    "handler.NearbyDriversResponse": {
+      "properties": {
+        "drivers": {}
+      },
+      "type": "object"
+    },
+    "handler.PlacesResponse": {
+      "properties": {
+        "places": {}
+      },
+      "type": "object"
+    },
+    "handler.PolylinePoint": {
+      "properties": {
+        "lat": {
+          "type": "number"
+        },
+        "lng": {
+          "type": "number"
+        }
+      },
+      "type": "object"
+    },
+    "handler.PromotionsResponse": {
+      "properties": {
+        "promotions": {}
+      },
+      "type": "object"
+    },
+    "handler.QueueResponse": {
+      "properties": {
+        "queue": {}
+      },
+      "type": "object"
+    },
+    "handler.ReadinessResponse": {
+      "properties": {
+        "checks": {
+          "additionalProperties": {
+            "type": "string"
+          },
+          "type": "object"
+        },
+        "status": {
+          "type": "string"
+        }
+      },
+      "type": "object"
+    },
+    "handler.RegisterResponse": {
+      "properties": {
+        "user": {
+          "$ref": "#/definitions/handler.UserSummary"
+        }
+      },
+      "type": "object"
+    },
+    "handler.RideListResponse": {
+      "properties": {
+        "page": {
+          "type": "integer"
+        },
+        "per_page": {
+          "type": "integer"
+        },
+        "rides": {},
+        "total": {
+          "type": "integer"
+        },
+        "total_pages": {
+          "type": "integer"
+        }
+      },
+      "type": "object"
+    },
+    "handler.RideReceiptResponse": {
+      "properties": {
+        "receipt": {
+          "properties": {
+            "base_fare": {
+              "type": "number"
+            },
+            "distance_fare": {
+              "type": "number"
+            },
+            "surge_multiplier": {
+              "type": "number"
+            },
+            "time_fare": {
+              "type": "number"
+            },
+            "total": {
+              "type": "number"
+            }
+          },
+          "type": "object"
+        }
+      },
+      "type": "object"
+    },
+    "handler.RideResponse": {
+      "properties": {
+        "ride": {
+          "$ref": "#/definitions/model.Ride"
+        }
+      },
+      "type": "object"
+    },
+    "handler.RiderProfileResponse": {
+      "properties": {
+        "rider": {
+          "$ref": "#/definitions/model.Rider"
+        },
+        "user": {
+          "$ref": "#/definitions/handler.UserSummary"
+        }
+      },
+      "type": "object"
+    },
+    "handler.RiderResponse": {
+      "properties": {
+        "rider": {
+          "$ref": "#/definitions/model.Rider"
+        }
+      },
+      "type": "object"
+    },
+    "handler.SOSResponse": {
+      "properties": {
+        "alert": {
+          "properties": {
+            "lat": {
+              "type": "number"
+            },
+            "lng": {
+              "type": "number"
+            },
+            "status": {
+              "type": "string"
+            },
+            "user_id": {
+              "type": "string"
+            }
+          },
+          "type": "object"
+        },
+        "message": {
+          "type": "string"
+        }
+      },
+      "type": "object"
+    },
+    "handler.StubResponse": {
+      "properties": {
+        "message": {
+          "type": "string"
+        },
+        "status": {
+          "type": "string"
+        }
+      },
+      "type": "object"
+    },
+    "handler.TokenPair": {
+      "properties": {
+        "access_token": {
+          "type": "string"
+        },
+        "refresh_token": {
+          "type": "string"
+        }
+      },
+      "type": "object"
+    },
+    "handler.UserSummary": {
+      "properties": {
+        "email": {
+          "type": "string"
+        },
+        "id": {
+          "type": "string"
+        },
+        "phone": {
+          "type": "string"
+        },
+        "role": {
+          "type": "string"
+        },
+        "status": {
+          "type": "string"
+        }
+      },
+      "type": "object"
+    },
+    "handler.VersionResponse": {
+      "properties": {
+        "commit": {
+          "type": "string"
+        },
+        "version": {
+          "type": "string"
+        }
+      },
+      "type": "object"
+    },
+    "handler.deviceRegisterRequest": {
+      "properties": {
+        "platform": {
+          "type": "string"
+        },
+        "token": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "platform",
+        "token"
+      ],
+      "type": "object"
+    },
+    "handler.feedbackRequest": {
+      "properties": {
+        "message": {
+          "type": "string"
+        },
+        "ride_id": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "message"
+      ],
+      "type": "object"
+    },
+    "handler.forgotPasswordRequest": {
+      "properties": {
+        "email": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "email"
+      ],
+      "type": "object"
+    },
+    "handler.locationUpdate": {
+      "properties": {
+        "heading": {
+          "type": "number"
+        },
+        "lat": {
+          "type": "number"
+        },
+        "lng": {
+          "type": "number"
+        },
+        "speed": {
+          "type": "number"
+        }
+      },
+      "required": [
+        "lat",
+        "lng"
+      ],
+      "type": "object"
+    },
+    "handler.loginRequest": {
+      "properties": {
+        "email": {
+          "type": "string"
+        },
+        "password": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "email",
+        "password"
+      ],
+      "type": "object"
+    },
+    "handler.logoutRequest": {
+      "properties": {
+        "refresh_token": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "refresh_token"
+      ],
+      "type": "object"
+    },
+    "handler.rateRideRequest": {
+      "properties": {
+        "comment": {
+          "type": "string"
+        },
+        "score": {
+          "type": "integer"
+        }
+      },
+      "required": [
+        "score"
+      ],
+      "type": "object"
+    },
+    "handler.refreshRequest": {
+      "properties": {
+        "refresh_token": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "refresh_token"
+      ],
+      "type": "object"
+    },
+    "handler.registerRequest": {
+      "properties": {
+        "email": {
+          "type": "string"
+        },
+        "password": {
+          "minLength": 8,
+          "type": "string"
+        },
+        "phone": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "email",
+        "password",
+        "phone"
+      ],
+      "type": "object"
+    },
+    "handler.resetPasswordRequest": {
+      "properties": {
+        "new_password": {
+          "minLength": 8,
+          "type": "string"
+        },
+        "token": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "new_password",
+        "token"
+      ],
+      "type": "object"
+    },
+    "handler.rideRequest": {
+      "properties": {
+        "dropoff_address": {
+          "type": "string"
+        },
+        "dropoff_lat": {
+          "type": "number"
+        },
+        "dropoff_lng": {
+          "type": "number"
+        },
+        "pickup_address": {
+          "type": "string"
+        },
+        "pickup_lat": {
+          "type": "number"
+        },
+        "pickup_lng": {
+          "type": "number"
+        },
+        "vehicle_type": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "dropoff_lat",
+        "dropoff_lng",
+        "pickup_lat",
+        "pickup_lng"
+      ],
+      "type": "object"
+    },
+    "handler.socialLoginRequest": {
+      "properties": {
+        "provider": {
+          "type": "string"
+        },
+        "token": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "provider",
+        "token"
+      ],
+      "type": "object"
+    },
+    "handler.sosRequest": {
+      "properties": {
+        "lat": {
+          "type": "number"
+        },
+        "lng": {
+          "type": "number"
+        }
+      },
+      "required": [
+        "lat",
+        "lng"
+      ],
+      "type": "object"
+    },
+    "handler.updateDriverRequest": {
+      "properties": {
+        "first_name": {
+          "type": "string"
+        },
+        "last_name": {
+          "type": "string"
+        },
+        "photo_url": {
+          "type": "string"
+        }
+      },
+      "type": "object"
+    },
+    "handler.updateRideStatusRequest": {
+      "properties": {
+        "status": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "status"
+      ],
+      "type": "object"
+    },
+    "handler.updateRiderRequest": {
+      "properties": {
+        "first_name": {
+          "type": "string"
+        },
+        "last_name": {
+          "type": "string"
+        },
+        "phone": {
+          "type": "string"
+        },
+        "photo_url": {
+          "type": "string"
+        }
+      },
+      "type": "object"
+    },
+    "handler.updateStatusRequest": {
+      "properties": {
+        "status": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "status"
+      ],
+      "type": "object"
+    },
+    "handler.verifyCodeRequest": {
+      "properties": {
+        "code": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "code"
+      ],
+      "type": "object"
+    },
+    "model.Driver": {
+      "properties": {
+        "created_at": {
+          "type": "string"
+        },
+        "first_name": {
+          "type": "string"
+        },
+        "last_name": {
+          "type": "string"
+        },
+        "onboarding_status": {
+          "type": "string"
+        },
+        "photo_url": {
+          "type": "string"
+        },
+        "rating_summary": {
+          "type": "string"
+        },
+        "status": {
+          "type": "string"
+        },
+        "updated_at": {
+          "type": "string"
+        },
+        "user_id": {
+          "type": "string"
+        }
+      },
+      "type": "object"
+    },
+    "model.Ride": {
+      "properties": {
+        "accepted_at": {
+          "type": "string"
+        },
+        "base_fare": {
+          "type": "number"
+        },
+        "cancellation_fee": {
+          "type": "number"
+        },
+        "cancelled_at": {
+          "type": "string"
+        },
+        "completed_at": {
+          "type": "string"
+        },
+        "created_at": {
+          "type": "string"
+        },
+        "distance_fare": {
+          "type": "number"
+        },
+        "driver_arrived_at": {
+          "type": "string"
+        },
+        "driver_id": {
+          "type": "string"
+        },
+        "dropoff_address": {
+          "type": "string"
+        },
+        "dropoff_lat": {
+          "type": "number"
+        },
+        "dropoff_lng": {
+          "type": "number"
+        },
+        "id": {
+          "type": "string"
+        },
+        "pickup_address": {
+          "type": "string"
+        },
+        "pickup_lat": {
+          "type": "number"
+        },
+        "pickup_lng": {
+          "type": "number"
+        },
+        "requested_at": {
+          "type": "string"
+        },
+        "rider_id": {
+          "type": "string"
+        },
+        "started_at": {
+          "type": "string"
+        },
+        "status": {
+          "type": "string"
+        },
+        "surge_multiplier": {
+          "type": "number"
+        },
+        "time_fare": {
+          "type": "number"
+        },
+        "total_fare": {
+          "type": "number"
+        },
+        "updated_at": {
+          "type": "string"
+        },
+        "vehicle_type": {
+          "type": "string"
+        }
+      },
+      "type": "object"
+    },
+    "model.Rider": {
+      "properties": {
+        "created_at": {
+          "type": "string"
+        },
+        "first_name": {
+          "type": "string"
+        },
+        "last_name": {
+          "type": "string"
+        },
+        "photo_url": {
+          "type": "string"
+        },
+        "status": {
+          "type": "string"
+        },
+        "updated_at": {
+          "type": "string"
+        },
+        "user_id": {
+          "type": "string"
+        }
+      },
+      "type": "object"
+    }
+  },
+  "host": "localhost:8080",
+  "info": {
+    "contact": {},
+    "description": "Go + Gin ride-hailing backend: auth, rides, driver dispatch, geolocation, navigation, and places.",
+    "title": "Ride-Hailing API",
+    "version": "0.1.0"
+  },
+  "paths": {
+    "/api/v1/auth/forgot-password": {
+      "post": {
+        "consumes": [
+          "application/json"
+        ],
+        "description": "Triggers a password reset flow for the given email. A reset token is returned in development.",
+        "operationId": "postAuth-forgot-password",
+        "parameters": [
+          {
+            "description": "Forgot password request",
+            "in": "body",
+            "name": "body",
+            "required": true,
+            "schema": {
+              "$ref": "#/definitions/handler.forgotPasswordRequest"
+            }
+          }
+        ],
+        "produces": [
+          "application/json"
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "schema": {
+              "$ref": "#/definitions/handler.MessageResponse"
+            }
+          },
+          "422": {
+            "description": "Validation error",
+            "schema": {
+              "$ref": "#/definitions/handler.ErrorResponse"
+            }
+          },
+          "500": {
+            "description": "Request failed",
+            "schema": {
+              "$ref": "#/definitions/handler.ErrorResponse"
+            }
+          }
+        },
+        "summary": "Request a password reset",
+        "tags": [
+          "auth"
+        ]
+      }
+    },
+    "/api/v1/auth/login": {
+      "post": {
+        "consumes": [
+          "application/json"
+        ],
+        "description": "Authenticates credentials and returns access and refresh tokens.",
+        "operationId": "postAuth-login",
+        "parameters": [
+          {
+            "description": "Login request",
+            "in": "body",
+            "name": "body",
+            "required": true,
+            "schema": {
+              "$ref": "#/definitions/handler.loginRequest"
+            }
+          }
+        ],
+        "produces": [
+          "application/json"
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "schema": {
+              "$ref": "#/definitions/handler.LoginResponse"
+            }
+          },
+          "401": {
+            "description": "Invalid credentials",
+            "schema": {
+              "$ref": "#/definitions/handler.ErrorResponse"
+            }
+          },
+          "422": {
+            "description": "Validation error",
+            "schema": {
+              "$ref": "#/definitions/handler.ErrorResponse"
+            }
+          }
+        },
+        "summary": "Log in a user",
+        "tags": [
+          "auth"
+        ]
+      }
+    },
+    "/api/v1/auth/logout": {
+      "post": {
+        "consumes": [
+          "application/json"
+        ],
+        "description": "Revokes the supplied refresh token.",
+        "operationId": "postAuth-logout",
+        "parameters": [
+          {
+            "description": "Logout request",
+            "in": "body",
+            "name": "body",
+            "required": true,
+            "schema": {
+              "$ref": "#/definitions/handler.logoutRequest"
+            }
+          }
+        ],
+        "produces": [
+          "application/json"
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "schema": {
+              "$ref": "#/definitions/handler.MessageResponse"
+            }
+          },
+          "422": {
+            "description": "Validation error",
+            "schema": {
+              "$ref": "#/definitions/handler.ErrorResponse"
+            }
+          },
+          "500": {
+            "description": "Revocation failed",
+            "schema": {
+              "$ref": "#/definitions/handler.ErrorResponse"
+            }
+          }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          }
+        ],
+        "summary": "Log out a user",
+        "tags": [
+          "auth"
+        ]
+      }
+    },
+    "/api/v1/auth/refresh": {
+      "post": {
+        "consumes": [
+          "application/json"
+        ],
+        "description": "Exchanges a valid refresh token for a new token pair.",
+        "operationId": "postAuth-refresh",
+        "parameters": [
+          {
+            "description": "Refresh request",
+            "in": "body",
+            "name": "body",
+            "required": true,
+            "schema": {
+              "$ref": "#/definitions/handler.refreshRequest"
+            }
+          }
+        ],
+        "produces": [
+          "application/json"
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "schema": {
+              "$ref": "#/definitions/handler.TokenPair"
+            }
+          },
+          "401": {
+            "description": "Invalid or expired refresh token",
+            "schema": {
+              "$ref": "#/definitions/handler.ErrorResponse"
+            }
+          },
+          "422": {
+            "description": "Validation error",
+            "schema": {
+              "$ref": "#/definitions/handler.ErrorResponse"
+            }
+          }
+        },
+        "summary": "Refresh an access token",
+        "tags": [
+          "auth"
+        ]
+      }
+    },
+    "/api/v1/auth/register": {
+      "post": {
+        "consumes": [
+          "application/json"
+        ],
+        "description": "Creates a user account with email, phone, and password. The account starts in the `rider` role.",
+        "operationId": "postAuth-register",
+        "parameters": [
+          {
+            "description": "Registration request",
+            "in": "body",
+            "name": "body",
+            "required": true,
+            "schema": {
+              "$ref": "#/definitions/handler.registerRequest"
+            }
+          }
+        ],
+        "produces": [
+          "application/json"
+        ],
+        "responses": {
+          "201": {
+            "description": "Created",
+            "schema": {
+              "$ref": "#/definitions/handler.RegisterResponse"
+            }
+          },
+          "409": {
+            "description": "Account already exists",
+            "schema": {
+              "$ref": "#/definitions/handler.ErrorResponse"
+            }
+          },
+          "422": {
+            "description": "Validation error",
+            "schema": {
+              "$ref": "#/definitions/handler.ErrorResponse"
+            }
+          }
+        },
+        "summary": "Register a new user account",
+        "tags": [
+          "auth"
+        ]
+      }
+    },
+    "/api/v1/auth/reset-password": {
+      "post": {
+        "consumes": [
+          "application/json"
+        ],
+        "description": "Sets a new password using a reset token obtained from forgot-password.",
+        "operationId": "postAuth-reset-password",
+        "parameters": [
+          {
+            "description": "Reset password request",
+            "in": "body",
+            "name": "body",
+            "required": true,
+            "schema": {
+              "$ref": "#/definitions/handler.resetPasswordRequest"
+            }
+          }
+        ],
+        "produces": [
+          "application/json"
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "schema": {
+              "$ref": "#/definitions/handler.MessageResponse"
+            }
+          },
+          "400": {
+            "description": "Invalid or expired token",
+            "schema": {
+              "$ref": "#/definitions/handler.ErrorResponse"
+            }
+          },
+          "422": {
+            "description": "Validation error",
+            "schema": {
+              "$ref": "#/definitions/handler.ErrorResponse"
+            }
+          }
+        },
+        "summary": "Reset a password",
+        "tags": [
+          "auth"
+        ]
+      }
+    },
+    "/api/v1/auth/social": {
+      "post": {
+        "consumes": [
+          "application/json"
+        ],
+        "description": "Placeholder for OAuth-based social login. Not yet implemented.",
+        "operationId": "postAuth-social",
+        "parameters": [
+          {
+            "description": "Social login request",
+            "in": "body",
+            "name": "body",
+            "required": true,
+            "schema": {
+              "$ref": "#/definitions/handler.socialLoginRequest"
+            }
+          }
+        ],
+        "produces": [
+          "application/json"
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "schema": {
+              "$ref": "#/definitions/handler.MessageResponse"
+            }
+          },
+          "422": {
+            "description": "Validation error",
+            "schema": {
+              "$ref": "#/definitions/handler.ErrorResponse"
+            }
+          }
+        },
+        "summary": "Social login (stub)",
+        "tags": [
+          "auth"
+        ]
+      }
+    },
+    "/api/v1/auth/verify-email": {
+      "post": {
+        "consumes": [
+          "application/json"
+        ],
+        "operationId": "postAuth-verify-email",
+        "parameters": [
+          {
+            "description": "Email verification request",
+            "in": "body",
+            "name": "body",
+            "required": true,
+            "schema": {
+              "$ref": "#/definitions/handler.verifyCodeRequest"
+            }
+          }
+        ],
+        "produces": [
+          "application/json"
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "schema": {
+              "$ref": "#/definitions/handler.MessageResponse"
+            }
+          },
+          "400": {
+            "description": "Invalid code",
+            "schema": {
+              "$ref": "#/definitions/handler.ErrorResponse"
+            }
+          },
+          "422": {
+            "description": "Validation error",
+            "schema": {
+              "$ref": "#/definitions/handler.ErrorResponse"
+            }
+          }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          }
+        ],
+        "summary": "Verify the user's email",
+        "tags": [
+          "auth"
+        ]
+      }
+    },
+    "/api/v1/auth/verify-phone": {
+      "post": {
+        "consumes": [
+          "application/json"
+        ],
+        "operationId": "postAuth-verify-phone",
+        "parameters": [
+          {
+            "description": "Phone verification request",
+            "in": "body",
+            "name": "body",
+            "required": true,
+            "schema": {
+              "$ref": "#/definitions/handler.verifyCodeRequest"
+            }
+          }
+        ],
+        "produces": [
+          "application/json"
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "schema": {
+              "$ref": "#/definitions/handler.MessageResponse"
+            }
+          },
+          "400": {
+            "description": "Invalid code",
+            "schema": {
+              "$ref": "#/definitions/handler.ErrorResponse"
+            }
+          },
+          "422": {
+            "description": "Validation error",
+            "schema": {
+              "$ref": "#/definitions/handler.ErrorResponse"
+            }
+          }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          }
+        ],
+        "summary": "Verify the user's phone number",
+        "tags": [
+          "auth"
+        ]
+      }
+    },
+    "/api/v1/devices": {
+      "post": {
+        "consumes": [
+          "application/json"
+        ],
+        "operationId": "postDevices",
+        "parameters": [
+          {
+            "description": "Device registration request",
+            "in": "body",
+            "name": "body",
+            "required": true,
+            "schema": {
+              "$ref": "#/definitions/handler.deviceRegisterRequest"
+            }
+          }
+        ],
+        "produces": [
+          "application/json"
+        ],
+        "responses": {
+          "201": {
+            "description": "Created",
+            "schema": {
+              "$ref": "#/definitions/handler.MessageResponse"
+            }
+          },
+          "422": {
+            "description": "Validation error",
+            "schema": {
+              "$ref": "#/definitions/handler.ErrorResponse"
+            }
+          }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          }
+        ],
+        "summary": "Register a push notification device",
+        "tags": [
+          "platform"
+        ]
+      }
+    },
+    "/api/v1/devices/{token}": {
+      "delete": {
+        "operationId": "deleteDevices-ByID",
+        "parameters": [
+          {
+            "description": "Device token",
+            "in": "path",
+            "name": "token",
+            "required": true,
+            "type": "string"
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "No content"
+          }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          }
+        ],
+        "summary": "Unregister a push notification device",
+        "tags": [
+          "platform"
+        ]
+      }
+    },
+    "/api/v1/driver/earnings/withdraw": {
+      "post": {
+        "operationId": "postDriver-earnings-withdraw",
+        "responses": {
+          "200": {
+            "description": "OK"
+          }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          }
+        ],
+        "summary": "POST /api/v1/driver/earnings/withdraw",
+        "tags": [
+          "driver"
+        ]
+      }
+    },
+    "/api/v1/driver/me": {
+      "get": {
+        "operationId": "getDriver-me",
+        "produces": [
+          "application/json"
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "schema": {
+              "$ref": "#/definitions/handler.DriverResponse"
+            }
+          },
+          "404": {
+            "description": "Driver not found",
+            "schema": {
+              "$ref": "#/definitions/handler.ErrorResponse"
+            }
+          }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          }
+        ],
+        "summary": "Get the driver profile",
+        "tags": [
+          "driver"
+        ]
+      },
+      "put": {
+        "consumes": [
+          "application/json"
+        ],
+        "operationId": "putDriver-me",
+        "parameters": [
+          {
+            "description": "Profile fields to update",
+            "in": "body",
+            "name": "body",
+            "required": true,
+            "schema": {
+              "$ref": "#/definitions/handler.updateDriverRequest"
+            }
+          }
+        ],
+        "produces": [
+          "application/json"
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "schema": {
+              "$ref": "#/definitions/handler.DriverResponse"
+            }
+          },
+          "422": {
+            "description": "Validation error",
+            "schema": {
+              "$ref": "#/definitions/handler.ErrorResponse"
+            }
+          }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          }
+        ],
+        "summary": "Update the driver profile",
+        "tags": [
+          "driver"
+        ]
+      }
+    },
+    "/api/v1/driver/me/documents": {
+      "get": {
+        "operationId": "getDriver-me-documents",
+        "responses": {
+          "200": {
+            "description": "OK"
+          }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          }
+        ],
+        "summary": "GET /api/v1/driver/me/documents",
+        "tags": [
+          "driver"
+        ]
+      },
+      "post": {
+        "operationId": "postDriver-me-documents",
+        "responses": {
+          "200": {
+            "description": "OK"
+          }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          }
+        ],
+        "summary": "POST /api/v1/driver/me/documents",
+        "tags": [
+          "driver"
+        ]
+      }
+    },
+    "/api/v1/driver/me/earnings": {
+      "get": {
+        "operationId": "getDriver-me-earnings",
+        "responses": {
+          "200": {
+            "description": "OK"
+          }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          }
+        ],
+        "summary": "GET /api/v1/driver/me/earnings",
+        "tags": [
+          "driver"
+        ]
+      }
+    },
+    "/api/v1/driver/me/status": {
+      "put": {
+        "consumes": [
+          "application/json"
+        ],
+        "operationId": "putDriver-me-status",
+        "parameters": [
+          {
+            "description": "New status (e.g. online, offline)",
+            "in": "body",
+            "name": "body",
+            "required": true,
+            "schema": {
+              "$ref": "#/definitions/handler.updateStatusRequest"
+            }
+          }
+        ],
+        "produces": [
+          "application/json"
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "schema": {
+              "$ref": "#/definitions/handler.DriverResponse"
+            }
+          },
+          "422": {
+            "description": "Validation error",
+            "schema": {
+              "$ref": "#/definitions/handler.ErrorResponse"
+            }
+          }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          }
+        ],
+        "summary": "Update the driver availability status",
+        "tags": [
+          "driver"
+        ]
+      }
+    },
+    "/api/v1/driver/me/vehicle": {
+      "get": {
+        "operationId": "getDriver-me-vehicle",
+        "responses": {
+          "200": {
+            "description": "OK"
+          }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          }
+        ],
+        "summary": "GET /api/v1/driver/me/vehicle",
+        "tags": [
+          "driver"
+        ]
+      },
+      "put": {
+        "operationId": "putDriver-me-vehicle",
+        "responses": {
+          "200": {
+            "description": "OK"
+          }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          }
+        ],
+        "summary": "PUT /api/v1/driver/me/vehicle",
+        "tags": [
+          "driver"
+        ]
+      }
+    },
+    "/api/v1/driver/ratings": {
+      "get": {
+        "operationId": "getDriver-ratings",
+        "responses": {
+          "200": {
+            "description": "OK"
+          }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          }
+        ],
+        "summary": "GET /api/v1/driver/ratings",
+        "tags": [
+          "driver"
+        ]
+      }
+    },
+    "/api/v1/driver/register": {
+      "post": {
+        "description": "Promotes the current user to the driver role and creates a driver profile.",
+        "operationId": "postDriver-register",
+        "produces": [
+          "application/json"
+        ],
+        "responses": {
+          "201": {
+            "description": "Created",
+            "schema": {
+              "$ref": "#/definitions/handler.DriverResponse"
+            }
+          }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          }
+        ],
+        "summary": "Register the authenticated user as a driver",
+        "tags": [
+          "driver"
+        ]
+      }
+    },
+    "/api/v1/driver/rides/current": {
+      "get": {
+        "operationId": "getDriver-rides-current",
+        "responses": {
+          "200": {
+            "description": "OK"
+          }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          }
+        ],
+        "summary": "GET /api/v1/driver/rides/current",
+        "tags": [
+          "driver"
+        ]
+      }
+    },
+    "/api/v1/driver/rides/history": {
+      "get": {
+        "operationId": "getDriver-rides-history",
+        "responses": {
+          "200": {
+            "description": "OK"
+          }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          }
+        ],
+        "summary": "GET /api/v1/driver/rides/history",
+        "tags": [
+          "driver"
+        ]
+      }
+    },
+    "/api/v1/driver/rides/queue": {
+      "get": {
+        "operationId": "getDriver-rides-queue",
+        "produces": [
+          "application/json"
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "schema": {
+              "$ref": "#/definitions/handler.QueueResponse"
+            }
+          }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          }
+        ],
+        "summary": "Get the driver's ride queue",
+        "tags": [
+          "driver"
+        ]
+      }
+    },
+    "/api/v1/driver/rides/{id}": {
+      "get": {
+        "operationId": "getDriver-rides-ByID",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK"
+          }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          }
+        ],
+        "summary": "GET /api/v1/driver/rides/{id}",
+        "tags": [
+          "driver"
+        ]
+      }
+    },
+    "/api/v1/driver/rides/{id}/accept": {
+      "post": {
+        "operationId": "postDriver-rides-ByID-accept",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK"
+          }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          }
+        ],
+        "summary": "POST /api/v1/driver/rides/{id}/accept",
+        "tags": [
+          "driver"
+        ]
+      }
+    },
+    "/api/v1/driver/rides/{id}/cancel": {
+      "post": {
+        "operationId": "postDriver-rides-ByID-cancel",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK"
+          }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          }
+        ],
+        "summary": "POST /api/v1/driver/rides/{id}/cancel",
+        "tags": [
+          "driver"
+        ]
+      }
+    },
+    "/api/v1/driver/rides/{id}/decline": {
+      "post": {
+        "operationId": "postDriver-rides-ByID-decline",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK"
+          }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          }
+        ],
+        "summary": "POST /api/v1/driver/rides/{id}/decline",
+        "tags": [
+          "driver"
+        ]
+      }
+    },
+    "/api/v1/driver/rides/{id}/notify-arrival": {
+      "post": {
+        "operationId": "postDriver-rides-ByID-notify-arrival",
+        "parameters": [
+          {
+            "description": "Ride ID",
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "type": "string"
+          }
+        ],
+        "produces": [
+          "application/json"
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "schema": {
+              "$ref": "#/definitions/handler.MessageResponse"
+            }
+          }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          }
+        ],
+        "summary": "Notify the rider that the driver has arrived",
+        "tags": [
+          "driver"
+        ]
+      }
+    },
+    "/api/v1/driver/rides/{id}/rate": {
+      "post": {
+        "operationId": "postDriver-rides-ByID-rate",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK"
+          }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          }
+        ],
+        "summary": "POST /api/v1/driver/rides/{id}/rate",
+        "tags": [
+          "driver"
+        ]
+      }
+    },
+    "/api/v1/driver/rides/{id}/rider": {
+      "get": {
+        "operationId": "getDriver-rides-ByID-rider",
+        "parameters": [
+          {
+            "description": "Ride ID",
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "type": "string"
+          }
+        ],
+        "produces": [
+          "application/json"
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "schema": {
+              "$ref": "#/definitions/handler.DriverRiderInfoResponse"
+            }
+          }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          }
+        ],
+        "summary": "Get rider info for a driver's ride",
+        "tags": [
+          "driver"
+        ]
+      }
+    },
+    "/api/v1/driver/rides/{id}/status": {
+      "put": {
+        "operationId": "putDriver-rides-ByID-status",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK"
+          }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          }
+        ],
+        "summary": "PUT /api/v1/driver/rides/{id}/status",
+        "tags": [
+          "driver"
+        ]
+      }
+    },
+    "/api/v1/drivers/{id}/location": {
+      "get": {
+        "operationId": "getDrivers-ByID-location",
+        "parameters": [
+          {
+            "description": "Driver ID",
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "type": "string"
+          }
+        ],
+        "produces": [
+          "application/json"
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "schema": {
+              "$ref": "#/definitions/handler.DriverLocationResponse"
+            }
+          },
+          "404": {
+            "description": "Driver location not found",
+            "schema": {
+              "$ref": "#/definitions/handler.ErrorResponse"
+            }
+          }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          }
+        ],
+        "summary": "Get a driver's current location",
+        "tags": [
+          "geo"
+        ]
+      }
+    },
+    "/api/v1/estimates/eta": {
+      "get": {
+        "operationId": "getEstimates-eta",
+        "produces": [
+          "application/json"
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "schema": {
+              "$ref": "#/definitions/handler.EstimatesETAResponse"
+            }
+          }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          }
+        ],
+        "summary": "Get an ETA estimate",
+        "tags": [
+          "estimates"
+        ]
+      }
+    },
+    "/api/v1/estimates/price": {
+      "get": {
+        "operationId": "getEstimates-price",
+        "produces": [
+          "application/json"
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "schema": {
+              "$ref": "#/definitions/handler.EstimatesPriceResponse"
+            }
+          }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          }
+        ],
+        "summary": "Get price estimates by vehicle type",
+        "tags": [
+          "estimates"
+        ]
+      }
+    },
+    "/api/v1/feedback": {
+      "post": {
+        "consumes": [
+          "application/json"
+        ],
+        "operationId": "postFeedback",
+        "parameters": [
+          {
+            "description": "Feedback request",
+            "in": "body",
+            "name": "body",
+            "required": true,
+            "schema": {
+              "$ref": "#/definitions/handler.feedbackRequest"
+            }
+          }
+        ],
+        "produces": [
+          "application/json"
+        ],
+        "responses": {
+          "201": {
+            "description": "Created",
+            "schema": {
+              "$ref": "#/definitions/handler.MessageResponse"
+            }
+          },
+          "422": {
+            "description": "Validation error",
+            "schema": {
+              "$ref": "#/definitions/handler.ErrorResponse"
+            }
+          }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          }
+        ],
+        "summary": "Submit user feedback",
+        "tags": [
+          "platform"
+        ]
+      }
+    },
+    "/api/v1/geo/driver/location": {
+      "put": {
+        "consumes": [
+          "application/json"
+        ],
+        "description": "Upserts the driver position and streams it to the rider over WebSocket.",
+        "operationId": "putGeo-driver-location",
+        "parameters": [
+          {
+            "description": "Location update",
+            "in": "body",
+            "name": "body",
+            "required": true,
+            "schema": {
+              "$ref": "#/definitions/handler.locationUpdate"
+            }
+          }
+        ],
+        "produces": [
+          "application/json"
+        ],
+        "responses": {
+          "204": {
+            "description": "No content"
+          },
+          "422": {
+            "description": "Validation error",
+            "schema": {
+              "$ref": "#/definitions/handler.ErrorResponse"
+            }
+          },
+          "500": {
+            "description": "Update failed",
+            "schema": {
+              "$ref": "#/definitions/handler.ErrorResponse"
+            }
+          }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          }
+        ],
+        "summary": "Update a driver's live location",
+        "tags": [
+          "geo"
+        ]
+      }
+    },
+    "/api/v1/geo/driver/location/batch": {
+      "put": {
+        "consumes": [
+          "application/json"
+        ],
+        "operationId": "putGeo-driver-location-batch",
+        "parameters": [
+          {
+            "description": "List of location updates",
+            "in": "body",
+            "name": "body",
+            "required": true,
+            "schema": {
+              "items": {
+                "$ref": "#/definitions/handler.locationUpdate"
+              },
+              "type": "array"
+            }
+          }
+        ],
+        "produces": [
+          "application/json"
+        ],
+        "responses": {
+          "204": {
+            "description": "No content"
+          },
+          "422": {
+            "description": "Validation error",
+            "schema": {
+              "$ref": "#/definitions/handler.ErrorResponse"
+            }
+          }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          }
+        ],
+        "summary": "Batch update a driver's live location",
+        "tags": [
+          "geo"
+        ]
+      }
+    },
+    "/api/v1/geo/eta": {
+      "get": {
+        "operationId": "getGeo-eta",
+        "responses": {
+          "200": {
+            "description": "OK"
+          }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          }
+        ],
+        "summary": "GET /api/v1/geo/eta",
+        "tags": [
+          "geo"
+        ]
+      }
+    },
+    "/api/v1/geo/isochrone": {
+      "get": {
+        "operationId": "getGeo-isochrone",
+        "responses": {
+          "200": {
+            "description": "OK"
+          }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          }
+        ],
+        "summary": "GET /api/v1/geo/isochrone",
+        "tags": [
+          "geo"
+        ]
+      }
+    },
+    "/api/v1/geo/nearby-drivers": {
+      "get": {
+        "description": "Returns online drivers within a radius of the given coordinates.",
+        "operationId": "getGeo-nearby-drivers",
+        "parameters": [
+          {
+            "description": "Latitude",
+            "in": "query",
+            "name": "lat",
+            "required": true,
+            "type": "number"
+          },
+          {
+            "description": "Longitude",
+            "in": "query",
+            "name": "lng",
+            "required": true,
+            "type": "number"
+          },
+          {
+            "default": 5000,
+            "description": "Search radius in meters (default 5000)",
+            "in": "query",
+            "name": "radius",
+            "type": "number"
+          },
+          {
+            "default": 20,
+            "description": "Maximum results (max 50)",
+            "in": "query",
+            "name": "limit",
+            "type": "integer"
+          }
+        ],
+        "produces": [
+          "application/json"
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "schema": {
+              "$ref": "#/definitions/handler.NearbyDriversResponse"
+            }
+          },
+          "422": {
+            "description": "Invalid parameters",
+            "schema": {
+              "$ref": "#/definitions/handler.ErrorResponse"
+            }
+          },
+          "500": {
+            "description": "Query failed",
+            "schema": {
+              "$ref": "#/definitions/handler.ErrorResponse"
+            }
+          }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          }
+        ],
+        "summary": "Find nearby drivers",
+        "tags": [
+          "geo"
+        ]
+      }
+    },
+    "/api/v1/geo/rider/location": {
+      "put": {
+        "consumes": [
+          "application/json"
+        ],
+        "operationId": "putGeo-rider-location",
+        "parameters": [
+          {
+            "description": "Location update",
+            "in": "body",
+            "name": "body",
+            "required": true,
+            "schema": {
+              "$ref": "#/definitions/handler.locationUpdate"
+            }
+          }
+        ],
+        "produces": [
+          "application/json"
+        ],
+        "responses": {
+          "204": {
+            "description": "No content"
+          },
+          "422": {
+            "description": "Validation error",
+            "schema": {
+              "$ref": "#/definitions/handler.ErrorResponse"
+            }
+          }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          }
+        ],
+        "summary": "Update a rider's live location",
+        "tags": [
+          "geo"
+        ]
+      }
+    },
+    "/api/v1/heatmap": {
+      "get": {
+        "operationId": "getHeatmap",
+        "produces": [
+          "application/json"
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "schema": {
+              "$ref": "#/definitions/handler.HeatmapResponse"
+            }
+          }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          }
+        ],
+        "summary": "Get a heatmap tile (stub)",
+        "tags": [
+          "platform"
+        ]
+      }
+    },
+    "/api/v1/navigation/route": {
+      "get": {
+        "operationId": "getNavigation-route",
+        "parameters": [
+          {
+            "description": "Origin latitude",
+            "in": "query",
+            "name": "from_lat",
+            "required": true,
+            "type": "number"
+          },
+          {
+            "description": "Origin longitude",
+            "in": "query",
+            "name": "from_lng",
+            "required": true,
+            "type": "number"
+          },
+          {
+            "description": "Destination latitude",
+            "in": "query",
+            "name": "to_lat",
+            "required": true,
+            "type": "number"
+          },
+          {
+            "description": "Destination longitude",
+            "in": "query",
+            "name": "to_lng",
+            "required": true,
+            "type": "number"
+          }
+        ],
+        "produces": [
+          "application/json"
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "schema": {
+              "$ref": "#/definitions/handler.NavigationRouteResponse"
+            }
+          },
+          "500": {
+            "description": "Routing failed",
+            "schema": {
+              "$ref": "#/definitions/handler.ErrorResponse"
+            }
+          }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          }
+        ],
+        "summary": "Get a route between two coordinates",
+        "tags": [
+          "navigation"
+        ]
+      }
+    },
+    "/api/v1/places/autocomplete": {
+      "get": {
+        "operationId": "getPlaces-autocomplete",
+        "parameters": [
+          {
+            "description": "Latitude",
+            "in": "query",
+            "name": "lat",
+            "required": true,
+            "type": "number"
+          },
+          {
+            "description": "Longitude",
+            "in": "query",
+            "name": "lng",
+            "required": true,
+            "type": "number"
+          },
+          {
+            "description": "Free-text search query",
+            "in": "query",
+            "name": "q",
+            "type": "string"
+          },
+          {
+            "default": 1000,
+            "description": "Search radius in meters",
+            "in": "query",
+            "name": "radius",
+            "type": "number"
+          },
+          {
+            "default": 10,
+            "description": "Maximum results (max 50)",
+            "in": "query",
+            "name": "limit",
+            "type": "integer"
+          }
+        ],
+        "produces": [
+          "application/json"
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "schema": {
+              "$ref": "#/definitions/handler.PlacesResponse"
+            }
+          },
+          "422": {
+            "description": "Invalid parameters",
+            "schema": {
+              "$ref": "#/definitions/handler.ErrorResponse"
+            }
+          },
+          "500": {
+            "description": "Query failed",
+            "schema": {
+              "$ref": "#/definitions/handler.ErrorResponse"
+            }
+          }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          }
+        ],
+        "summary": "Autocomplete places near coordinates",
+        "tags": [
+          "places"
+        ]
+      }
+    },
+    "/api/v1/places/details": {
+      "get": {
+        "operationId": "getPlaces-details",
+        "produces": [
+          "application/json"
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "schema": {
+              "$ref": "#/definitions/handler.PlacesResponse"
+            }
+          }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          }
+        ],
+        "summary": "Get place details (stub)",
+        "tags": [
+          "places"
+        ]
+      }
+    },
+    "/api/v1/places/geocode": {
+      "get": {
+        "operationId": "getPlaces-geocode",
+        "produces": [
+          "application/json"
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "schema": {
+              "$ref": "#/definitions/handler.PlacesResponse"
+            }
+          }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          }
+        ],
+        "summary": "Geocode a coordinate into a place (stub)",
+        "tags": [
+          "places"
+        ]
+      }
+    },
+    "/api/v1/promotions": {
+      "get": {
+        "operationId": "getPromotions",
+        "produces": [
+          "application/json"
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "schema": {
+              "$ref": "#/definitions/handler.PromotionsResponse"
+            }
+          }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          }
+        ],
+        "summary": "List available promotions",
+        "tags": [
+          "promotions"
+        ]
+      }
+    },
+    "/api/v1/promotions/apply": {
+      "post": {
+        "operationId": "postPromotions-apply",
+        "produces": [
+          "application/json"
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "schema": {
+              "$ref": "#/definitions/handler.MessageResponse"
+            }
+          }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          }
+        ],
+        "summary": "Apply a promotion (stub)",
+        "tags": [
+          "promotions"
+        ]
+      }
+    },
+    "/api/v1/rider/favorites": {
+      "get": {
+        "operationId": "getRider-favorites",
+        "responses": {
+          "200": {
+            "description": "OK"
+          }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          }
+        ],
+        "summary": "GET /api/v1/rider/favorites",
+        "tags": [
+          "rider"
+        ]
+      },
+      "post": {
+        "operationId": "postRider-favorites",
+        "responses": {
+          "200": {
+            "description": "OK"
+          }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          }
+        ],
+        "summary": "POST /api/v1/rider/favorites",
+        "tags": [
+          "rider"
+        ]
+      }
+    },
+    "/api/v1/rider/favorites/{id}": {
+      "delete": {
+        "operationId": "deleteRider-favorites-ByID",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK"
+          }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          }
+        ],
+        "summary": "DELETE /api/v1/rider/favorites/{id}",
+        "tags": [
+          "rider"
+        ]
+      }
+    },
+    "/api/v1/rider/me": {
+      "delete": {
+        "description": "Soft-deletes the authenticated user's account.",
+        "operationId": "deleteRider-me",
+        "produces": [
+          "application/json"
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "schema": {
+              "$ref": "#/definitions/handler.MessageResponse"
+            }
+          }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          }
+        ],
+        "summary": "Deactivate the rider account",
+        "tags": [
+          "rider"
+        ]
+      },
+      "get": {
+        "operationId": "getRider-me",
+        "produces": [
+          "application/json"
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "schema": {
+              "$ref": "#/definitions/handler.RiderProfileResponse"
+            }
+          },
+          "404": {
+            "description": "Rider not found",
+            "schema": {
+              "$ref": "#/definitions/handler.ErrorResponse"
+            }
+          }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          }
+        ],
+        "summary": "Get the rider profile",
+        "tags": [
+          "rider"
+        ]
+      },
+      "put": {
+        "consumes": [
+          "application/json"
+        ],
+        "operationId": "putRider-me",
+        "parameters": [
+          {
+            "description": "Profile fields to update",
+            "in": "body",
+            "name": "body",
+            "required": true,
+            "schema": {
+              "$ref": "#/definitions/handler.updateRiderRequest"
+            }
+          }
+        ],
+        "produces": [
+          "application/json"
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "schema": {
+              "$ref": "#/definitions/handler.RiderResponse"
+            }
+          },
+          "422": {
+            "description": "Validation error",
+            "schema": {
+              "$ref": "#/definitions/handler.ErrorResponse"
+            }
+          }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          }
+        ],
+        "summary": "Update the rider profile",
+        "tags": [
+          "rider"
+        ]
+      }
+    },
+    "/api/v1/rider/me/preferences": {
+      "get": {
+        "description": "Placeholder for endpoints pending payment integration and other future work.",
+        "operationId": "getRider-me-preferences",
+        "produces": [
+          "application/json"
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "schema": {
+              "$ref": "#/definitions/handler.StubResponse"
+            }
+          }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          }
+        ],
+        "summary": "Not yet implemented (stub)",
+        "tags": [
+          "platform"
+        ]
+      },
+      "put": {
+        "operationId": "putRider-me-preferences",
+        "responses": {
+          "200": {
+            "description": "OK"
+          }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          }
+        ],
+        "summary": "PUT /api/v1/rider/me/preferences",
+        "tags": [
+          "rider"
+        ]
+      }
+    },
+    "/api/v1/rider/me/status": {
+      "put": {
+        "consumes": [
+          "application/json"
+        ],
+        "operationId": "putRider-me-status",
+        "parameters": [
+          {
+            "description": "New status (e.g. idle)",
+            "in": "body",
+            "name": "body",
+            "required": true,
+            "schema": {
+              "$ref": "#/definitions/handler.updateStatusRequest"
+            }
+          }
+        ],
+        "produces": [
+          "application/json"
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "schema": {
+              "$ref": "#/definitions/handler.RiderResponse"
+            }
+          },
+          "422": {
+            "description": "Validation error",
+            "schema": {
+              "$ref": "#/definitions/handler.ErrorResponse"
+            }
+          }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          }
+        ],
+        "summary": "Update the rider status",
+        "tags": [
+          "rider"
+        ]
+      }
+    },
+    "/api/v1/rider/payment-methods": {
+      "get": {
+        "operationId": "getRider-payment-methods",
+        "responses": {
+          "200": {
+            "description": "OK"
+          }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          }
+        ],
+        "summary": "GET /api/v1/rider/payment-methods",
+        "tags": [
+          "rider"
+        ]
+      },
+      "post": {
+        "operationId": "postRider-payment-methods",
+        "responses": {
+          "200": {
+            "description": "OK"
+          }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          }
+        ],
+        "summary": "POST /api/v1/rider/payment-methods",
+        "tags": [
+          "rider"
+        ]
+      }
+    },
+    "/api/v1/rider/payment-methods/{id}": {
+      "delete": {
+        "operationId": "deleteRider-payment-methods-ByID",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK"
+          }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          }
+        ],
+        "summary": "DELETE /api/v1/rider/payment-methods/{id}",
+        "tags": [
+          "rider"
+        ]
+      }
+    },
+    "/api/v1/rider/ratings": {
+      "get": {
+        "operationId": "getRider-ratings",
+        "responses": {
+          "200": {
+            "description": "OK"
+          }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          }
+        ],
+        "summary": "GET /api/v1/rider/ratings",
+        "tags": [
+          "rider"
+        ]
+      }
+    },
+    "/api/v1/rides": {
+      "post": {
+        "consumes": [
+          "application/json"
+        ],
+        "description": "Creates a ride request and dispatches it to nearby drivers.",
+        "operationId": "postRides",
+        "parameters": [
+          {
+            "description": "Ride request",
+            "in": "body",
+            "name": "body",
+            "required": true,
+            "schema": {
+              "$ref": "#/definitions/handler.rideRequest"
+            }
+          }
+        ],
+        "produces": [
+          "application/json"
+        ],
+        "responses": {
+          "201": {
+            "description": "Created",
+            "schema": {
+              "$ref": "#/definitions/handler.RideResponse"
+            }
+          },
+          "422": {
+            "description": "Validation error",
+            "schema": {
+              "$ref": "#/definitions/handler.ErrorResponse"
+            }
+          },
+          "500": {
+            "description": "Failed to create ride",
+            "schema": {
+              "$ref": "#/definitions/handler.ErrorResponse"
+            }
+          }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          }
+        ],
+        "summary": "Request a new ride",
+        "tags": [
+          "rides"
+        ]
+      }
+    },
+    "/api/v1/rides/current": {
+      "get": {
+        "description": "Returns the active ride for the current rider or driver, or `null`.",
+        "operationId": "getRides-current",
+        "produces": [
+          "application/json"
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "schema": {
+              "$ref": "#/definitions/handler.RideResponse"
+            }
+          }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          }
+        ],
+        "summary": "Get the current ride for the authenticated user",
+        "tags": [
+          "rides"
+        ]
+      }
+    },
+    "/api/v1/rides/history": {
+      "get": {
+        "description": "Returns a paginated list of past rides for the current rider or driver.",
+        "operationId": "getRides-history",
+        "parameters": [
+          {
+            "default": 1,
+            "description": "Page number",
+            "in": "query",
+            "name": "page",
+            "type": "integer"
+          },
+          {
+            "default": 20,
+            "description": "Items per page (max 50)",
+            "in": "query",
+            "name": "per_page",
+            "type": "integer"
+          }
+        ],
+        "produces": [
+          "application/json"
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "schema": {
+              "$ref": "#/definitions/handler.RideListResponse"
+            }
+          },
+          "500": {
+            "description": "Query failed",
+            "schema": {
+              "$ref": "#/definitions/handler.ErrorResponse"
+            }
+          }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          }
+        ],
+        "summary": "List ride history",
+        "tags": [
+          "rides"
+        ]
+      }
+    },
+    "/api/v1/rides/{id}": {
+      "get": {
+        "operationId": "getRides-ByID",
+        "parameters": [
+          {
+            "description": "Ride ID",
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "type": "string"
+          }
+        ],
+        "produces": [
+          "application/json"
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "schema": {
+              "$ref": "#/definitions/handler.RideResponse"
+            }
+          },
+          "404": {
+            "description": "Ride not found",
+            "schema": {
+              "$ref": "#/definitions/handler.ErrorResponse"
+            }
+          }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          }
+        ],
+        "summary": "Get a ride by ID",
+        "tags": [
+          "rides"
+        ]
+      }
+    },
+    "/api/v1/rides/{id}/cancel": {
+      "post": {
+        "operationId": "postRides-ByID-cancel",
+        "parameters": [
+          {
+            "description": "Ride ID",
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "type": "string"
+          }
+        ],
+        "produces": [
+          "application/json"
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "schema": {
+              "$ref": "#/definitions/handler.RideResponse"
+            }
+          },
+          "400": {
+            "description": "Ride cannot be cancelled",
+            "schema": {
+              "$ref": "#/definitions/handler.ErrorResponse"
+            }
+          }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          }
+        ],
+        "summary": "Cancel a ride",
+        "tags": [
+          "rides"
+        ]
+      }
+    },
+    "/api/v1/rides/{id}/destination": {
+      "put": {
+        "operationId": "putRides-ByID-destination",
+        "parameters": [
+          {
+            "description": "Ride ID",
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "type": "string"
+          }
+        ],
+        "produces": [
+          "application/json"
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "schema": {
+              "$ref": "#/definitions/handler.MessageResponse"
+            }
+          }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          }
+        ],
+        "summary": "Update a ride's destination (stub)",
+        "tags": [
+          "rides"
+        ]
+      }
+    },
+    "/api/v1/rides/{id}/rate": {
+      "post": {
+        "consumes": [
+          "application/json"
+        ],
+        "description": "Submits a 1-5 rating for the other party on a completed ride.",
+        "operationId": "postRides-ByID-rate",
+        "parameters": [
+          {
+            "description": "Ride ID",
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "type": "string"
+          },
+          {
+            "description": "Rating payload",
+            "in": "body",
+            "name": "body",
+            "required": true,
+            "schema": {
+              "$ref": "#/definitions/handler.rateRideRequest"
+            }
+          }
+        ],
+        "produces": [
+          "application/json"
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "schema": {
+              "$ref": "#/definitions/handler.MessageResponse"
+            }
+          },
+          "400": {
+            "description": "Invalid rating",
+            "schema": {
+              "$ref": "#/definitions/handler.ErrorResponse"
+            }
+          },
+          "404": {
+            "description": "Ride not found",
+            "schema": {
+              "$ref": "#/definitions/handler.ErrorResponse"
+            }
+          },
+          "422": {
+            "description": "Validation error",
+            "schema": {
+              "$ref": "#/definitions/handler.ErrorResponse"
+            }
+          }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          }
+        ],
+        "summary": "Rate a completed ride",
+        "tags": [
+          "rides"
+        ]
+      }
+    },
+    "/api/v1/rides/{id}/receipt": {
+      "get": {
+        "operationId": "getRides-ByID-receipt",
+        "parameters": [
+          {
+            "description": "Ride ID",
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "type": "string"
+          }
+        ],
+        "produces": [
+          "application/json"
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "schema": {
+              "$ref": "#/definitions/handler.RideReceiptResponse"
+            }
+          },
+          "404": {
+            "description": "Ride not found",
+            "schema": {
+              "$ref": "#/definitions/handler.ErrorResponse"
+            }
+          }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          }
+        ],
+        "summary": "Get the fare breakdown for a ride",
+        "tags": [
+          "rides"
+        ]
+      }
+    },
+    "/api/v1/rides/{id}/tip": {
+      "post": {
+        "operationId": "postRides-ByID-tip",
+        "parameters": [
+          {
+            "description": "Ride ID",
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "type": "string"
+          }
+        ],
+        "produces": [
+          "application/json"
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "schema": {
+              "$ref": "#/definitions/handler.StubResponse"
+            }
+          }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          }
+        ],
+        "summary": "Tip a driver (stub)",
+        "tags": [
+          "rides"
+        ]
+      }
+    },
+    "/api/v1/sos": {
+      "post": {
+        "consumes": [
+          "application/json"
+        ],
+        "operationId": "postSos",
+        "parameters": [
+          {
+            "description": "SOS request",
+            "in": "body",
+            "name": "body",
+            "required": true,
+            "schema": {
+              "$ref": "#/definitions/handler.sosRequest"
+            }
+          }
+        ],
+        "produces": [
+          "application/json"
+        ],
+        "responses": {
+          "201": {
+            "description": "Created",
+            "schema": {
+              "$ref": "#/definitions/handler.SOSResponse"
+            }
+          },
+          "422": {
+            "description": "Validation error",
+            "schema": {
+              "$ref": "#/definitions/handler.ErrorResponse"
+            }
+          }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          }
+        ],
+        "summary": "Send an SOS alert",
+        "tags": [
+          "platform"
+        ]
+      }
+    },
+    "/api/v1/version": {
+      "get": {
+        "operationId": "getVersion",
+        "produces": [
+          "application/json"
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "schema": {
+              "$ref": "#/definitions/handler.VersionResponse"
+            }
+          }
+        },
+        "summary": "Get the API version",
+        "tags": [
+          "platform"
+        ]
+      }
+    },
+    "/health": {
+      "get": {
+        "description": "Returns the liveness status of the server process.",
+        "operationId": "getHealth",
+        "produces": [
+          "application/json"
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "schema": {
+              "$ref": "#/definitions/handler.HealthResponse"
+            }
+          }
+        },
+        "summary": "Liveness probe",
+        "tags": [
+          "health"
+        ]
+      }
+    },
+    "/health/ready": {
+      "get": {
+        "description": "Returns readiness status including dependency checks (database, redis).",
+        "operationId": "getHealth-ready",
+        "produces": [
+          "application/json"
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "schema": {
+              "$ref": "#/definitions/handler.ReadinessResponse"
+            }
+          },
+          "503": {
+            "description": "Service Unavailable",
+            "schema": {
+              "$ref": "#/definitions/handler.ReadinessResponse"
+            }
+          }
+        },
+        "summary": "Readiness probe",
+        "tags": [
+          "health"
+        ]
+      }
+    },
+    "/ws": {
+      "get": {
+        "operationId": "getWs",
+        "responses": {
+          "200": {
+            "description": "OK"
+          }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          }
+        ],
+        "summary": "GET /ws",
+        "tags": [
+          "default"
+        ]
+      }
+    }
+  },
+  "securityDefinitions": {
+    "BearerAuth": {
+      "description": "JWT access token. Include as `Authorization: Bearer \u003ctoken\u003e`.",
+      "in": "header",
+      "name": "Authorization",
+      "type": "apiKey"
+    }
+  },
+  "swagger": "2.0"
+}

@@ -1,4 +1,4 @@
-.PHONY: all build run test test-integration lint clean docker-up docker-down migrate-up migrate-down seed import-osm download-osm export-places
+.PHONY: all build run test test-integration lint clean docker-up docker-down migrate-up migrate-down seed import-osm download-osm export-places openapi
 
 APP_NAME=ride-hailing-api
 BUILD_DIR=./build
@@ -43,3 +43,6 @@ download-osm:
 
 export-places:
 	./scripts/export-places.sh
+
+openapi:
+	./scripts/update-openapi.sh

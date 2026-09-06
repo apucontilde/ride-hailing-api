@@ -27,6 +27,18 @@ type locationUpdate struct {
 	Speed   float64 `json:"speed"`
 }
 
+// UpdateDriverLocation godoc
+//	@Summary		Update a driver's live location
+//	@Description	Upserts the driver position and streams it to the rider over WebSocket.
+//	@Tags			geo
+//	@Accept			json
+//	@Produce		json
+//	@Security		BearerAuth
+//	@Param			body	body	locationUpdate	true	"Location update"
+//	@Success		204		"No content"
+//	@Failure		422		{object}	ErrorResponse	"Validation error"
+//	@Failure		500		{object}	ErrorResponse	"Update failed"
+//	@Router			/api/v1/geo/driver/location [put]
 func (h *GeoHandler) UpdateDriverLocation(c *gin.Context) {
 	driverID, _ := c.Get("user_id")
 	var req locationUpdate
@@ -63,6 +75,16 @@ func (h *GeoHandler) UpdateDriverLocation(c *gin.Context) {
 	c.Status(http.StatusNoContent)
 }
 
+// UpdateDriverLocationBatch godoc
+//	@Summary	Batch update a driver's live location
+//	@Tags		geo
+//	@Accept		json
+//	@Produce	json
+//	@Security	BearerAuth
+//	@Param		body	body	[]locationUpdate	true	"List of location updates"
+//	@Success	204		"No content"
+//	@Failure	422		{object}	ErrorResponse	"Validation error"
+//	@Router		/api/v1/geo/driver/location/batch [put]
 func (h *GeoHandler) UpdateDriverLocationBatch(c *gin.Context) {
 	driverID, _ := c.Get("user_id")
 	var reqs []locationUpdate
@@ -82,6 +104,16 @@ func (h *GeoHandler) UpdateDriverLocationBatch(c *gin.Context) {
 	c.Status(http.StatusNoContent)
 }
 
+// UpdateRiderLocation godoc
+//	@Summary	Update a rider's live location
+//	@Tags		geo
+//	@Accept		json
+//	@Produce	json
+//	@Security	BearerAuth
+//	@Param		body	body	locationUpdate	true	"Location update"
+//	@Success	204		"No content"
+//	@Failure	422		{object}	ErrorResponse	"Validation error"
+//	@Router		/api/v1/geo/rider/location [put]
 func (h *GeoHandler) UpdateRiderLocation(c *gin.Context) {
 	riderID, _ := c.Get("user_id")
 	var req locationUpdate
@@ -94,6 +126,20 @@ func (h *GeoHandler) UpdateRiderLocation(c *gin.Context) {
 	c.Status(http.StatusNoContent)
 }
 
+// GetNearbyDrivers godoc
+//	@Summary		Find nearby drivers
+//	@Description	Returns online drivers within a radius of the given coordinates.
+//	@Tags			geo
+//	@Produce		json
+//	@Security		BearerAuth
+//	@Param			lat		query		number	true	"Latitude"
+//	@Param			lng		query		number	true	"Longitude"
+//	@Param			radius	query		number	false	"Search radius in meters (default 5000)"	default(5000)
+//	@Param			limit	query		int		false	"Maximum results (max 50)"					default(20)
+//	@Success		200		{object}	NearbyDriversResponse
+//	@Failure		422		{object}	ErrorResponse	"Invalid parameters"
+//	@Failure		500		{object}	ErrorResponse	"Query failed"
+//	@Router			/api/v1/geo/nearby-drivers [get]
 func (h *GeoHandler) GetNearbyDrivers(c *gin.Context) {
 	lat, err := strconv.ParseFloat(c.Query("lat"), 64)
 	if err != nil {
@@ -128,6 +174,15 @@ func (h *GeoHandler) GetNearbyDrivers(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"drivers": drivers})
 }
 
+// GetDriverLocation godoc
+//	@Summary	Get a driver's current location
+//	@Tags		geo
+//	@Produce	json
+//	@Security	BearerAuth
+//	@Param		id	path		string	true	"Driver ID"
+//	@Success	200	{object}	DriverLocationResponse
+//	@Failure	404	{object}	ErrorResponse	"Driver location not found"
+//	@Router		/api/v1/drivers/{id}/location [get]
 func (h *GeoHandler) GetDriverLocation(c *gin.Context) {
 	driverID := c.Param("id")
 	loc, err := h.geoRepo.GetDriverLocation(driverID)
