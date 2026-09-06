@@ -198,7 +198,7 @@ On ride creation, the backend also sends a `ride.updated` websocket event with `
 | PUT | `/api/v1/geo/driver/location/batch` | Yes, role driver | Batch location upsert |
 | PUT | `/api/v1/geo/rider/location` | Yes, role rider | Upserts rider location |
 | GET | `/api/v1/geo/nearby-drivers` | Yes | Returns nearby drivers |
-| GET | `/api/v1/geo/eta` | Yes | Stub ETA endpoint |
+| GET | `/api/v1/geo/eta` | Yes | Route-based ETA `{eta_seconds, distance_meters}` (same handler as `estimates/eta`) |
 | GET | `/api/v1/geo/isochrone` | Yes | Stub |
 
 Nearby drivers query:
@@ -212,11 +212,11 @@ GET /api/v1/geo/nearby-drivers?lat=-23.5505&lng=-46.6333&radius=5000&limit=20
 | Method | Path | Auth | Notes |
 |---|---|---|---|
 | GET | `/api/v1/navigation/route` | Yes | Returns route polyline, distance, and duration |
-| GET | `/api/v1/places/autocomplete` | Yes | Search nearby places (`lat`,`lng`,`q`,`radius`,`limit`) |
-| GET | `/api/v1/places/geocode` | Yes | Reverse-geocode a pin to the nearest place (`lat`,`lng`,`radius`); `place` is null when nothing matches |
+| GET | `/api/v1/places/autocomplete` | Yes | Real PostGIS + full-text search over OSM-seeded places |
+| GET | `/api/v1/places/geocode` | Yes | Stub |
 | GET | `/api/v1/places/details` | Yes | Stub |
-| GET | `/api/v1/estimates/price` | Yes | Returns static pricing tiers |
-| GET | `/api/v1/estimates/eta` | Yes | Stub ETA endpoint |
+| GET | `/api/v1/estimates/price` | Yes | Real fare engine (base + distance + time + surge over route) |
+| GET | `/api/v1/estimates/eta` | Yes | Route-based ETA `{eta_seconds, distance_meters}` |
 | GET | `/api/v1/promotions` | Yes | Stub |
 | POST | `/api/v1/promotions/apply` | Yes | Stub |
 
