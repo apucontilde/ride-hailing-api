@@ -2,8 +2,15 @@
 set -euo pipefail
 
 # ------------------------------------------------------------------
-# Idempotent import of OSM road network via osm2pgrouting
-# into road_edges / road_vertices (migration 008 schema).
+# Idempotent import of OSM road network via osm2pgrouting.
+#
+# Populates BOTH schemas:
+#   - road_edges / road_vertices                  (migration 008, full geom)
+#   - road_network_edges_pgr / road_network_*     (migration 011, the tables
+#     internal/repository/navigation_repo.go queries for routing)
+#
+# osm2pgrouting reads .osm XML only, so a .osm.pbf input is converted with
+# osmconvert (or osmium) first.
 #
 # Flags:
 #   --force                Re-run osm2pgrouting, truncate and re-copy
@@ -23,7 +30,9 @@ for arg in "$@"; do
   esac
 done
 
-OSM_FILE="/mnt/c/Users/Ricardo/repos/ride-hailing-api/data/san-jose.osm"
+OSM_DIR="/mnt/c/Users/Ricardo/repos/ride-hailing-api/data"
+OSM_PBF="$OSM_DIR/san-jose.osm.pbf"
+OSM_FILE="$OSM_DIR/san-jose.osm"
 
 # Database connection — fall back to env or defaults
 DB_HOST="${DB_HOST:-localhost}"
@@ -38,8 +47,8 @@ psql_run() {
 
 # ---- Prerequisite checks -----------------------------------------------
 if [ "$SKIP_OSM" = false ]; then
-  if [ ! -f "$OSM_FILE" ]; then
-    echo "ERROR: OSM file not found at $OSM_FILE"
+  if [ ! -f "$OSM_FILE" ] && [ ! -f "$OSM_PBF" ]; then
+    echo "ERROR: no OSM file at $OSM_FILE and no PBF at $OSM_PBF."
     echo "Run scripts/download-osm.sh first."
     exit 1
   fi
@@ -58,8 +67,25 @@ if [ "$SKIP_OSM" = false ]; then
   fi
 fi
 
+# osm2pgrouting only reads .osm XML; convert the .pbf if the XML is missing.
+ensure_osm_xml() {
+  [ -f "$OSM_FILE" ] && return 0
+  if command -v osmconvert &>/dev/null; then
+    echo "==> Converting $OSM_PBF -> $OSM_FILE (osmconvert)..."
+    osmconvert "$OSM_PBF" -o="$OSM_FILE"
+  elif command -v osmium &>/dev/null; then
+    echo "==> Converting $OSM_PBF -> $OSM_FILE (osmium)..."
+    osmium cat "$OSM_PBF" -o "$OSM_FILE"
+  else
+    echo "ERROR: need osmconvert or osmium to convert $OSM_PBF to OSM XML."
+    exit 1
+  fi
+}
+
 # ---- Detection: check if already populated -----------------------------
-EDGE_COUNT=$(psql_run -Atc "SELECT COUNT(*) FROM road_edges;" 2>/dev/null || echo "0")
+# Gate on the routing tables the API actually queries (migration 011), so a
+# fresh 011 seed is created even when the migration-008 tables already exist.
+EDGE_COUNT=$(psql_run -Atc "SELECT COUNT(*) FROM road_network_edges_pgr;" 2>/dev/null || echo "0")
 
 run_osm2pgrouting() {
   echo "==> Dropping existing osm2pgrouting output tables..."
@@ -81,7 +107,7 @@ EOSQL
 }
 
 copy_data() {
-  echo "==> Copying data into road_edges..."
+  echo "==> Copying data into road_edges / road_vertices (migration 008)..."
   psql_run <<EOSQL
     INSERT INTO road_edges (
       source, target, geom, length_m, cost, reverse_cost,
@@ -95,17 +121,38 @@ copy_data() {
       w.cost,
       w.reverse_cost,
       w.name,
-      c.name,
+      c.tag_value,
       COALESCE(w.maxspeed_forward, c.maxspeed, 0),
       w.x1, w.y1, w.x2, w.y2
     FROM ways w
-    LEFT JOIN configuration c ON w.class_id = c.class_id
+    LEFT JOIN configuration c ON w.tag_id = c.tag_id
     WHERE w.source IS NOT NULL AND w.target IS NOT NULL
     ON CONFLICT DO NOTHING;
 
     INSERT INTO road_vertices (id, geom, cnt)
     SELECT wvp.id, wvp.the_geom, wvp.cnt
     FROM ways_vertices_pgr wvp
+    ON CONFLICT (id) DO NOTHING;
+EOSQL
+
+  echo "==> Copying data into road_network_vertices_pgr / road_network_edges_pgr (migration 011)..."
+  psql_run <<EOSQL
+    TRUNCATE road_network_vertices_pgr, road_network_edges_pgr RESTART IDENTITY CASCADE;
+
+    INSERT INTO road_network_vertices_pgr (id, the_geom, lat, lng)
+    SELECT id, the_geom, ST_Y(the_geom), ST_X(the_geom)
+    FROM ways_vertices_pgr
+    ON CONFLICT (id) DO NOTHING;
+
+    -- Edge cost is the road length in meters (ways.length_m), so the
+    -- accumulated routing cost == route distance in meters.
+    INSERT INTO road_network_edges_pgr (id, source, target, cost)
+    SELECT gid, source, target, length_m
+    FROM ways
+    WHERE source IS NOT NULL
+      AND target IS NOT NULL
+      AND length_m IS NOT NULL
+      AND length_m > 0
     ON CONFLICT (id) DO NOTHING;
 EOSQL
 }
@@ -140,7 +187,7 @@ elif [ "$SKIP_OSM" = true ]; then
   drop_raw_tables
 
 elif [ "$EDGE_COUNT" -gt 0 ]; then
-  echo "==> road_edges already has $EDGE_COUNT rows — skipping osm2pgrouting."
+  echo "==> road_network_edges_pgr already has $EDGE_COUNT rows — skipping osm2pgrouting."
   echo "    Use --force to re-run or --skip-osm2pgrouting to re-copy only."
   exit 0
 

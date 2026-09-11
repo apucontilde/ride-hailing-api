@@ -31,12 +31,12 @@ func (s *NavigationService) GetRoute(fromLat, fromLng, toLat, toLng float64) (*R
 	}
 
 	var polyline []model.LatLng
+	// Anchor the drawn line to the exact pins, not just the snapped nodes.
+	polyline = appendPoint(polyline, model.LatLng{Lat: fromLat, Lng: fromLng})
 	for _, n := range nodes {
-		polyline = append(polyline, model.LatLng{
-			Lat: n.Lat,
-			Lng: n.Lng,
-		})
+		polyline = appendPoint(polyline, model.LatLng{Lat: n.Lat, Lng: n.Lng})
 	}
+	polyline = appendPoint(polyline, model.LatLng{Lat: toLat, Lng: toLng})
 
 	totalDistance := int(nodes[len(nodes)-1].AggCost)
 	// Simple approximation: average speed 11 m/s (~40 km/h)
@@ -47,4 +47,14 @@ func (s *NavigationService) GetRoute(fromLat, fromLng, toLat, toLng float64) (*R
 		DurationSecs:   totalDuration,
 		Polyline:       polyline,
 	}, nil
+}
+
+func appendPoint(points []model.LatLng, p model.LatLng) []model.LatLng {
+	if len(points) > 0 {
+		last := points[len(points)-1]
+		if last.Lat == p.Lat && last.Lng == p.Lng {
+			return points
+		}
+	}
+	return append(points, p)
 }

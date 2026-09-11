@@ -2,7 +2,7 @@
 
 Account/auth hooks: make the fake screens real and keep sessions alive.
 
-**Read first:** `rider_app/lib/features/auth/presentation/forgot_password_screen.dart`, `rider_app/lib/features/auth/model/auth_user.dart`, `rider_app/lib/features/home/presentation/profile_screen.dart`, `rider_app/lib/core/api/api_client.dart`, `rider_app/lib/core/auth/auth_provider.dart`.
+**Read first:** `rider_app/lib/features/auth/presentation/forgot_password_screen.dart`, `rider_app/lib/features/auth/model/auth_user.dart`, `rider_app/lib/features/home/presentation/profile_screen.dart`, `rider_app/lib/core/api/api_client.dart`, `rider_app/lib/core/auth/auth_provider.dart`. (Post-refactor: `ApiClient`, `AuthStorage`, `AuthUser`, and the token lifecycle now come from `shared/`; `rider_app/lib/core/auth/auth_provider.dart` subclasses `AppAuthController` and wires `ApiConfig.baseUrl`.)
 
 ## AC-1 — real forgot-password
 

@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"net/url"
 	"regexp"
 	"strings"
 	"time"
@@ -40,6 +41,30 @@ func maskSensitive(body []byte) []byte {
 	return []byte(s)
 }
 
+// maskQueryTokens redacts credentials that travel in the URL query string
+// (e.g. /ws?access_token=...), which the URI is otherwise logged verbatim.
+func maskQueryTokens(uri string) string {
+	if !strings.Contains(uri, "?") {
+		return uri
+	}
+	u, err := url.ParseRequestURI(uri)
+	if err != nil {
+		return uri
+	}
+	q := u.Query()
+	masked := false
+	for _, key := range []string{"access_token", "token"} {
+		if q.Has(key) {
+			q.Set(key, "***")
+			masked = true
+		}
+	}
+	if !masked {
+		return uri
+	}
+	return u.Path + "?" + q.Encode()
+}
+
 type bodyWriter struct {
 	gin.ResponseWriter
 	body *bytes.Buffer
@@ -64,7 +89,7 @@ func DebugLogger() gin.HandlerFunc {
 	return func(c *gin.Context) {
 		method := c.Request.Method
 		reqID := ensureRequestID(c)
-		uri := c.Request.URL.RequestURI()
+		uri := maskQueryTokens(c.Request.URL.RequestURI())
 
 		var reqLog []string
 		if c.Request.Body != nil {

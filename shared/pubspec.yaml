@@ -1,0 +1,29 @@
+name: ride_hailing_shared
+description: "Shared core logic (API, auth, websocket, models, theme, utils) for the ride-hailing rider and driver apps."
+publish_to: none
+version: 0.1.0
+
+resolution: workspace
+
+environment:
+  sdk: ^3.12.2
+
+dependencies:
+  flutter:
+    sdk: flutter
+  flutter_riverpod: ^2.6.1
+  dio: ^5.7.0
+  flutter_secure_storage: 10.0.0
+  web_socket_channel: ^3.0.2
+  geolocator: ^13.0.2
+  latlong2: ^0.9.1
+
+dev_dependencies:
+  flutter_test:
+    sdk: flutter
+  flutter_lints: ^6.0.0
+  mocktail: ^1.0.4
+  http_mock_adapter: ^0.6.1
+
+flutter:
+  uses-material-design: false

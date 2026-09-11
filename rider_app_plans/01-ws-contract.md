@@ -1,8 +1,10 @@
 # 01 — WS-1: Realign WS event handling (foundation)
 
+> **Status: ✅ DONE** — implemented in `rider_app/`. `flutter analyze` clean, `flutter test` fully green (98 tests), incl. new `test/features/home/data/ride_status_provider_test.dart`.
+
 Fix the ride-status event contract in the rider app. The app listens for events the backend never sends, so driver-arrival, cancelled, and completion states are broken today.
 
-**Read first:** `rider_app/lib/features/home/data/ride_status_provider.dart`, `rider_app/lib/features/home/model/driver.dart`, `rider_app/lib/core/network/websocket_service.dart`.
+**Read first:** `rider_app/lib/features/home/data/ride_status_provider.dart`, `rider_app/lib/features/home/model/driver.dart`, `rider_app/lib/core/network/websocket_service.dart`. (Post-refactor: the WS transport + `Ride` model live in `shared/`; the app files are thin re-export shims — see `AGENTS.md` "Core-file re-export convention".)
 
 ## Backend contract (authoritative, `internal/websocket/messages.go`)
 

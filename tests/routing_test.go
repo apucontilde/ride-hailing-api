@@ -22,11 +22,17 @@ func TestNavigationRouteReturnsEdgeSequence(t *testing.T) {
 	}
 	parseJSON(t, loginResp.Body, &loginResult)
 
-	resp := ts.DoRequest("GET", "/api/v1/navigation/route?from=40.7128,-74.0060&to=40.7580,-73.9855",
+	resp := ts.DoRequest("GET", "/api/v1/navigation/route?from_lat=40.7128&from_lng=-74.0060&to_lat=40.7580&to_lng=-73.9855",
 		loginResult.AccessToken, nil)
 	resp.AssertStatus(t, http.StatusOK)
 	resp.AssertJSONHas(t, "total_distance_m")
 	resp.AssertJSONHas(t, "total_duration_s")
+	resp.AssertJSONHas(t, "polyline")
+
+	// Missing coordinates are a validation error, not a silent fallback.
+	bad := ts.DoRequest("GET", "/api/v1/navigation/route?from_lat=40.7128&from_lng=-74.0060",
+		loginResult.AccessToken, nil)
+	bad.AssertStatus(t, http.StatusUnprocessableEntity)
 }
 
 func TestGeoETA(t *testing.T) {

@@ -13,15 +13,16 @@ Goal: update `rider_app/` so it actually drives the current backend API (`051eca
 | `05-idem-and-location.md` | LC-0 idempotency-key reuse + GEO-1 rider-location ping (GEO-3 keeps `nearbyDriversProvider`) | none |
 | `06-auth-and-profile.md` | AC-1 forgot-password + AC-2 real profile + AC-3 401 auto-refresh | none |
 | `07-sos-and-skip.md` | SAF-1 SOS + explicit skip list + backend follow-ups | 01 |
-| `08-user-stories-improvements.md` | Suggested changes to `USER_STORIES.md` | none |
+| `08-fix-ride-creation.md` | **BUG FIX (do first on web):** ride creation end-to-end — cross-platform WS + `idempotency-key` CORS + `no_driver_available` surfacing + error/401 handling | none |
 
-Expected order: 01 → [02, 03] → [04, 05, 06] → 07. Each plan has its own acceptance criteria; nothing below requires another plan to pass first except as noted.
+Expected order: 01 → [02, 03] → [04, 05, 06] → 07, and **08 first when testing on Chrome/web** — without it the app cannot `POST /rides` (CORS) nor receive any WS state, so the create flow is broken on that target. Each plan has its own acceptance criteria; nothing below requires another plan to pass first except as noted.
 
 ## Facts everything relies on (re-audited at `051ecaf`)
 
 - **Endpoint base:** `{API_BASE_URL}/api/v1`, defined in `rider_app/lib/core/api/endpoints.dart`. All protected calls send `Authorization: Bearer <access_token>`.
-- **WS (receive-only for rider):** backend pushes `ride.updated` (statuses `pending/accepted/driver_arrived/in_progress/completed/cancelled`), `driver.location`, and `ride.offer` (driver-only). See `01-ws-contract.md` for exact shapes. Backend **never** pushes the app's invented `ride_matched` / `driver_moved` / `ride_arrived` / `ride_completed`.
-- **Already wired correctly:** `POST /auth/register|login|logout`, `params GET /rider/me` (auth check), `GET /estimates/price`, `GET /places/autocomplete`, `POST /rides`, WS `connect`.
+- **WS (receive-only for rider):** backend pushes `ride.updated` (statuses `pending/accepted/driver_arrived/in_progress/completed/cancelled`), `driver.location`, and `ride.offer` (driver-only). See `01-ws-contract.md` for exact shapes. Backend **never** pushes the app's invented `ride_matched` / `driver_moved` / `ride_arrived` / `ride_completed`. **On web, WS connect is currently broken** (transport + header auth) — fixed by `08-fix-ride-creation.md`; backend also doesn't push `no_driver_available`.
+- **Already wired correctly:** `POST /auth/register|login|logout`, `params GET /rider/me` (auth check), `GET /estimates/price`, `GET /places/autocomplete`, `POST /rides`, WS `connect` (native-only).
+- **Web/CORS gotcha:** `POST /rides` sends `Idempotency-Key` — `internal/router/router.go` `AllowHeaders` must include it or browsers block the request (see `08`).
 - **Declared-but-unused** (`endpoints.dart`): `eta`, `currentRide`, `rideById`, `cancelRide`, `rateRide`, `tipRide`, `receipt`, `driverLocation`, `paymentMethods`, `ridesHistory`, `sos`.
 - **Never declared:** `PUT /geo/rider/location`, `PUT /rider/me`, `PUT /rider/me/status`.
 - **Fake UI today:** ForgotPasswordScreen (fake), HistoryScreen ("No rides yet"), PaymentScreen ("coming soon"), SecurityScreen ("coming soon"), ProfileScreen (hardcoded), `ActiveRideScreen._cancelRide` (1s mock).

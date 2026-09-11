@@ -27,18 +27,16 @@ func TestNavigationRoute(t *testing.T) {
 
 		fromLat, fromLng := 9.9333, -84.0833 // San Jose, CR
 		toLat, toLng := 9.9433, -84.0733
-		
+
 		url := fmt.Sprintf("%s/api/v1/navigation/route?from_lat=%f&from_lng=%f&to_lat=%f&to_lng=%f",
 			ts.URL, fromLat, fromLng, toLat, toLng)
-		
+
 		req, _ := http.NewRequest("GET", url, nil)
 		req.Header.Set("Authorization", "Bearer "+token)
-		
+
 		resp, err := http.DefaultClient.Do(req)
 		assert.NoError(t, err)
 		defer resp.Body.Close()
-
-
 
 		assert.Equal(t, http.StatusOK, resp.StatusCode)
 
@@ -67,15 +65,12 @@ func TestNavigationRoute(t *testing.T) {
 		url := fmt.Sprintf("%s/api/v1/navigation/route?from_lat=abc&from_lng=def", ts.URL)
 		req, _ := http.NewRequest("GET", url, nil)
 		req.Header.Set("Authorization", "Bearer "+token)
-		
+
 		resp, err := http.DefaultClient.Do(req)
 		assert.NoError(t, err)
 		defer resp.Body.Close()
 
-
-		
-		// Should return 200 but with empty result or error depending on impl.
-		// Our current impl uses Sscanf which just leaves them at 0.0.
-		assert.Equal(t, http.StatusOK, resp.StatusCode)
+		// Coordinates are validated: missing/invalid values are a 422.
+		assert.Equal(t, http.StatusUnprocessableEntity, resp.StatusCode)
 	})
 }

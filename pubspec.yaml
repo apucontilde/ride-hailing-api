@@ -1,0 +1,31 @@
+name: ride_hailing
+publish_to: none
+description: "Pub workspace for the ride-hailing Flutter apps (rider_app, driver_app) and their shared package."
+
+environment:
+  sdk: ^3.12.2
+
+workspace:
+  - rider_app
+  - driver_app
+  - shared
+
+dev_dependencies:
+  melos: ^8.7.0
+
+melos:
+  scripts:
+    analyze:
+      exec:
+        command: flutter analyze
+        concurrency: 1
+        order: dependency
+      packageFilters:
+        flutter: true
+    test:
+      exec:
+        command: flutter test
+        concurrency: 1
+        order: dependency
+      packageFilters:
+        flutter: true

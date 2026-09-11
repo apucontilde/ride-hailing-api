@@ -43,7 +43,7 @@ func SetupWithRepos(cfg *config.Config, userRepo repository.UserRepository, ride
 	r.Use(cors.New(cors.Config{
 		AllowAllOrigins: true,
 		AllowMethods:    []string{"GET", "POST", "PUT", "PATCH", "DELETE", "HEAD", "OPTIONS"},
-		AllowHeaders:    []string{"Origin", "Content-Type", "Accept", "Authorization"},
+		AllowHeaders:    []string{"Origin", "Content-Type", "Accept", "Authorization", "Idempotency-Key"},
 		ExposeHeaders:   []string{"Content-Length"},
 	}))
 
@@ -213,7 +213,7 @@ func SetupWithRepos(cfg *config.Config, userRepo repository.UserRepository, ride
 	r.POST("/api/v1/driver/earnings/withdraw", authMw, middleware.RequireRole("driver"), platformHandler.StubPayment)
 
 	// WebSocket endpoint (hub created above)
-	r.GET("/ws", authMw, wsHub.HandleWS)
+	r.GET("/ws", middleware.AuthRequiredWS(authService), wsHub.HandleWS)
 
 	// OpenAPI / Swagger UI (serves the generated docs/swagger.json)
 	if swag.GetSwagger(swag.Name) == nil {

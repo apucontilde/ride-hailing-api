@@ -400,32 +400,15 @@ func (h *PlatformHandler) UpdateDestination(c *gin.Context) {
 //	@Failure	500			{object}	ErrorResponse	"Routing failed"
 //	@Router		/api/v1/navigation/route [get]
 func (h *PlatformHandler) NavigationRoute(c *gin.Context) {
-	fromLat := c.Query("from_lat")
-	fromLng := c.Query("from_lng")
-	toLat := c.Query("to_lat")
-	toLng := c.Query("to_lng")
-
-	// In a real app, we would parse these as float64.
-	// Using dummy values for now since they are strings in Query().
-	// But I should actually parse them.
-	var fLat, fLng, tLat, tLng float64
-	if _, err := fmt.Sscanf(fromLat, "%f", &fLat); err != nil {
-		_ = c.Error(fmt.Errorf("[navigation] route invalid from_lat value=%q: %w", fromLat, err))
-	}
-	if _, err := fmt.Sscanf(fromLng, "%f", &fLng); err != nil {
-		_ = c.Error(fmt.Errorf("[navigation] route invalid from_lng value=%q: %w", fromLng, err))
-	}
-	if _, err := fmt.Sscanf(toLat, "%f", &tLat); err != nil {
-		_ = c.Error(fmt.Errorf("[navigation] route invalid to_lat value=%q: %w", toLat, err))
-	}
-	if _, err := fmt.Sscanf(toLng, "%f", &tLng); err != nil {
-		_ = c.Error(fmt.Errorf("[navigation] route invalid to_lng value=%q: %w", toLng, err))
+	fromLat, fromLng, toLat, toLng, ok := h.parseCoordinates(c, fromToKeys)
+	if !ok {
+		return
 	}
 
-	route, err := h.navSvc.GetRoute(fLat, fLng, tLat, tLng)
+	route, err := h.navSvc.GetRoute(fromLat, fromLng, toLat, toLng)
 	if err != nil {
-		_ = c.Error(fmt.Errorf("[navigation] route failed from=(%.5f,%.5f) to=(%.5f,%.5f): %w", fLat, fLng, tLat, tLng, err))
-		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		_ = c.Error(fmt.Errorf("[navigation] route failed from=(%.5f,%.5f) to=(%.5f,%.5f): %w", fromLat, fromLng, toLat, toLng, err))
+		c.JSON(http.StatusInternalServerError, gin.H{"error": gin.H{"code": "INTERNAL", "message": err.Error()}})
 		return
 	}
 
@@ -538,7 +521,7 @@ func (h *PlatformHandler) parseCoordinates(c *gin.Context, keys paramSet) (lat1,
 	for _, key := range [4]string{keys.lat1, keys.lng1, keys.lat2, keys.lng2} {
 		v, err := strconv.ParseFloat(c.Query(key), 64)
 		if err != nil {
-			_ = c.Error(fmt.Errorf("[estimates] invalid %s value=%q: %w", key, c.Query(key), err))
+			_ = c.Error(fmt.Errorf("invalid coordinate param %s value=%q: %w", key, c.Query(key), err))
 			c.JSON(http.StatusUnprocessableEntity, gin.H{"error": gin.H{"code": "VALIDATION_ERROR", "message": "invalid " + key}})
 			return 0, 0, 0, 0, false
 		}

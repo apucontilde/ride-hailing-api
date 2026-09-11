@@ -13,11 +13,11 @@ import (
 )
 
 type DispatchService struct {
-	rideRepo      repository.RideRepository
-	geoRepo       repository.GeoRepository
-	userRepo      repository.UserRepository
-	navSvc        *NavigationService
-	hub           *websocket.Hub
+	rideRepo        repository.RideRepository
+	geoRepo         repository.GeoRepository
+	userRepo        repository.UserRepository
+	navSvc          *NavigationService
+	hub             *websocket.Hub
 	offerChannels   map[string]chan bool
 	offerChannelsMu sync.Mutex
 }
@@ -58,7 +58,19 @@ func (s *DispatchService) Dispatch(ride *model.Ride) error {
 
 	s.rideRepo.UpdateRideStatus(ride.ID, "no_driver_available", nil)
 	log.Printf("ride %s: no drivers found in service area", ride.ID)
+	s.pushNoDriverAvailable(ride)
 	return nil
+}
+
+func (s *DispatchService) pushNoDriverAvailable(ride *model.Ride) {
+	s.hub.SendToUser(ride.RiderID, websocket.OutgoingMessage{
+		Type: "ride.updated",
+		Data: websocket.RideUpdateData{
+			RideID:    ride.ID,
+			Status:    "no_driver_available",
+			Timestamp: time.Now(),
+		},
+	})
 }
 
 func (s *DispatchService) sendRequestsSequentially(ride *model.Ride, drivers []model.NearbyDriverResult) {
@@ -77,6 +89,7 @@ func (s *DispatchService) sendRequestsSequentially(ride *model.Ride, drivers []m
 	if err == nil && current.Status == "pending" {
 		s.rideRepo.UpdateRideStatus(ride.ID, "no_driver_available", nil)
 		log.Printf("ride %s: all drivers declined", ride.ID)
+		s.pushNoDriverAvailable(ride)
 	}
 }
 

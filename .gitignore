@@ -5,3 +5,8 @@ build/
 .env
 *.exe
 *.out
+
+.dart_tool
+.idea
+.opencode
+.vscode
