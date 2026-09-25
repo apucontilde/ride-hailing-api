@@ -34,6 +34,10 @@ class WebSocketService {
 
   Stream<Map<String, dynamic>> get events => _eventController.stream;
 
+  /// Whether a live socket is currently open. Used by the driver offer dialog
+  /// to decide between the WS accept path and the HTTP fallback.
+  bool get isConnected => _channel != null;
+
   Future<void> connect({required String token}) async {
     if (_isDisposed) return;
     if (_channel != null && _accessToken == token) return;

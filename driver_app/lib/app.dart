@@ -1,5 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'core/auth/auth_provider.dart';
+import 'core/location/location_service.dart';
 import 'core/router/app_router.dart';
 import 'core/theme/app_theme.dart';
 
@@ -8,6 +10,22 @@ class DriverApp extends ConsumerWidget {
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
+    // Lifecycle: manage location stream based on auth/profile state.
+    final authState = ref.watch(authProvider);
+    final profile = ref.watch(driverProfileProvider);
+    final service = ref.read(locationServiceProvider);
+
+    if (authState.isAuthenticated && profile?.isOnline == true) {
+      // Crash-while-online recovery: re-arm stream without flipping switch.
+      service.start();
+    } else if (authState.isAuthenticated) {
+      // Authenticated but offline: stream can start but only pushes when online.
+      service.start();
+    } else {
+      // Not authenticated: stop everything on logout.
+      service.stop();
+    }
+
     final router = ref.watch(routerProvider);
     return MaterialApp.router(
       title: 'Driver App',

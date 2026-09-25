@@ -7,6 +7,7 @@ export 'package:ride_hailing_shared/ride_hailing_shared.dart'
         BadRequestException,
         ForbiddenException,
         ConflictException,
+        OfferExpiredException,
         ValidationException,
         RateLimitedException,
         mapStatusCodeToException;

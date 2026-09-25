@@ -43,6 +43,10 @@ class ValidationException extends ApiException {
       : super(statusCode: 422);
 }
 
+class OfferExpiredException extends ConflictException {
+  OfferExpiredException([super.message = 'Offer expired or ride taken']);
+}
+
 class RateLimitedException extends ApiException {
   RateLimitedException([super.message = 'Too many requests'])
       : super(statusCode: 429);

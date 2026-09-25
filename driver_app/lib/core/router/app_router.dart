@@ -9,8 +9,11 @@ import '../../features/auth/presentation/forgot_password_screen.dart';
 import '../../features/auth/presentation/reset_password_screen.dart';
 import '../../features/onboarding/presentation/onboarding_screen.dart';
 import '../../features/home/presentation/home_screen.dart';
+import '../../features/trip/presentation/trip_screen.dart';
 import '../../features/profile/presentation/profile_screen.dart';
+import '../../features/rides/presentation/rides_history_screen.dart';
 import '../../features/settings/presentation/settings_screen.dart';
+import '../../features/vehicle/presentation/vehicle_screen.dart';
 
 final _shellKey = GlobalKey<NavigatorState>();
 
@@ -80,6 +83,18 @@ final routerProvider = Provider<GoRouter>((ref) {
       GoRoute(
         path: '/settings',
         builder: (context, state) => const SettingsScreen(),
+      ),
+      GoRoute(
+        path: '/vehicle',
+        builder: (context, state) => const VehicleScreen(),
+      ),
+      GoRoute(
+        path: '/rides-history',
+        builder: (context, state) => const RidesHistoryScreen(),
+      ),
+      GoRoute(
+        path: '/trip',
+        builder: (context, state) => const TripScreen(),
       ),
     ],
   );
