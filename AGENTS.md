@@ -29,6 +29,13 @@ Operating rules for agents working in this repo. Read before changing anything.
 Server config is env-driven (`internal/config/config.go`): `SERVER_PORT` (default 8080),
 `DB_HOST/DB_PORT/DB_USER/DB_PASSWORD/DB_NAME` (defaults `ridehail`/`ridehail_pass`/`ridehailing`
 on localhost:5432), `REDIS_HOST/REDIS_PORT` (localhost:6379), `DEBUG_LOGGING`.
+Routing/region env: `ROUTING_ENGINE` (`native` default), `ROUTING_SNAP_RADIUS_M` (0 = always
+snap; set >0 to get no-coverage estimates), `ROUTING_DEFAULT_REGION` (defaults to the
+`default_region=TRUE` registry row), `ROUTING_MAX_REGIONS_IN_MEMORY` (0 = keep every city's
+native graph). Per-datasource pools (api_plans/06) read `routing_datasources` rows from the
+local DB and take each city DB's password from `DATASOURCE_<ID>_PASSWORD` (id uppercased,
+`-`→`_`) or `~/.pgpass` — never from the row; `ROUTING_DATASOURCE_SSLMODE` /
+`ROUTING_DATASOURCE_MAX_CONNS` tune those pools.
 Containers: `ride-hailing-db` (postgis/postgis:16-3.4-alpine), `ride-hailing-redis`.
 
 ## Environment facts agents MUST know
@@ -99,6 +106,13 @@ haversine line between the pins, and `total_distance_m`/`total_duration_s` (= /1
 line. Coverage is gated by `ROUTING_SNAP_RADIUS_M` (>0 required for estimates to fire;
 default 0 = "always snap", so any pin on Earth resolves into the nearest imported region).
 Cross-region trips are also estimates (intercity is deferred, plan 07 stub).
+
+Since api_plans/06, one stack serves **many cities**: each `routing_regions` row may name a
+`datasource` (its own Postgres). The repo keeps one pool per datasource and one lazily built
+native graph per region (evictable via `ROUTING_MAX_REGIONS_IN_MEMORY`); a region's routes
+run on that region's graph in that region's pool. A datasource that is down degrades only
+its own regions to the estimate (HTTP 200, `is_estimate`), never a 500 for other cities.
+Same-DB regions (`datasource` NULL) behave exactly as plan 05.
 
 ## Conventions
 

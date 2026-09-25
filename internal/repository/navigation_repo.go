@@ -3,6 +3,7 @@ package repository
 import (
 	"errors"
 	"fmt"
+	"log"
 	"sync"
 
 	"github.com/jmoiron/sqlx"
@@ -124,16 +125,13 @@ func loadRegisteredRegions(db *sqlx.DB) ([]model.RegionRef, error) {
 	return regions, nil
 }
 
-// snapInRegion is the shared region-scoped snap. ok=false means "not covered":
-// no vertex in that region, or the nearest one is beyond radiusM (radiusM <= 0
-// disables the check, matching the config semantics). The datasource is the
-// LOCAL pool on this plan; plan 06 adds the per-datasource pool map and this
-// argument selects it.
-func snapInRegion(db *sqlx.DB, lat, lng float64, datasource, regionID string, radiusM float64) (model.SnapResult, bool) {
-	if datasource != "" {
-		// A region living in another datasource has no rows in the local pool,
-		// so it cannot cover a pin here. Returned as "not covered" rather than
-		// an error: the resolver then tries the next candidate.
+// snapInRegion is the shared region-scoped snap, run against the pool that
+// owns the region (api_plans/06 selects it from the region's datasource).
+// ok=false means "not covered": no vertex in that region, the nearest one is
+// beyond radiusM (radiusM <= 0 disables the check, matching the config
+// semantics), or the pool itself could not answer.
+func snapInRegion(db *sqlx.DB, lat, lng float64, regionID string, radiusM float64) (model.SnapResult, bool) {
+	if db == nil {
 		return model.SnapResult{}, false
 	}
 	var row snapRow
@@ -151,34 +149,92 @@ func snapInRegion(db *sqlx.DB, lat, lng float64, datasource, regionID string, ra
 	}, true
 }
 
+// regionGraphEntry is one cached per-region graph plus the datasource it was
+// loaded from. Keeping the datasource lets an operator re-point a region at
+// another city database and have the next request rebuild instead of routing on
+// the stale graph.
+type regionGraphEntry struct {
+	graph      *routing.Graph
+	datasource string
+}
+
+// graphLoad is the in-flight marker for one region's first build. Concurrent
+// requests for the SAME region share the single load (a city graph is ~150 MB
+// and seconds to build); requests for OTHER regions never wait on it, which is
+// the "one city never blocks another" property in-process, not just in the DB.
+type graphLoad struct {
+	done  chan struct{}
+	graph *routing.Graph
+	err   error
+}
+
 // NativeNavigationRepo routes through the in-process A* graph
 // (internal/routing), the pre-pgRouting engine. It stays first-class: the
 // default engine and the fallback when ROUTING_ENGINE=pgrouting is requested
 // on a DB without the extension (api_plans/03).
+//
+// Per city it holds ONE lazily built, cached graph (api_plans/06), and per
+// datasource its own pool (see DatasourcePools).
 type NativeNavigationRepo struct {
 	db *sqlx.DB
+
+	// pools resolves a region's datasource to its pool. nil means "local only",
+	// which is what a single-city deployment gets.
+	pools *DatasourcePools
 
 	// snapRadiusM is ROUTING_SNAP_RADIUS_M for the region-scoped snap
 	// (api_plans/05). 0 means always snap, the same semantics the pgRouting
 	// repo has always used.
 	snapRadiusM float64
 
+	// maxRegions is ROUTING_MAX_REGIONS_IN_MEMORY: how many per-region graphs to
+	// keep. 0 = keep them all (~150-200 MB per city, the default for a handful
+	// of cities); a positive N evicts the least-recently-used region beyond N so
+	// a pod can hold a deliberate subset.
+	maxRegions int
+
 	mu     sync.Mutex
 	graph  *routing.Graph
-	graphs map[string]*routing.Graph
+	graphs map[string]*regionGraphEntry
+	// graphOrder is the LRU order of graphs: least recently used first. It
+	// always mirrors the keys of graphs.
+	graphOrder []string
+	// loading holds the per-region build in flight (see graphLoad).
+	loading map[string]*graphLoad
 	// The unscoped legacy graph and its "already tried" flag stay separate:
-	// GetShortestPath is the frozen pre-region contract.
+	// GetShortestPath is the frozen pre-region contract, and it is never evicted.
 	graphAttempted bool
 }
 
-// NewNavigationRepo builds the native repo. snapRadiusM is optional (a variadic
-// so pre-region call sites keep compiling); omitted means "always snap".
+// NewNavigationRepo builds the native repo against the LOCAL pool only.
+// snapRadiusM is optional (a variadic so pre-region call sites keep compiling);
+// omitted means "always snap".
 func NewNavigationRepo(db *sqlx.DB, snapRadiusM ...float64) *NativeNavigationRepo {
-	r := &NativeNavigationRepo{db: db, graphs: make(map[string]*routing.Graph)}
+	r := newNativeRepo(db, nil, 0)
 	if len(snapRadiusM) > 0 {
 		r.snapRadiusM = snapRadiusM[0]
 	}
 	return r
+}
+
+// NewNavigationRepoWithDatasources builds the native repo for the multi-city
+// shape: pools resolves every region's datasource, maxRegions caps the cached
+// per-region graphs (0 = unlimited). maxRegions <= 0 is treated as unlimited.
+func NewNavigationRepoWithDatasources(db *sqlx.DB, pools *DatasourcePools, snapRadiusM float64, maxRegions int) *NativeNavigationRepo {
+	return newNativeRepo(db, pools, maxRegions)
+}
+
+func newNativeRepo(db *sqlx.DB, pools *DatasourcePools, maxRegions int) *NativeNavigationRepo {
+	if maxRegions < 0 {
+		maxRegions = 0
+	}
+	return &NativeNavigationRepo{
+		db:         db,
+		pools:      pools,
+		maxRegions: maxRegions,
+		graphs:     make(map[string]*regionGraphEntry),
+		loading:    make(map[string]*graphLoad),
+	}
 }
 
 // roadGraph loads the PostGIS road network once and caches it as an
@@ -211,35 +267,114 @@ func (r *NativeNavigationRepo) roadGraph() (*routing.Graph, error) {
 }
 
 // regionGraph is roadGraph for ONE region: the region-scoped subgraph is
-// loaded once and cached, so a second city on the same stack neither sees the
-// first city's vertices nor re-pays the load. Per-region memory accounting and
-// eviction (ROUTING_MAX_REGIONS_IN_MEMORY) are plan 06's job; this plan only
-// needs the cache to be per-region rather than global. Like the unscoped load,
-// an empty region is retried on every call so an import takes effect without a
-// restart.
-func (r *NativeNavigationRepo) regionGraph(regionID string) (*routing.Graph, error) {
+// loaded once from the region's OWN pool and cached, so a second city on the
+// stack neither sees the first city's vertices nor re-pays the load, and an
+// import into that city is picked up the next time the region is asked for (the
+// cache only ever remembers SUCCESSFUL loads).
+//
+// Concurrency: the first request for a region builds while the mutex is free, so
+// a slow city never blocks another city's routing; a second request for the SAME
+// region waits for that one build instead of duplicating it.
+//
+// Eviction: when ROUTING_MAX_REGIONS_IN_MEMORY is exceeded the least recently
+// used region's graph is dropped (0 = never evict). Evicting only a cache entry
+// is always safe — in-flight requests keep the pointer they already hold.
+func (r *NativeNavigationRepo) regionGraph(regionID, datasource string) (*routing.Graph, error) {
 	r.mu.Lock()
-	defer r.mu.Unlock()
-
-	if g, ok := r.graphs[regionID]; ok {
+	if entry, ok := r.graphs[regionID]; ok && entry.datasource == datasource {
+		r.touchRegionLocked(regionID)
+		g := entry.graph
+		r.mu.Unlock()
 		return g, nil
 	}
+	if load, ok := r.loading[regionID]; ok {
+		// Someone else is already building this region: wait for their result.
+		r.mu.Unlock()
+		<-load.done
+		return load.graph, load.err
+	}
+	load := &graphLoad{done: make(chan struct{})}
+	if r.loading == nil {
+		r.loading = make(map[string]*graphLoad)
+	}
+	r.loading[regionID] = load
+	r.mu.Unlock()
 
-	nodes, err := r.loadNodesInRegion(regionID)
+	graph, err := r.loadRegionGraph(regionID, datasource)
+
+	r.mu.Lock()
+	if err == nil {
+		if r.graphs == nil {
+			r.graphs = make(map[string]*regionGraphEntry)
+		}
+		r.graphs[regionID] = &regionGraphEntry{graph: graph, datasource: datasource}
+		r.touchRegionLocked(regionID)
+		r.evictRegionsLocked()
+	}
+	load.graph, load.err = graph, err
+	delete(r.loading, regionID)
+	r.mu.Unlock()
+	close(load.done) // published last: waiters see the fields written above
+	return graph, err
+}
+
+// loadRegionGraph builds one region's graph from its own pool. Failures are NOT
+// cached, so an import (or a datasource that comes back up) takes effect on the
+// next request without a restart.
+func (r *NativeNavigationRepo) loadRegionGraph(regionID, datasource string) (*routing.Graph, error) {
+	db := poolFor(r.db, r.pools, datasource)
+	if db == nil {
+		return nil, noPoolErr(datasource)
+	}
+
+	nodes, err := loadRegionNodes(db, regionID)
 	if err != nil {
-		return nil, err
+		return nil, datasourceErr(datasource, err)
 	}
 	if len(nodes) == 0 {
 		return nil, fmt.Errorf("road network not imported for region %q: run scripts/import-road-network.sh --region %s", regionID, regionID)
 	}
-	edges, err := r.loadEdgesInRegion(regionID)
+	edges, err := loadRegionEdges(db, regionID)
 	if err != nil {
-		return nil, err
+		return nil, datasourceErr(datasource, err)
 	}
 
-	g := routing.NewGraph(nodes, edges)
-	r.graphs[regionID] = g
-	return g, nil
+	return routing.NewGraph(nodes, edges), nil
+}
+
+// touchRegionLocked marks regionID as most recently used. Caller holds r.mu.
+func (r *NativeNavigationRepo) touchRegionLocked(regionID string) {
+	for i, id := range r.graphOrder {
+		if id == regionID {
+			r.graphOrder = append(r.graphOrder[:i], r.graphOrder[i+1:]...)
+			break
+		}
+	}
+	r.graphOrder = append(r.graphOrder, regionID)
+}
+
+// evictRegionsLocked drops least-recently-used graphs until the cache fits the
+// ROUTING_MAX_REGIONS_IN_MEMORY budget. Caller holds r.mu.
+func (r *NativeNavigationRepo) evictRegionsLocked() {
+	if r.maxRegions <= 0 {
+		return
+	}
+	for len(r.graphOrder) > r.maxRegions {
+		victim := r.graphOrder[0]
+		r.graphOrder = r.graphOrder[1:]
+		delete(r.graphs, victim)
+		log.Printf("[routing] region graph %q evicted (ROUTING_MAX_REGIONS_IN_MEMORY=%d)", victim, r.maxRegions)
+	}
+}
+
+// CachedRegionIDs returns the region ids whose graph is currently in memory,
+// least recently used first. It is introspection: eviction tests and operational
+// debugging ("which cities does this pod hold?") read it, the request path does
+// not.
+func (r *NativeNavigationRepo) CachedRegionIDs() []string {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return append([]string(nil), r.graphOrder...)
 }
 
 func (r *NativeNavigationRepo) loadNodes() ([]routing.Node, error) {
@@ -277,7 +412,9 @@ func (r *NativeNavigationRepo) loadEdges() ([]routing.Edge, error) {
 	return edges, nil
 }
 
-func (r *NativeNavigationRepo) loadNodesInRegion(regionID string) ([]routing.Node, error) {
+// loadRegionNodes/loadRegionEdges read one region's subgraph from the pool that
+// owns it. region_id is a bound parameter, never interpolated.
+func loadRegionNodes(db *sqlx.DB, regionID string) ([]routing.Node, error) {
 	query := `
 		SELECT
 			id,
@@ -287,7 +424,7 @@ func (r *NativeNavigationRepo) loadNodesInRegion(regionID string) ([]routing.Nod
 		WHERE region_id = $1
 	`
 	var rows []roadNode
-	if err := r.db.Select(&rows, query, regionID); err != nil {
+	if err := db.Select(&rows, query, regionID); err != nil {
 		return nil, fmt.Errorf("failed to load road network vertices for region %q: %w", regionID, err)
 	}
 	nodes := make([]routing.Node, 0, len(rows))
@@ -297,14 +434,14 @@ func (r *NativeNavigationRepo) loadNodesInRegion(regionID string) ([]routing.Nod
 	return nodes, nil
 }
 
-func (r *NativeNavigationRepo) loadEdgesInRegion(regionID string) ([]routing.Edge, error) {
+func loadRegionEdges(db *sqlx.DB, regionID string) ([]routing.Edge, error) {
 	query := `
 		SELECT source, target, cost
 		FROM road_network_edges_pgr
 		WHERE region_id = $1
 	`
 	var rows []roadEdge
-	if err := r.db.Select(&rows, query, regionID); err != nil {
+	if err := db.Select(&rows, query, regionID); err != nil {
 		return nil, fmt.Errorf("failed to load road network edges for region %q: %w", regionID, err)
 	}
 	edges := make([]routing.Edge, 0, len(rows))
@@ -320,9 +457,12 @@ func (r *NativeNavigationRepo) RegisteredRegions() ([]model.RegionRef, error) {
 	return loadRegisteredRegions(r.db)
 }
 
-// Snap finds the nearest road vertex to a pin inside one region.
+// Snap finds the nearest road vertex to a pin inside one region, in the pool
+// that region's datasource names. An unresolvable datasource is "not covered"
+// rather than an error: the resolver then tries the next candidate, and if none
+// covers the pin the request degrades to a straight-line estimate.
 func (r *NativeNavigationRepo) Snap(lat, lng float64, datasource, regionID string) (model.SnapResult, bool) {
-	return snapInRegion(r.db, lat, lng, datasource, regionID, r.snapRadiusM)
+	return snapInRegion(poolFor(r.db, r.pools, datasource), lat, lng, regionID, r.snapRadiusM)
 }
 
 // GetShortestPath is the frozen pre-region contract: it routes against the
@@ -335,9 +475,12 @@ func (r *NativeNavigationRepo) GetShortestPath(fromLat, fromLng, toLat, toLng fl
 	return routeResults(g, fromLat, fromLng, toLat, toLng)
 }
 
-// RouteInRegion routes against one region's subgraph only.
-func (r *NativeNavigationRepo) RouteInRegion(regionID string, fromLat, fromLng, toLat, toLng float64) ([]RouteResult, error) {
-	g, err := r.regionGraph(regionID)
+// RouteInRegion routes against one region's subgraph only, loaded from that
+// region's own datasource pool. A datasource that cannot be reached returns an
+// ErrDatasourceUnavailable-wrapped error, which the service degrades to an
+// estimate rather than a 500.
+func (r *NativeNavigationRepo) RouteInRegion(regionID, datasource string, fromLat, fromLng, toLat, toLng float64) ([]RouteResult, error) {
+	g, err := r.regionGraph(regionID, datasource)
 	if err != nil {
 		return nil, err
 	}

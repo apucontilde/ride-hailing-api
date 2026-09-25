@@ -49,6 +49,20 @@ type Config struct {
 	// back to when no candidate region covers a pin. "" (default) relies on the
 	// registry's own default_region = TRUE row (api_plans/05).
 	RoutingDefaultRegion string
+	// RoutingMaxRegionsInMemory caps how many per-region native graphs a pod
+	// keeps cached (api_plans/06). 0 (default) keeps every city's graph, which
+	// is right for a handful of cities at ~150-200 MB each; a positive N evicts
+	// the least-recently-used region graph once N are held, so a pod can run
+	// with a deliberate subset.
+	RoutingMaxRegionsInMemory int
+	// RoutingDatasourceSSLMode is the sslmode used for per-datasource pools
+	// (api_plans/06). Empty falls back to the local DB_SSLMODE.
+	RoutingDatasourceSSLMode string
+	// RoutingDatasourceMaxConns caps each per-datasource pool (api_plans/06).
+	// Remote pools serve region snaps (and pgRouting routes when that engine is
+	// selected), never the native in-memory hot path, so a small pool per city
+	// is the right shape. <= 0 leaves sizing to database/sql.
+	RoutingDatasourceMaxConns int
 }
 
 func Load() *Config {
@@ -83,9 +97,15 @@ func Load() *Config {
 		PlacesMaxRadiusM:   float64(getInt("PLACES_MAX_RADIUS_M", 50000)),
 		PlacesDefaultLimit: getInt("PLACES_DEFAULT_LIMIT", 10),
 
-		RoutingEngine:        routingEngineFromEnv(),
-		RoutingSnapRadiusM:   getFloat("ROUTING_SNAP_RADIUS_M", 0),
-		RoutingDefaultRegion: getEnv("ROUTING_DEFAULT_REGION", ""),
+		RoutingEngine:             routingEngineFromEnv(),
+		RoutingSnapRadiusM:        getFloat("ROUTING_SNAP_RADIUS_M", 0),
+		RoutingDefaultRegion:      getEnv("ROUTING_DEFAULT_REGION", ""),
+		RoutingMaxRegionsInMemory: getInt("ROUTING_MAX_REGIONS_IN_MEMORY", 0),
+		// A city database may live on another host with different TLS
+		// requirements, so the mode is its own knob; unset means "same as the
+		// local database".
+		RoutingDatasourceSSLMode:  getEnv("ROUTING_DATASOURCE_SSLMODE", getEnv("DB_SSLMODE", "disable")),
+		RoutingDatasourceMaxConns: getInt("ROUTING_DATASOURCE_MAX_CONNS", 10),
 	}
 }
 

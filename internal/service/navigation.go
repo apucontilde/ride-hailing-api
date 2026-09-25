@@ -1,6 +1,7 @@
 package service
 
 import (
+	"errors"
 	"fmt"
 	"log"
 	"math"
@@ -47,8 +48,12 @@ type RegionSource interface {
 // RegionRouter is the optional region-scoped routing capability. A
 // RegionSource that also implements it routes against exactly the region the
 // resolver picked, so one city's graph can never answer for another's pins.
+//
+// The datasource travels with the region id because a region's rows may live in
+// another city database (api_plans/06): the repo must not have to re-read the
+// registry to know which pool to query. "" is the local database.
 type RegionRouter interface {
-	RouteInRegion(regionID string, fromLat, fromLng, toLat, toLng float64) ([]repository.RouteResult, error)
+	RouteInRegion(regionID, datasource string, fromLat, fromLng, toLat, toLng float64) ([]repository.RouteResult, error)
 }
 
 // The shipped repos must satisfy both optional capabilities.
@@ -83,6 +88,10 @@ func NewNavigationService(navRepo repository.NavigationRepository) *NavigationSe
 // region-scoped (RegionRouter) or unscoped (legacy). A repo without
 // RegionSource takes the legacy path unchanged, which is what keeps mocks and
 // pre-region deployments byte-for-byte compatible.
+//
+// With api_plans/06 the region also names a datasource (its own city database),
+// and a datasource that is down degrades this ONE trip to an estimate instead of
+// failing the request (see ErrDatasourceUnavailable).
 func (s *NavigationService) GetRoute(fromLat, fromLng, toLat, toLng float64) (*RouteInfo, error) {
 	if _, ok := s.navRepo.(RegionSource); !ok {
 		return s.legacyRoute(fromLat, fromLng, toLat, toLng)
@@ -118,13 +127,21 @@ func (s *NavigationService) GetRoute(fromLat, fromLng, toLat, toLng float64) (*R
 		rerr  error
 	)
 	if rr, ok := s.navRepo.(RegionRouter); ok {
-		nodes, rerr = rr.RouteInRegion(fromRegion.RegionID, fromLat, fromLng, toLat, toLng)
+		nodes, rerr = rr.RouteInRegion(fromRegion.RegionID, fromRegion.Datasource, fromLat, fromLng, toLat, toLng)
 	} else {
 		// RegionSource without RegionRouter: the repo can resolve coverage but
 		// not scope the query, so route the way it always has.
 		nodes, rerr = s.navRepo.GetShortestPath(fromLat, fromLng, toLat, toLng)
 	}
 	if rerr != nil {
+		// Another city's database is down (api_plans/06). That is a data gap
+		// for THAT city, not a broken request, so it degrades to the same
+		// straight-line estimate an uncovered pin gets: HTTP 200, is_estimate,
+		// no other region affected. Any other failure stays an error.
+		if errors.Is(rerr, repository.ErrDatasourceUnavailable) {
+			log.Printf("[navigation] routing datasource unavailable for region %q, serving an estimate: %v", fromRegion.RegionID, rerr)
+			return estimateRoute(fromLat, fromLng, toLat, toLng), nil
+		}
 		return nil, rerr
 	}
 	return routeInfo(fromLat, fromLng, toLat, toLng, nodes)
