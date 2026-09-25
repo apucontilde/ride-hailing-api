@@ -32,8 +32,10 @@ or even slowing — any other city.
   datasource (`datasource_id`/host/port/dbname/`db_user`; password via env, never stored).
   bboxes stay local — position→region candidacy never queries the remote datasource.
 - Plan 05's resolver already returns `{regionID, datasource, snapVertexID, snapDistanceM}`
-  and the importer is region-scoped (`--region`, per-region gate + region-scoped DELETE);
-  this plan adds `--datasource <id>` to the importer (Part 3).
+  and the importer is region-scoped (`--region`, per-region gate + region-scoped DELETE;
+  plan 05 also lands the `--datasource <id>` flag on the importer). This plan wires the
+  **pools/config** and the per-region graph cache (Part 3) against those, and exercises the
+  two-datasource import path; it does NOT re-edit the importer script.
 - Measured (plan 03): native ≈ 500–2000+ routing rps per node; ~150–200 MB RAM per city
   graph; DB pool pressure comes from auth/rides, not native routing. Use these to size
   Part 3.
@@ -74,13 +76,16 @@ or even slowing — any other city.
 - Rule that makes both shapes non-blocking: **every resource is per-region** — pool,
   graph, import, registry candidacy. Nothing global except the registry rows and places.
 
-### Part 3 — Importer `--datasource`
+### Part 3 — Datasource-aware wiring (imports + config)
 
-- Extend `scripts/import-road-network.sh --region <id>` with `--datasource <id>` (default "",
-  local DB): run the region-scoped pipeline against the target datasource, then upsert the
-  region's registry row with that datasource (`routing_regions.datasource`). `routing_
-  datasources` rows are created out-of-band (ops provisions a city's PG, then points the
-  serialized registry at it).
+- Plan 05's `import-road-network.sh --region <id> --datasource <id>` (default "", local DB)
+  already imports a region into any datasource and upserts the region's registry row with
+  that datasource. Plan 05 also creates `routing_datasources` rows out-of-band during ops;
+  this plan:
+  - wires `routing_datasources` rows into the repo's `map[datasourceID]*sqlx.DB` pools
+    (Part 1) so `--datasource` imports are routeable;
+  - adds `ROUTING_MAX_REGIONS_IN_MEMORY` so a pod can hold a subset of graphs;
+  - exercises a real second-datasource import in the integration suite (verification 3).
 
 ### Part 4 — Config + tests
 
@@ -121,10 +126,9 @@ or even slowing — any other city.
 ## Files to Modify
 
 - `internal/repository/` — `map[datasourceID]*sqlx.DB` pools + datasource-scoped queries;
-  per-region native graph cache with LRU budget; `RegisteredRegions()`/`Snap` honor
-  `RegionRef.Datasource` (plan-05 types).
+  per-region native graph cache with LRU budget; `RegisteredRegions()`/`Snap`/`RouteInRegion`
+  honor `RegionRef.Datasource` (plan-05 types).
 - `internal/router/router.go:32` — build datasource pools alongside the local `db`.
 - `internal/config/config.go` — `ROUTING_MAX_REGIONS_IN_MEMORY`.
-- `scripts/import-road-network.sh` — `--datasource` flag; registry upsert sets datasource.
 - `internal/repository/*_integration_test.go` — two-datasource dispatch + fail-safe + cache
-  eviction cases.
+  eviction cases. (The importer `--datasource` flag itself is plan 05's.)
