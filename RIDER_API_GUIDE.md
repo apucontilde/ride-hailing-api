@@ -232,9 +232,15 @@ Response shape:
 {
   "polyline": [{ "lat": 0, "lng": 0 }],
   "total_distance_m": 1234,
-  "total_duration_s": 112
+  "total_duration_s": 112,
+  "is_estimate": false
 }
 ```
+
+`is_estimate` is `true` when the pickup/dropoff fall outside every imported routing region
+(`ROUTING_SNAP_RADIUS_M` gate); the polyline is then the straight line between the pins and
+the distance is the haversine of it. The Dart apps keep their own straight-line fallback for
+the 500 case regardless.
 
 ## Platform and Utility
 

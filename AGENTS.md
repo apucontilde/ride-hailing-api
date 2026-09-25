@@ -91,6 +91,15 @@ Polyline endpoints are pinned to the exact pickup/dropoff coords. Distance = A* 
 (edge `cost` = road length in meters); duration = distance / 11 m/s. No route → 500 (the app
 falls back to a straight line).
 
+Since api_plans/05, routing is **region-scoped**: both pins must snap to the SAME
+`routing_regions` row (resolution is snap-first over candidates ordered by bbox-center
+distance, defaulting to `ROUTING_DEFAULT_REGION` or the `default_region=TRUE` row). Pins
+outside every region → HTTP 200 with `"is_estimate": true`, the polyline as the straight
+haversine line between the pins, and `total_distance_m`/`total_duration_s` (= /11) of that
+line. Coverage is gated by `ROUTING_SNAP_RADIUS_M` (>0 required for estimates to fire;
+default 0 = "always snap", so any pin on Earth resolves into the nearest imported region).
+Cross-region trips are also estimates (intercity is deferred, plan 07 stub).
+
 ## Conventions
 
 - Go: `gofmt` formatted; small focused packages; table-driven unit tests next to the code

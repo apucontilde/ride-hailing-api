@@ -281,3 +281,26 @@ Rewrite `scripts/import-road-network.sh`:
   verification steps 1 and 2 need a second region's extract).
 
 ## EXECUTED (2026-09-25)
+
+Merged into `main` (commit `6764288` "Merge plan/05"), on top of the plan 04 merge
+(`324925c`). Secondary review against the live DB confirmed the plan's own notes, plus
+these additional findings:
+
+- **The estimate path is gated on `ROUTING_SNAP_RADIUS_M`.** With the default `0` (the
+  pre-existing "always snap" contract), a pin ANYWHERE on Earth resolves into the nearest
+  imported region and is routed/snapped there — the "no coverage → estimate" fallback only
+  fires once an operator sets the radius (verified live with `ROUTING_SNAP_RADIUS_M=5000`:
+  an offshore pin pair returns `is_estimate:true` with the straight-line haversine; the same
+  pins under the default config snap into `cr-sj`). Deployments that want honest estimates
+  outside imports MUST configure this; the pgrouting engine's legacy snap shares the setting.
+- **Live route rendering unchanged for configured radius**: an in-region trip returns
+  2094 m / 190 s with a 42-point road-following polyline and `is_estimate` absent/false —
+  byte-compatible with the pre-plan output for covered pins.
+- **Migration 013 idempotency proven twice**: re-applying the up file against the live volume
+  succeeds (all `IF NOT EXISTS`/`DROP IF EXISTS`), and the 152,665-vertex SJ import survives
+  intact.
+- `make import-osm` / `import-osm-force` recipes forward NO region args (script is the
+  arg-bearing entrypoint) — a plain `make import-osm` re-imports `cr-sj` exactly as before.
+
+Operational note for running stacks: set `ROUTING_SNAP_RADIUS_M` (tens of km is fine) and
+optionally `ROUTING_DEFAULT_REGION` (defaults to the `default_region=TRUE` row, `cr-sj`).
