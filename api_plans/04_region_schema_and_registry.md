@@ -202,3 +202,26 @@ and the resolver's fallback.
 
 - `internal/database/migrations/013_region_schema.up.sql` *(new)* — everything above.
 - (No Go/importer changes here; plan 05 does the importer rewrite + Go resolver repo.)
+
+## EXECUTED (2026-09-25)
+
+Merged into `main` (commit `324925c`); migration `013_region_schema` applied live to the
+CR DB (commits `schema_migrations` at 013), re-applied idempotently against the live volume
+(all `IF NOT EXISTS` / `DROP IF EXISTS`; NOTICEs only), and the 152,665-vertex / 183,372-edge
+SJ import survived with `region_id='cr-sj'` intact.
+
+- **Required statement-order fix vs the schema above**: the 008-table PK swaps must DROP
+  `road_edges_source_fkey`/`road_edges_target_fkey` BEFORE `road_vertices_pkey` (Postgres
+  `2BP01` refuses to drop a PK that a foreign key depends on), then re-add the composite
+  `(region_id, source|target) → road_vertices(region_id, id)` FKs after. The first boot on a
+  fresh volume hit `2BP01` and rolled back atomically; the fixed file applied clean.
+- Constraint names match the plan's: `road_network_vertices_pgr_pkey`,
+  `road_network_edges_pgr_pkey`, `road_vertices_pkey`, `road_edges_pkey`, plus the reused
+  `road_edges_source_fkey` / `road_edges_target_fkey` names.
+- **Down-file caveat** (docs-only): the composite 008 FKs must be dropped before restoring
+  `road_vertices PRIMARY KEY (id)` or Postgres raises `42830`.
+- The composite FKs are `IMMEDIATE` (not `DEFERRABLE`) — this forced plan 05's importer to
+  insert `road_vertices` before `road_edges`.
+- `routing_regions` now seeds `cr` (country, bbox the national box) + `cr-sj` (state, parent
+  `cr`, bbox the province clip, `default_region=TRUE`), and `routing_datasources` + the
+  `routing_regions.datasource` column exist for plan 06 — both exercised by plan 05's tests.
