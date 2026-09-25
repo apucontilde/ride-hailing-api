@@ -130,9 +130,12 @@ type EstimatesPriceResponse struct {
 }
 
 // EstimatesETAResponse is returned by GET /api/v1/estimates/eta.
+// IsEstimate is true when the pins fell outside every imported region and the
+// numbers are a straight-line estimate (api_plans/05) rather than a routed leg.
 type EstimatesETAResponse struct {
-	EtaSeconds     int `json:"eta_seconds"`
-	DistanceMeters int `json:"distance_meters"`
+	EtaSeconds     int  `json:"eta_seconds"`
+	DistanceMeters int  `json:"distance_meters"`
+	IsEstimate     bool `json:"is_estimate"`
 }
 
 // PolylinePoint is a single coordinate along a route polyline.
@@ -142,10 +145,14 @@ type PolylinePoint struct {
 }
 
 // NavigationRouteResponse is returned by GET /api/v1/navigation/route.
+// IsEstimate is true when the pins fell outside every imported region, so
+// Polyline is the straight line between them rather than a road path
+// (api_plans/05).
 type NavigationRouteResponse struct {
 	Polyline       []PolylinePoint `json:"polyline"`
 	TotalDistanceM float64         `json:"total_distance_m"`
 	TotalDurationS float64         `json:"total_duration_s"`
+	IsEstimate     bool            `json:"is_estimate"`
 }
 
 // PromotionsResponse is returned by GET /api/v1/promotions.

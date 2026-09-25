@@ -159,7 +159,7 @@ func (g *Graph) scanNearest(lat, lng float64) (Node, bool) {
 	bestD := math.MaxFloat64
 	found := false
 	for _, n := range g.list {
-		d := haversineM(n.Lat, n.Lng, lat, lng)
+		d := HaversineMeters(n.Lat, n.Lng, lat, lng)
 		if d < bestD {
 			bestD = d
 			best = n
@@ -186,7 +186,7 @@ func (g *Graph) gridNearest(lat, lng float64) (Node, bool) {
 
 	pick := func(id int64) {
 		n := g.nodes[id]
-		if d := haversineM(n.Lat, n.Lng, lat, lng); d < bestD {
+		if d := HaversineMeters(n.Lat, n.Lng, lat, lng); d < bestD {
 			bestD = d
 			best = n
 			found = true
@@ -288,7 +288,7 @@ func (g *Graph) Route(fromLat, fromLng, toLat, toLng float64) ([]int64, float64,
 func (g *Graph) haversineTo(from, to int64) float64 {
 	a := g.nodes[from]
 	b := g.nodes[to]
-	return haversineM(a.Lat, a.Lng, b.Lat, b.Lng)
+	return HaversineMeters(a.Lat, a.Lng, b.Lat, b.Lng)
 }
 
 func (g *Graph) reconstruct(cameFrom map[int64]int64, start, goal int64, cost float64) ([]int64, float64, error) {
@@ -307,7 +307,12 @@ func (g *Graph) reconstruct(cameFrom map[int64]int64, start, goal int64, cost fl
 	return path, cost, nil
 }
 
-func haversineM(lat1, lng1, lat2, lng2 float64) float64 {
+// HaversineMeters is the great-circle distance in meters between two WGS84
+// coordinates. It is the ONE haversine implementation in the API: the engine's
+// A* heuristic, the region resolver's candidate ordering and the no-coverage
+// estimate (api_plans/05) all call it, so no caller copies the formula.
+// R matches the earth radius the rest of the package assumes.
+func HaversineMeters(lat1, lng1, lat2, lng2 float64) float64 {
 	const r = 6371000.0
 	phi1 := lat1 * math.Pi / 180
 	phi2 := lat2 * math.Pi / 180

@@ -41,23 +41,42 @@ coverage. Intercity is deferred (plan 07 stub).
 ### Part 1 — Resolver (Go)
 
 Put resolution in `internal/service` (it is the handler-facing layer and already imports
-`internal/repository`; there is NO import cycle — repository does not import service).
-`service` defines a narrow interface so unit tests never touch the DB:
+`internal/repository`; there is NO import cycle — repository does not import service). The
+DTOs go in `internal/model` (the seam every package already imports) so `repository` can
+return them without importing `service`; `service` owns the two narrow interfaces so unit
+tests never touch the DB:
 
 ```go
+// internal/model/region.go
 type RegionRef struct {
-    RegionID    string // registry id, e.g. "cr-sj"
-    Level       string // country / state / city
-    Parent      string // "" for a country; else parent region id (future intercity seam, plan 07; unused here)
-    Default     bool   // registry default_region
-    BBox        [4]float64
-    Datasource  string // "" = this DB; else a plan-06 datasource_id (separate-DB city)
+    RegionID   string    // registry id, e.g. "cr-sj"
+    Level      string    // country / state / city
+    Parent     string    // "" for a country; else parent region id (future intercity seam, plan 07; unused here)
+    Default    bool      // registry default_region
+    BBox       [4]float64 // {lon_min, lat_min, lon_max, lat_max}
+    Datasource string    // "" = this DB; else a plan-06 datasource_id (separate-DB city)
 }
+type SnapResult struct {
+    VertexID   int64   // matched vertex id
+    DistanceM  float64 // metres from the query point
+    Lat        float64
+    Lng        float64
+}
+
+// internal/service/navigation.go
 type RegionSource interface {
-    RegisteredRegions() ([]RegionRef, error) // registry rows (bbox, level, parent, default, datasource)
-    Snap(lat, lng float64, datasource, regionID string) (SnapResult, bool) // KNN within SNAP_RADIUS_M
+    RegisteredRegions() ([]model.RegionRef, error) // registry rows (bbox, level, parent, default, datasource)
+    Snap(lat, lng float64, datasource, regionID string) (model.SnapResult, bool) // KNN within SNAP_RADIUS_M
+}
+type RegionRouter interface {
+    RouteInRegion(regionID string, fromLat, fromLng, toLat, toLng float64) ([]repository.RouteResult, error)
 }
 ```
+
+The two capabilities are optional: a repo that implements neither keeps the pre-plan
+`GetShortestPath` behavior verbatim (that is how the test mocks and any frozen engine still
+work). `service` pins the contract with compile-time assertions on both shipped repos
+(`var _ RegionSource = (*repository.NativeNavigationRepo)(nil)`, etc.).
 
 `internal/repository` implements both methods WITHOUT importing `service` (Go interfaces are
 structural — a repo type just needs matching methods; `var _ service.RegionSource = (*NavigationRepo)(nil)` in the repo file is optional, service-side assertion in `router.go` is enough). Give the resolver an order of operations — **snap-first, then the default-region fallback**:
@@ -169,19 +188,96 @@ Rewrite `scripts/import-road-network.sh`:
 - `haversine` helper: prefer exporting tiny wrapper `routing.HaversineMeters(...)`; keep `R =
   6371000` constant identical to the engine's.
 
-## Files to Modify
+## Files Modified (as built)
 
-- `internal/config/config.go` — `getFloat(key string, def float64)`, `ROUTING_DEFAULT_REGION`.
-- `internal/service/navigation.go` — `RegionSource` interface (registry + region-scoped snap),
-  resolver + estimate fallback + `is_estimate` payload; **imports `internal/routing` for
-  `HaversineMeters`** (no cycle: routing imports no internal packages).
-- `internal/service/regions_test.go` *(new)* — fake `RegionSource`, default-region fallback,
-  no-coverage fallback.
-- `internal/routing/routing.go` — exported `HaversineMeters` wrapper (same `R = 6371000.0`).
-- `internal/repository/navigation_repo.go` — implement `RegisteredRegions` + `Snap`
-  (`routing_regions` + region-scoped KNN; structural, no `service` import).
-- `scripts/import-road-network.sh` — region-scoped gate/wipe(`DELETE`)/import/register/
-  indexes + `--datasource`.
-- `scripts/download-osm.sh` — accept an optional region arg for `--bbox` (default unchanged).
-- `Makefile` — keep `import-osm`/`import-osm-force`; document that region flags go to the
-  script directly (e.g. `./scripts/import-road-network.sh --region cr-lc`).
+- `internal/model/region.go` *(new)* — `RegionRef`, `SnapResult` (the DTO seam; see Part 1).
+- `internal/config/config.go` — `ROUTING_DEFAULT_REGION` (`getEnv`; `getFloat` already
+  existed, so no new helper).
+- `internal/routing/routing.go` — `HaversineMeters` exported (same `R = 6371000.0`); the
+  unexported name is gone.
+- `internal/routing/benchmark_test.go` — call sites follow the rename.
+- `internal/service/navigation.go` — `RegionSource`/`RegionRouter`, `RouteInfo.IsEstimate`,
+  legacy vs region-aware `GetRoute`, snap-first resolver, default-region fallback, estimate
+  path, `ROUTING_DEFAULT_REGION` override, compile-time assertions that both concrete repos
+  satisfy the interfaces.
+- `internal/service/regions_test.go` *(new)* — fake `RegionSource`/`RegionRouter`: resolution
+  order, single winning region, no-coverage estimate, cross-region, uncovered dropoff,
+  routing-error propagation, `RegionSource`-without-`RegionRouter` legacy fallback, default
+  selection.
+- `internal/repository/navigation_repo.go` — `RegisteredRegions`, `Snap`, `RouteInRegion`
+  (per-region graph cache), `ValidRegionID`, variadic `NewNavigationRepo(db, snapRadiusM ...)`
+  so the factory can pass the config radius. Legacy `GetShortestPath` and its naked-table SQL
+  are untouched.
+- `internal/repository/pgrouting_repo.go` — the same three methods against the region-scoped
+  pgr tables; factory forwards `cfg.RoutingSnapRadiusM`. Legacy SQL untouched.
+- `internal/repository/regions_integration_test.go` *(new, `-tags=integration`)* — colliding
+  region ids, two disjoint TEMP networks, registry mapping, region-scoped snap, native +
+  pgRouting `RouteInRegion`, no-route, SQL-injection rejection.
+- `internal/handler/platform.go`, `internal/handler/responses.go` — `is_estimate` on the
+  estimate response and on both response DTOs.
+- `docs/swagger.json`, `docs/swagger.yaml` — regenerated with `make openapi`; the only
+  spec change is `is_estimate` on `handler.NavigationRouteResponse` and
+  `handler.EstimatesETAResponse`.
+- `scripts/import-road-network.sh` — region-scoped gate/wipe/insert/register/indexes,
+  `--region`/`--bbox`/`--level`/`--name`/`--parent`/`--default`/`--datasource`, 013 preflight.
+- `scripts/download-osm.sh` — `--region <id>` + `--bbox <box>`, `<region>.osm.pbf` output,
+  default behaviour (`--san-jose` / whole country) unchanged.
+- `Makefile` — recipes unchanged; comments document that region flags go to the script.
+
+## Deviations from the plan above
+
+- **`getFloat` already exists** in `internal/config/config.go` — the "Current State" note was
+  stale, so no new helper was added.
+- **Registry-read errors fall back to legacy routing.** If `RegisteredRegions()` returns an
+  error, `GetRoute` logs it and takes the legacy no-region path instead of degrading every
+  route to an estimate: an unavailable registry is a degraded-but-working system, silently
+  straight-lining every rider is not.
+- **`ROUTING_DEFAULT_REGION` is read by the service, not injected by the router.**
+  `NewNavigationService(navRepo)` is called from `router.go` without a config today; rather
+  than change that signature the service reads the env var itself. The config field exists
+  for parity.
+- **Insert order on the 008 tables had to be fixed, not just the delete order.** Plan 04's
+  composite FKs (`road_edges (region_id, source|target) -> road_vertices (region_id, id)`) are
+  `IMMEDIATE`, not `DEFERRABLE`, so `road_vertices` MUST be inserted before `road_edges`.
+  The pre-plan-04 script (and the first draft of the rewrite) inserted edges first and would
+  have died on the first row with `23503`.
+- **No per-region composite btree indexes are emitted.** Verified against the live schema:
+  `rn_edges_src_region`/`rn_edges_tgt_region` on `(region_id, source)`/`(region_id, target)`
+  are full-table indexes (not partial) and the PKs are already `(region_id, id)`, so they
+  serve every region. Only the GIST is region-partial
+  (`rn_vertices_gist_region ... WHERE region_id = 'cr-sj'`), and that is the one the importer
+  recreates per region.
+- **The importer hard-requires the 013 schema** (preflight on the four `region_id` columns
+  plus `routing_regions`) instead of degrading to the old global behaviour. Region scoping is
+  not optional; without the registry it would create rows nobody can resolve.
+- **The region is registered BEFORE the import**, not only refreshed after: a crashed import
+  then still leaves a discoverable row, so the API resolves the region and returns honest
+  estimates instead of silently using legacy routing.
+- **`download-osm.sh --bbox` requires `--region`** so the clip is named after the region that
+  will own it (`data/<id>.osm.pbf`); `--san-jose` keeps its historical filename.
+
+## Verification performed
+
+- `go build ./...`, `go vet ./internal/... ./tests/...`, `go test -count=1 ./...` — green.
+- `go test -count=1 -tags=integration ./internal/repository/` and `make test-integration` —
+  green. New `internal/repository` tests: `TestRegisteredRegions` (incl. the SQL-injection
+  region id), `TestSnapIsRegionScoped`, `TestRouteInRegionNative` (4 subtests),
+  `TestRouteInRegionPGRouting` (5 subtests, incl. the interpolation-rejection case),
+  `TestValidRegionID`, `TestReposStillSatisfyNavigationRepository`. New
+  `internal/service` tests: 17 `TestResolveRegion*` / `TestOrderRegionsByProximity` /
+  `TestGetRoute*` / `TestDefaultRegionSelection` cases.
+- `bash -n` on both scripts; `--help` plus every argument-validation path exercised (invalid
+  or missing `--region`, `--datasource`, `--parent`, `--level`, `--bbox`; unknown flag;
+  duplicate positional).
+- Importer SQL validated against the live 013 schema inside a single transaction ending in
+  `ROLLBACK`: TEMP staging tables named `ways`/`ways_vertices_pgr`/`configuration` shadow
+  osm2pgrouting's public output, then the script's verbatim statements ran — registry upsert,
+  both region wipes, all three copy statements (3 vertices / 2 edges / 3 pgr vertices /
+  2 pgr edges), the per-region partial GIST, the `ST_Extent` bbox read and the bbox UPDATE.
+  A second transaction proved the FK-safe wipe order (edges deleted before vertices) against
+  rows that really exist. Both rolled back; a residue query for `cr-zz-%` regions, rows and
+  indexes came back empty.
+- NOT run: a real `osm2pgrouting` import (no fresh extract available; the plan's own
+  verification steps 1 and 2 need a second region's extract).
+
+## EXECUTED (2026-09-25)
