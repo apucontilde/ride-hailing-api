@@ -14,7 +14,8 @@ import (
 // pgrouting_repo_integration_test.go they shadow the real tables with TEMP
 // tables on a single-connection handle, so the registry, KNN and pgr_dijkstra
 // queries resolve to a tiny two-region fixture and the real SJ import is never
-// touched.
+// touched. (datasources_integration_test.go adds the multi-datasource pools on
+// top of the same helpers.)
 //
 // Fixture: two DISJOINT subnetworks with COLLIDING vertex and edge ids, which
 // is exactly what per-extract sequential ids produce in production. Vertex
@@ -32,6 +33,9 @@ const (
 	lcLngOffset = 0.030
 )
 
+// pinFn maps a vertex id to its coordinates inside a region.
+type pinFn func(id int64) (lat, lng float64)
+
 // sjPin returns the coordinates of vertex `id` inside cr-sj.
 func sjPin(id int64) (lat, lng float64) { return float64(id) * 0.001, 0 }
 
@@ -40,34 +44,25 @@ func lcPin(id int64) (lat, lng float64) {
 	return float64(id)*0.001 + lcLatOffset, lcLngOffset
 }
 
-func seedRegionTables(t *testing.T) *sqlx.DB {
+// dropRegionTables removes TEMP fixtures at the end of a test. It is registered
+// on t.Cleanup IMMEDIATELY after the connection so it runs BEFORE the close
+// cleanup (cleanups are LIFO) while the session — and with it the temp tables —
+// is still alive. The drops are pg_temp-qualified so they can never reach a real
+// table.
+func dropRegionTables(t *testing.T, db *sqlx.DB, tables ...string) {
 	t.Helper()
-	db := connectPG(t)
-	db.SetMaxOpenConns(1) // temp tables must stay visible to every repo query
-	// Registered AFTER connectPG's close-cleanup, so it runs BEFORE it (t.Cleanup
-	// is LIFO) while the session — and with it the temp tables — is still alive.
-	// The drops are pg_temp-qualified so they can never reach a real table.
 	t.Cleanup(func() {
-		_, _ = db.Exec("DROP TABLE IF EXISTS pg_temp.road_network_edges_pgr")
-		_, _ = db.Exec("DROP TABLE IF EXISTS pg_temp.road_network_vertices_pgr")
-		_, _ = db.Exec("DROP TABLE IF EXISTS pg_temp.routing_regions")
+		for _, table := range tables {
+			_, _ = db.Exec("DROP TABLE IF EXISTS pg_temp." + table)
+		}
 	})
+}
 
-	// Registry, shaped like plan 04's routing_regions. cr-sj is the default
-	// region; cr-lc has no data yet; parent_region/datasource are NULL on one
-	// row each so the COALESCE mapping is exercised.
-	mustExec(t, db, "CREATE TEMP TABLE routing_regions ("+
-		"region_id TEXT PRIMARY KEY, level TEXT NOT NULL, name TEXT NOT NULL, "+
-		"parent_region TEXT, "+
-		"bbox_lon_min DOUBLE PRECISION, bbox_lat_min DOUBLE PRECISION, "+
-		"bbox_lon_max DOUBLE PRECISION, bbox_lat_max DOUBLE PRECISION, "+
-		"default_region BOOLEAN, datasource TEXT)")
-	mustExec(t, db, "INSERT INTO routing_regions (region_id, level, name, parent_region, "+
-		"bbox_lon_min, bbox_lat_min, bbox_lon_max, bbox_lat_max, default_region, datasource) VALUES "+
-		"('cr', 'country', 'Costa Rica', NULL, -85.95, 7.98, -82.55, 11.22, FALSE, NULL), "+
-		"('cr-sj', 'state', 'San Jose', 'cr', -0.001, 0.000, 0.001, 0.005, TRUE, NULL)")
-
-	// Composite (region_id, id) PKs: ids collide across regions by design.
+// createRegionTables creates the TEMP road-network pair, shaped like plan 04:
+// composite (region_id, id) PKs (ids collide across regions by design) and a
+// GIST on the vertex geometry for the region-scoped KNN.
+func createRegionTables(t *testing.T, db *sqlx.DB) {
+	t.Helper()
 	mustExec(t, db, "CREATE TEMP TABLE road_network_vertices_pgr ("+
 		"region_id TEXT NOT NULL, id BIGINT NOT NULL, the_geom GEOMETRY(Point,4326), "+
 		"lat DOUBLE PRECISION NOT NULL, lng DOUBLE PRECISION NOT NULL, "+
@@ -76,22 +71,71 @@ func seedRegionTables(t *testing.T) *sqlx.DB {
 		"region_id TEXT NOT NULL, id BIGINT NOT NULL, source BIGINT, target BIGINT, "+
 		"cost DOUBLE PRECISION, PRIMARY KEY (region_id, id))")
 	mustExec(t, db, "CREATE INDEX ON road_network_vertices_pgr USING GIST (the_geom)")
+}
 
-	for _, id := range []int64{1, 2, 3, 4, 30} {
-		lat, lng := sjPin(id)
-		mustExec(t, db, "INSERT INTO road_network_vertices_pgr (region_id, id, the_geom, lat, lng) "+
-			"VALUES ($1, $2, ST_SetSRID(ST_MakePoint($3, $4), 4326), $4, $3)", regionSJ, id, lng, lat)
-	}
-	mustExec(t, db, "INSERT INTO road_network_edges_pgr (region_id, id, source, target, cost) VALUES "+
-		"($1, 1, 1, 2, 100), ($1, 2, 2, 3, 100), ($1, 3, 3, 4, 100)", regionSJ)
+// createRegionRegistry creates the TEMP routing_regions. parent_region and
+// datasource are NULL-able by design, so the COALESCE mapping is exercised.
+func createRegionRegistry(t *testing.T, db *sqlx.DB) {
+	t.Helper()
+	mustExec(t, db, "CREATE TEMP TABLE routing_regions ("+
+		"region_id TEXT PRIMARY KEY, level TEXT NOT NULL, name TEXT NOT NULL, "+
+		"parent_region TEXT, "+
+		"bbox_lon_min DOUBLE PRECISION, bbox_lat_min DOUBLE PRECISION, "+
+		"bbox_lon_max DOUBLE PRECISION, bbox_lat_max DOUBLE PRECISION, "+
+		"default_region BOOLEAN, datasource TEXT)")
+}
 
-	for _, id := range []int64{1, 2} {
-		lat, lng := lcPin(id)
+// createDatasourceRegistry creates the TEMP routing_datasources that the
+// per-datasource pools read their connection coordinates from (api_plans/06).
+func createDatasourceRegistry(t *testing.T, db *sqlx.DB) {
+	t.Helper()
+	mustExec(t, db, "CREATE TEMP TABLE routing_datasources ("+
+		"datasource_id TEXT PRIMARY KEY, host TEXT NOT NULL, port INTEGER NOT NULL, "+
+		"dbname TEXT NOT NULL, db_user TEXT NOT NULL, label TEXT)")
+}
+
+// insertRegionVertices writes one region's vertices at the coordinates pin(id).
+func insertRegionVertices(t *testing.T, db *sqlx.DB, regionID string, pin pinFn, ids ...int64) {
+	t.Helper()
+	for _, id := range ids {
+		lat, lng := pin(id)
 		mustExec(t, db, "INSERT INTO road_network_vertices_pgr (region_id, id, the_geom, lat, lng) "+
-			"VALUES ($1, $2, ST_SetSRID(ST_MakePoint($3, $4), 4326), $4, $3)", regionLC, id, lng, lat)
+			"VALUES ($1, $2, ST_SetSRID(ST_MakePoint($3, $4), 4326), $4, $3)", regionID, id, lng, lat)
 	}
-	mustExec(t, db, "INSERT INTO road_network_edges_pgr (region_id, id, source, target, cost) VALUES "+
-		"($1, 1, 1, 2, 250)", regionLC)
+}
+
+// insertChain writes a one-directional hop chain (from -> from+1 -> ... -> to),
+// numbering edges the way a per-extract import does.
+func insertChain(t *testing.T, db *sqlx.DB, regionID string, from, to int64, hopCost float64) {
+	t.Helper()
+	for id, edge := from, from; edge < to; id, edge = id+1, edge+1 {
+		mustExec(t, db, "INSERT INTO road_network_edges_pgr (region_id, id, source, target, cost) "+
+			"VALUES ($1, $2, $2, $3, $4)", regionID, id, edge+1, hopCost)
+	}
+}
+
+func seedRegionTables(t *testing.T) *sqlx.DB {
+	t.Helper()
+	db := connectPG(t)
+	db.SetMaxOpenConns(1) // temp tables must stay visible to every repo query
+	dropRegionTables(t, db, "road_network_edges_pgr", "road_network_vertices_pgr", "routing_regions")
+
+	// Registry, shaped like plan 04's routing_regions. cr-sj is the default
+	// region; parent_region/datasource are NULL on one row each so the COALESCE
+	// mapping is exercised. Only the two rows these tests read are registered —
+	// cr-lc's network exists below without a registry row, which is exactly how
+	// an un-registered import behaves.
+	createRegionRegistry(t, db)
+	mustExec(t, db, "INSERT INTO routing_regions (region_id, level, name, parent_region, "+
+		"bbox_lon_min, bbox_lat_min, bbox_lon_max, bbox_lat_max, default_region, datasource) VALUES "+
+		"('cr', 'country', 'Costa Rica', NULL, -85.95, 7.98, -82.55, 11.22, FALSE, NULL), "+
+		"('cr-sj', 'state', 'San Jose', 'cr', -0.001, 0.000, 0.001, 0.005, TRUE, NULL)")
+
+	createRegionTables(t, db)
+	insertRegionVertices(t, db, regionSJ, sjPin, 1, 2, 3, 4, 30)
+	insertChain(t, db, regionSJ, 1, 4, 100)
+	insertRegionVertices(t, db, regionLC, lcPin, 1, 2)
+	insertChain(t, db, regionLC, 1, 2, 250)
 	return db
 }
 
@@ -182,12 +226,15 @@ func TestSnapIsRegionScoped(t *testing.T) {
 		}
 	})
 
-	t.Run("remote_datasource_is_not_covered_locally", func(t *testing.T) {
+	t.Run("unprovisioned_datasource_is_not_covered", func(t *testing.T) {
 		lat, lng := sjPin(1)
-		// A plan-06 datasource's rows live in another pool; on the local pool
-		// the region cannot cover a pin here.
+		// With api_plans/06 a non-local region is no longer rejected on sight:
+		// it is looked up in routing_datasources, and "d1" is not provisioned
+		// here, so there is no pool to query and the region cannot cover a pin.
+		// Same answer, new reason — see datasources_integration_test.go for the
+		// provisioned case.
 		if _, ok := repo.Snap(lat, lng, "d1", regionSJ); ok {
-			t.Error("a remote-datasource region must not snap against the local pool")
+			t.Error("a region whose datasource has no pool must not report coverage")
 		}
 	})
 
@@ -211,7 +258,7 @@ func TestRouteInRegionNative(t *testing.T) {
 	t.Run("routes_the_region_topology", func(t *testing.T) {
 		fLat, fLng := sjPin(1)
 		tLat, tLng := sjPin(4)
-		got, err := repo.RouteInRegion(regionSJ, fLat, fLng, tLat, tLng)
+		got, err := repo.RouteInRegion(regionSJ, "", fLat, fLng, tLat, tLng)
 		if err != nil {
 			t.Fatalf("unexpected error: %v", err)
 		}
@@ -233,7 +280,7 @@ func TestRouteInRegionNative(t *testing.T) {
 		// must be cr-lc's 1-2 edge (250 m), never cr-sj's 1-2-3-4 chain.
 		fLat, fLng := lcPin(1)
 		tLat, tLng := lcPin(2)
-		got, err := repo.RouteInRegion(regionLC, fLat, fLng, tLat, tLng)
+		got, err := repo.RouteInRegion(regionLC, "", fLat, fLng, tLat, tLng)
 		if err != nil {
 			t.Fatalf("unexpected error: %v", err)
 		}
@@ -248,7 +295,7 @@ func TestRouteInRegionNative(t *testing.T) {
 	t.Run("unreachable_lone_vertex", func(t *testing.T) {
 		fLat, fLng := sjPin(1)
 		tLat, tLng := sjPin(30)
-		if _, err := repo.RouteInRegion(regionSJ, fLat, fLng, tLat, tLng); err != routing.ErrNoRoute {
+		if _, err := repo.RouteInRegion(regionSJ, "", fLat, fLng, tLat, tLng); err != routing.ErrNoRoute {
 			t.Fatalf("got %v, want %v", err, routing.ErrNoRoute)
 		}
 	})
@@ -256,7 +303,7 @@ func TestRouteInRegionNative(t *testing.T) {
 	t.Run("unknown_region_errors", func(t *testing.T) {
 		fLat, fLng := sjPin(1)
 		tLat, tLng := sjPin(2)
-		_, err := repo.RouteInRegion("no-such-region", fLat, fLng, tLat, tLng)
+		_, err := repo.RouteInRegion("no-such-region", "", fLat, fLng, tLat, tLng)
 		if err == nil {
 			t.Fatal("a region with no imported network must error")
 		}
@@ -275,7 +322,7 @@ func TestRouteInRegionPGRouting(t *testing.T) {
 	t.Run("routes_the_region_topology", func(t *testing.T) {
 		fLat, fLng := sjPin(1)
 		tLat, tLng := sjPin(4)
-		got, err := repo.RouteInRegion(regionSJ, fLat, fLng, tLat, tLng)
+		got, err := repo.RouteInRegion(regionSJ, "", fLat, fLng, tLat, tLng)
 		if err != nil {
 			t.Fatalf("unexpected error: %v", err)
 		}
@@ -291,7 +338,7 @@ func TestRouteInRegionPGRouting(t *testing.T) {
 	t.Run("routes_cr_lc_topology", func(t *testing.T) {
 		fLat, fLng := lcPin(1)
 		tLat, tLng := lcPin(2)
-		got, err := repo.RouteInRegion(regionLC, fLat, fLng, tLat, tLng)
+		got, err := repo.RouteInRegion(regionLC, "", fLat, fLng, tLat, tLng)
 		if err != nil {
 			t.Fatalf("unexpected error: %v", err)
 		}
@@ -306,7 +353,7 @@ func TestRouteInRegionPGRouting(t *testing.T) {
 	t.Run("dropoff_only_in_another_region", func(t *testing.T) {
 		fLat, fLng := sjPin(1)
 		tLat, tLng := lcPin(2) // exists only in cr-lc, ~4.4 km from any cr-sj vertex
-		_, err := repo.RouteInRegion(regionSJ, fLat, fLng, tLat, tLng)
+		_, err := repo.RouteInRegion(regionSJ, "", fLat, fLng, tLat, tLng)
 		if err != routing.ErrNoRoute {
 			t.Fatalf("got %v, want %v", err, routing.ErrNoRoute)
 		}
@@ -315,7 +362,7 @@ func TestRouteInRegionPGRouting(t *testing.T) {
 	t.Run("unreachable_lone_vertex", func(t *testing.T) {
 		fLat, fLng := sjPin(1)
 		tLat, tLng := sjPin(30)
-		if _, err := repo.RouteInRegion(regionSJ, fLat, fLng, tLat, tLng); err != routing.ErrNoRoute {
+		if _, err := repo.RouteInRegion(regionSJ, "", fLat, fLng, tLat, tLng); err != routing.ErrNoRoute {
 			t.Fatalf("got %v, want %v", err, routing.ErrNoRoute)
 		}
 	})
@@ -333,12 +380,12 @@ func TestRouteInRegionPGRouting(t *testing.T) {
 			"cr-sj;",
 		}
 		for _, id := range hostile {
-			if _, err := repo.RouteInRegion(id, fLat, fLng, tLat, tLng); err == nil {
+			if _, err := repo.RouteInRegion(id, "", fLat, fLng, tLat, tLng); err == nil {
 				t.Errorf("region id %q was accepted", id)
 			}
 		}
 		// The fixture is still there, so nothing above executed.
-		if _, err := repo.RouteInRegion(regionSJ, fLat, fLng, tLat, tLng); err != nil {
+		if _, err := repo.RouteInRegion(regionSJ, "", fLat, fLng, tLat, tLng); err != nil {
 			t.Fatalf("fixture broken after rejected ids: %v", err)
 		}
 	})

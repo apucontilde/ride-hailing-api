@@ -69,32 +69,49 @@ type snapRow struct {
 
 // PGRoutingRepo implements NavigationRepository over the real pgRouting
 // pgr_dijkstra function. It issues fresh queries per call — no in-process
-// graph and no cache (plan 04 adds region scoping).
+// graph and no cache — scoped to the region the resolver picked and run against
+// THAT region's datasource pool (api_plans/04/05/06).
 type PGRoutingRepo struct {
 	db          *sqlx.DB
+	pools       *DatasourcePools
 	snapRadiusM float64
 }
 
 var _ NavigationRepository = (*PGRoutingRepo)(nil)
 
-// NewPGRoutingRepo builds the pgRouting-backed repo. snapRadiusM <= 0 disables
-// the covered-pin check (always snap).
+// NewPGRoutingRepo builds the pgRouting-backed repo against the LOCAL pool only.
+// snapRadiusM <= 0 disables the covered-pin check (always snap).
 func NewPGRoutingRepo(db *sqlx.DB, snapRadiusM float64) *PGRoutingRepo {
 	return &PGRoutingRepo{db: db, snapRadiusM: snapRadiusM}
 }
 
+// NewPGRoutingRepoWithDatasources is NewPGRoutingRepo for the multi-city shape:
+// pools resolves each region's datasource to its own pool.
+func NewPGRoutingRepoWithDatasources(db *sqlx.DB, pools *DatasourcePools, snapRadiusM float64) *PGRoutingRepo {
+	return &PGRoutingRepo{db: db, pools: pools, snapRadiusM: snapRadiusM}
+}
+
 // NewRoutingRepository is the engine factory: ROUTING_ENGINE=pgrouting returns
 // the pgRouting repo when the extension is actually installed, otherwise it
-// logs the degraded fallback and never crashes boot.
+// logs the degraded fallback and never crashes boot. It builds its own datasource
+// pool registry over db; internal/router passes its own via
+// NewRoutingRepositoryWithPools when it wants to share one.
 func NewRoutingRepository(db *sqlx.DB, cfg *config.Config) NavigationRepository {
+	return NewRoutingRepositoryWithPools(db, NewDatasourcePoolsFromConfig(db, cfg), cfg)
+}
+
+// NewRoutingRepositoryWithPools is the engine factory with the per-datasource
+// pools supplied by the caller (api_plans/06). pools may be nil, which pins
+// every region to the local database.
+func NewRoutingRepositoryWithPools(db *sqlx.DB, pools *DatasourcePools, cfg *config.Config) NavigationRepository {
 	if cfg != nil && cfg.RoutingEngine == "pgrouting" {
 		var present bool
 		if err := db.Get(&present, "SELECT EXISTS(SELECT 1 FROM pg_extension WHERE extname = 'pgrouting')"); err == nil && present {
-			return NewPGRoutingRepo(db, cfg.RoutingSnapRadiusM)
+			return NewPGRoutingRepoWithDatasources(db, pools, cfg.RoutingSnapRadiusM)
 		}
 		log.Println("ROUTING_ENGINE=pgrouting but pgRouting is unavailable; falling back to native A* engine")
 	}
-	return NewNavigationRepo(db, cfg.RoutingSnapRadiusM)
+	return NewNavigationRepoWithDatasources(db, pools, cfg.RoutingSnapRadiusM, cfg.RoutingMaxRegionsInMemory)
 }
 
 func (r *PGRoutingRepo) GetShortestPath(fromLat, fromLng, toLat, toLng float64) ([]RouteResult, error) {
@@ -148,24 +165,30 @@ func (r *PGRoutingRepo) RegisteredRegions() ([]model.RegionRef, error) {
 	return loadRegisteredRegions(r.db)
 }
 
-// Snap finds the nearest road vertex to a pin inside one region.
+// Snap finds the nearest road vertex to a pin inside one region, in the pool
+// that region's datasource names. An unresolvable datasource reads as "not
+// covered" so the resolver falls through to the next candidate.
 func (r *PGRoutingRepo) Snap(lat, lng float64, datasource, regionID string) (model.SnapResult, bool) {
-	return snapInRegion(r.db, lat, lng, datasource, regionID, r.snapRadiusM)
+	return snapInRegion(poolFor(r.db, r.pools, datasource), lat, lng, regionID, r.snapRadiusM)
 }
 
-// RouteInRegion runs pgr_dijkstra over ONE region's edges. It is the
-// region-scoped twin of GetShortestPath, which stays frozen on the naked
-// tables for the pre-region contract.
-func (r *PGRoutingRepo) RouteInRegion(regionID string, fromLat, fromLng, toLat, toLng float64) ([]RouteResult, error) {
+// RouteInRegion runs pgr_dijkstra over ONE region's edges, in that region's own
+// pool. It is the region-scoped twin of GetShortestPath, which stays frozen on
+// the naked tables for the pre-region contract.
+func (r *PGRoutingRepo) RouteInRegion(regionID, datasource string, fromLat, fromLng, toLat, toLng float64) ([]RouteResult, error) {
 	if !ValidRegionID(regionID) {
 		return nil, fmt.Errorf("invalid region id %q", regionID)
 	}
+	db := poolFor(r.db, r.pools, datasource)
+	if db == nil {
+		return nil, noPoolErr(datasource)
+	}
 
-	start, ok := snapInRegion(r.db, fromLat, fromLng, "", regionID, r.snapRadiusM)
+	start, ok := snapInRegion(db, fromLat, fromLng, regionID, r.snapRadiusM)
 	if !ok {
 		return nil, routing.ErrNoRoute
 	}
-	goal, ok := snapInRegion(r.db, toLat, toLng, "", regionID, r.snapRadiusM)
+	goal, ok := snapInRegion(db, toLat, toLng, regionID, r.snapRadiusM)
 	if !ok {
 		return nil, routing.ErrNoRoute
 	}
@@ -181,8 +204,8 @@ func (r *PGRoutingRepo) RouteInRegion(regionID string, fromLat, fromLng, toLat, 
 
 	var rows []RouteResult
 	edgesSQLRegion := fmt.Sprintf(regionEdgesSQLFmt, regionID)
-	if err := r.db.Select(&rows, regionRouteSQL, edgesSQLRegion, start.VertexID, goal.VertexID, regionID); err != nil {
-		return nil, err
+	if err := db.Select(&rows, regionRouteSQL, edgesSQLRegion, start.VertexID, goal.VertexID, regionID); err != nil {
+		return nil, datasourceErr(datasource, err)
 	}
 	if len(rows) == 0 {
 		return nil, routing.ErrNoRoute

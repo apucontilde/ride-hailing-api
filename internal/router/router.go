@@ -25,11 +25,20 @@ type swaggerDoc string
 func (d swaggerDoc) ReadDoc() string { return string(d) }
 
 func Setup(cfg *config.Config, db *sqlx.DB) *gin.Engine {
+	// Per-city datasource pools (api_plans/06), built alongside the local db.
+	// They resolve lazily from the LOCAL routing_datasources registry, so boot
+	// never opens a remote connection and a new city appears the moment its row
+	// does. The nav repo is the only consumer.
+	navRepo := repository.NewRoutingRepositoryWithPools(
+		db,
+		repository.NewDatasourcePoolsFromConfig(db, cfg),
+		cfg,
+	)
 	return SetupWithRepos(cfg,
 		repository.NewUserRepo(db),
 		repository.NewRideRepo(db),
 		repository.NewGeoRepo(db),
-		repository.NewRoutingRepository(db, cfg),
+		navRepo,
 		repository.NewPlacesRepo(db),
 		db,
 	)

@@ -2,6 +2,7 @@ package service
 
 import (
 	"errors"
+	"fmt"
 	"math"
 	"testing"
 
@@ -95,15 +96,22 @@ type regionRouterFake struct {
 	regionRepoFake
 	routes    map[string][]repository.RouteResult
 	routesErr error
-	routeIDs  []string
+	routeIDs  []routeCall
+}
+
+// routeCall is one recorded RouteInRegion call: the region the resolver picked
+// plus the datasource it named, which is how the repo knows which pool to query.
+type routeCall struct {
+	RegionID   string
+	Datasource string
 }
 
 func newRouterRepo(regions []model.RegionRef, covered coverage) *regionRouterFake {
 	return &regionRouterFake{regionRepoFake: *newRegionRepo(regions, covered)}
 }
 
-func (f *regionRouterFake) RouteInRegion(regionID string, fromLat, fromLng, toLat, toLng float64) ([]repository.RouteResult, error) {
-	f.routeIDs = append(f.routeIDs, regionID)
+func (f *regionRouterFake) RouteInRegion(regionID, datasource string, fromLat, fromLng, toLat, toLng float64) ([]repository.RouteResult, error) {
+	f.routeIDs = append(f.routeIDs, routeCall{RegionID: regionID, Datasource: datasource})
 	if f.routesErr != nil {
 		return nil, f.routesErr
 	}
@@ -130,8 +138,21 @@ var (
 	sjPin      = [2]float64{9.93, -84.08}     // inside cr-sj
 	sjDropPin  = [2]float64{9.9433, -84.0733} // also inside cr-sj
 	lcPin      = [2]float64{10.02, -84.97}    // inside cr-lc (the nearest candidate)
+	lcDropPin  = [2]float64{10.026, -84.966}  // also inside cr-lc
 	pacificPin = [2]float64{5.00, -90.00}     // no region anywhere near
 )
+
+// multiCityRegistry is registry() with cr-lc living in ANOTHER city database
+// (api_plans/06): the resolver's RegionRef now carries a datasource.
+func multiCityRegistry() []model.RegionRef {
+	regions := registry()
+	for i := range regions {
+		if regions[i].RegionID == "cr-lc" {
+			regions[i].Datasource = "lc-db"
+		}
+	}
+	return regions
+}
 
 // ---- ResolveRegion -----------------------------------------------------
 
@@ -410,8 +431,8 @@ func TestGetRouteRoutesInResolvedRegion(t *testing.T) {
 	if got.IsEstimate {
 		t.Error("a covered, in-region trip must not be an estimate")
 	}
-	if len(repo.routeIDs) != 1 || repo.routeIDs[0] != "cr-sj" {
-		t.Fatalf("RouteInRegion calls = %v, want one call in cr-sj", repo.routeIDs)
+	if len(repo.routeIDs) != 1 || repo.routeIDs[0].RegionID != "cr-sj" {
+		t.Fatalf("RouteInRegion calls = %+v, want one call in cr-sj", repo.routeIDs)
 	}
 	if got.DistanceMeters != 2094 || got.DurationSecs != 2094/11 {
 		t.Errorf("got %d m / %d s, want 2094 m / %d s", got.DistanceMeters, got.DurationSecs, 2094/11)
@@ -433,6 +454,44 @@ func TestGetRouteRoutesInResolvedRegion(t *testing.T) {
 	}
 	if len(repo.pathIDs) != 0 {
 		t.Errorf("a region router must be preferred over the unscoped path, got %v", repo.pathIDs)
+	}
+}
+
+// api_plans/06: the datasource the resolver picked travels with the region into
+// the routing call, so the repo can query that city's own pool — and the
+// registry's datasource never leaks onto another region's call.
+func TestGetRouteRoutesInTheResolvedRegionsDatasource(t *testing.T) {
+	repo := newRouterRepo(multiCityRegistry(), cover(lcPin, "cr-lc"))
+	repo.covered[pinKey(lcDropPin)] = map[string]bool{"cr-lc": true}
+	repo.routes = map[string][]repository.RouteResult{
+		"cr-lc": {
+			{NodeID: 1, NodeSeq: 0, Lat: 10.0150, Lng: -84.9800},
+			{NodeID: 2, NodeSeq: 1, Lat: 10.0260, Lng: -84.9660, AggCost: 900},
+		},
+	}
+	svc := NewNavigationService(repo)
+
+	got, err := svc.GetRoute(lcPin[0], lcPin[1], lcDropPin[0], lcDropPin[1])
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if got.IsEstimate {
+		t.Error("a covered, in-region trip must not be an estimate")
+	}
+	if got.DistanceMeters != 900 {
+		t.Errorf("distance = %d m, want the routed 900 m", got.DistanceMeters)
+	}
+	if len(repo.routeIDs) != 1 {
+		t.Fatalf("RouteInRegion calls = %+v, want exactly one", repo.routeIDs)
+	}
+	if repo.routeIDs[0] != (routeCall{RegionID: "cr-lc", Datasource: "lc-db"}) {
+		t.Errorf("routed in %+v, want cr-lc on datasource lc-db", repo.routeIDs[0])
+	}
+	// The same datasource must have been handed to every snap of that region.
+	for _, call := range repo.snapCalls {
+		if call.RegionID == "cr-lc" && call.Datasource != "lc-db" {
+			t.Errorf("snap for cr-lc carried datasource %q, want lc-db", call.Datasource)
+		}
 	}
 }
 
@@ -472,6 +531,49 @@ func TestGetRouteRoutingErrorIsNotAnEstimate(t *testing.T) {
 	}
 	if got != nil {
 		t.Error("a failed route must return no RouteInfo")
+	}
+}
+
+// A city database that is down is a DATA gap for that city, not a broken
+// request: it degrades to the same straight-line estimate an uncovered pin gets
+// (HTTP 200, is_estimate) and leaves every other region alone.
+func TestGetRouteDatasourceUnavailableIsEstimate(t *testing.T) {
+	repo := newRouterRepo(multiCityRegistry(), cover(lcPin, "cr-lc"))
+	repo.covered[pinKey(lcDropPin)] = map[string]bool{"cr-lc": true}
+	repo.routesErr = fmt.Errorf("dialing lc-db: %w", repository.ErrDatasourceUnavailable)
+	svc := NewNavigationService(repo)
+
+	got, err := svc.GetRoute(lcPin[0], lcPin[1], lcDropPin[0], lcDropPin[1])
+	if err != nil {
+		t.Fatalf("an unavailable datasource must not fail the request: %v", err)
+	}
+	if !got.IsEstimate {
+		t.Error("a datasource that cannot be reached must read as an estimate")
+	}
+	wantDist := int(math.Round(routing.HaversineMeters(lcPin[0], lcPin[1], lcDropPin[0], lcDropPin[1])))
+	if got.DistanceMeters != wantDist {
+		t.Errorf("distance = %d m, want the straight line %d m", got.DistanceMeters, wantDist)
+	}
+	if wantDur := wantDist / 11; got.DurationSecs != wantDur {
+		t.Errorf("duration = %d s, want %d s", got.DurationSecs, wantDur)
+	}
+
+	// The same repository still routes the OTHER city, whose datasource is "".
+	repo.covered[pinKey(sjPin)] = map[string]bool{"cr-sj": true}
+	repo.covered[pinKey(sjDropPin)] = map[string]bool{"cr-sj": true}
+	repo.routesErr = nil
+	repo.routes = map[string][]repository.RouteResult{
+		"cr-sj": {
+			{NodeID: 1, Lat: 9.9350, Lng: -84.0800},
+			{NodeID: 2, AggCost: 2094, Lat: 9.9433, Lng: -84.0733},
+		},
+	}
+	other, err := svc.GetRoute(sjPin[0], sjPin[1], sjDropPin[0], sjDropPin[1])
+	if err != nil {
+		t.Fatalf("the local city must keep routing: %v", err)
+	}
+	if other.IsEstimate || other.DistanceMeters != 2094 {
+		t.Errorf("got %+v, want a real 2094 m route for the unaffected city", other)
 	}
 }
 

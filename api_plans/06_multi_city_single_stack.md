@@ -132,3 +132,93 @@ or even slowing — any other city.
 - `internal/config/config.go` — `ROUTING_MAX_REGIONS_IN_MEMORY`.
 - `internal/repository/*_integration_test.go` — two-datasource dispatch + fail-safe + cache
   eviction cases. (The importer `--datasource` flag itself is plan 05's.)
+
+## EXECUTED (2026-09-25)
+
+Implemented on branch `plan/06-multi-city` off `main` (`846c07b`, plans 04 + 05 merged).
+
+### Interface change (the one ripple across the seam)
+
+`service.RegionRouter.RouteInRegion` gains the resolved `datasource`:
+`RouteInRegion(regionID, datasource string, fromLat, fromLng, toLat, toLng float64)`.
+The datasource travels WITH the region the resolver picked, so the repo never re-reads the
+registry to know which pool to query. Both repos and the service fakes were updated; the
+plan-05 service tests now assert the `{RegionID, Datasource}` pair reaches the router.
+
+### The pool layer (`internal/repository/datasource.go`, new)
+
+- `DatasourcePools` resolves `routing_datasources.datasource_id` → its own `*sqlx.DB`,
+  **lazily** (boot opens nothing remote; a city appears the moment its row does). One pool
+  per id, cached; a failed open is remembered for `datasourceRetryDelay` (30 s) so a down
+  city costs one dial per window, not one per pin. `connect_timeout` (5 s) bounds the dial.
+- Password comes ONLY from `DATASOURCE_<ID>_PASSWORD` (id uppercased, `-`→`_`) or
+  `~/.pgpass`; the DSN omits the password parameter entirely when the env var is unset so
+  lib/pq's own lookup still works. Never stored in the row.
+- `poolFor` is the single dispatch point: `""` → local handle, an id → registry pool, and a
+  nil result (unavailable) means "this datasource covers nothing" (fail-safe, not a panic).
+- `ErrDatasourceUnavailable` tags ONLY remote failures. The service catches it in `GetRoute`
+  and serves the plan-05 straight-line estimate (HTTP 200 `is_estimate`) — a down city
+  degrades that one request; local-DB failures stay hard errors (500) by design.
+
+### Per-region graphs + eviction (`internal/repository/navigation_repo.go`)
+
+- `regionGraph(regionID, datasource)` caches `map[regionID]regionGraphEntry{graph,datasource}`.
+  The entry remembers its datasource, so re-pointing a region rebuilds instead of routing on
+  a stale graph. Successful loads are cached; failures are not (an import or a datasource
+  coming back is picked up on the next request, no restart).
+- Concurrent first-loads for the SAME region share one build (in-flight `graphLoad` with a
+  channel); different regions never wait on each other. LRU order is `graphOrder`;
+  `evictRegionsLocked` drops the coldest once `ROUTING_MAX_REGIONS_IN_MEMORY` is exceeded
+  (0 = never evict). `CachedRegionIDs()` is introspection for tests/ops.
+- `NewNavigationRepo`/`NewPGRoutingRepo` stay local-only; `NewNavigationRepoWithDatasources`/
+  `NewPGRoutingRepoWithDatasources` take the pools. The engine factory
+  `NewRoutingRepositoryWithPools` is what `router.Setup` calls. Legacy `GetShortestPath` is
+  untouched and its unscoped graph is never evicted.
+
+### Config (`internal/config/config.go`)
+
+`ROUTING_MAX_REGIONS_IN_MEMORY` (0 = all, the default). Two extras that fell out of the
+pool design: `ROUTING_DATASOURCE_SSLMODE` (defaults to `DB_SSLMODE`) and
+`ROUTING_DATASOURCE_MAX_CONNS` (default 10).
+
+### Tests
+
+- `internal/repository/datasource_test.go` (new, no DB): env-name convention, DSN shape
+  (password/pgpass/ipv6/defaults/connect_timeout), `poolFor` fail-safe branches, error
+  tagging (remote vs local).
+- `internal/repository/datasources_integration_test.go` (new, `-tags=integration`): two
+  datasources on one stack using a second POOL (same server, separate session) as the
+  sanctioned stand-in for a second DB. Covers registry→datasource mapping, lazy/cached/
+  fail-safe pools, snap+routing dispatch to the region's own pool (with a poisoned local
+  decoy copy of the same region id/vertex ids as the control), pgRouting dispatch,
+  unreachable-datasource degradation of only its own region, LRU eviction at budget 1 (incl.
+  evict-then-rebuild), datasource-change rebuilds the graph, and "no path" stays an error.
+- `internal/config/config_test.go` (new): the env knobs above incl. garbage/negative input.
+- `internal/service/regions_test.go`: new `TestGetRouteRoutesInTheResolvedRegionsDatasource`
+  and `TestGetRouteDatasourceUnavailableIsEstimate`; existing fakes updated for the new
+  signature.
+- `internal/repository/regions_integration_test.go`: helpers extracted for reuse; the old
+  `remote_datasource_is_not_covered_locally` subtest became
+  `unprovisioned_datasource_is_not_covered` (same answer, now because no pool exists).
+
+### Verification performed
+
+- `go vet ./...` clean; `go test -count=1 ./...` green (no DB); `go test -tags=integration
+  -count=1 ./...` green against the live docker DB.
+- Live boot (single-city default config): `/api/v1/navigation/route` and `/api/v1/estimates/eta`
+  still return 2094 m / 190 s with `is_estimate:false` — the default path is byte-compatible
+  with plans 04/05.
+
+### Deviations / notes
+
+- **Native `RouteInRegion` does not itself apply `ROUTING_SNAP_RADIUS_M`** (unscoped A* snaps
+  to the nearest node in the region graph). That is pre-existing plan-05 behavior: the
+  service only calls `RouteInRegion` after BOTH pins passed the radius-gated `Snap`, so
+  coverage is still enforced at resolution. The integration test's "no path" case uses a
+  disconnected vertex rather than a far pin for this reason.
+- The plan's verification #4 (RSS measurement) is exercised as cache-membership assertions
+  (`CachedRegionIDs`) rather than process RSS; the RAM figure is operational, not testable.
+- Review fixes applied after the first agent pass: `sjPin(n)[0]`-style indexing of a
+  multi-value return (invalid Go) replaced with single-value accessors; a missing `model`
+  import; a premature cache assertion; a backwards coordinate assertion; and the "no path"
+  case switched to a disconnected vertex.
