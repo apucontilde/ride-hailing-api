@@ -39,7 +39,7 @@ func benchmarkGrid(n int) ([]Node, []Edge) {
 				edges = append(edges, Edge{
 					Source: u,
 					Target: v,
-					Cost:   haversineM(nodes[v].Lat, nodes[v].Lng, nodes[u].Lat, nodes[u].Lng),
+					Cost:   HaversineMeters(nodes[v].Lat, nodes[v].Lng, nodes[u].Lat, nodes[u].Lng),
 				})
 			}
 			if i+1 < n {
@@ -47,7 +47,7 @@ func benchmarkGrid(n int) ([]Node, []Edge) {
 				edges = append(edges, Edge{
 					Source: u,
 					Target: v,
-					Cost:   haversineM(nodes[v].Lat, nodes[v].Lng, nodes[u].Lat, nodes[u].Lng),
+					Cost:   HaversineMeters(nodes[v].Lat, nodes[v].Lng, nodes[u].Lat, nodes[u].Lng),
 				})
 			}
 		}

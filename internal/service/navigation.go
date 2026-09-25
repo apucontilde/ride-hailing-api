@@ -2,30 +2,239 @@ package service
 
 import (
 	"fmt"
+	"log"
+	"math"
+	"os"
+	"sort"
 
 	"ride-hailing-api/internal/model"
 	"ride-hailing-api/internal/repository"
+	"ride-hailing-api/internal/routing"
 )
+
+// avgSpeedMps is the routing engine's cost/speed constant (~40 km/h): every
+// duration in this package is distance / avgSpeedMps.
+const avgSpeedMps = 11
 
 type RouteInfo struct {
 	DistanceMeters int
 	DurationSecs   int
 	Polyline       []model.LatLng
+	// IsEstimate is true when no region covered the pins and the response is a
+	// straight-line estimate instead of a road-following route (api_plans/05).
+	// The field is additive: existing clients keep reading the other three.
+	IsEstimate bool
 }
+
+// RegionSource is the OPTIONAL region-resolution capability of a
+// NavigationRepository. Repos that implement it let the service answer "which
+// region owns this pin?"; repos that don't (mocks, the frozen legacy engine)
+// keep the pre-region behavior verbatim.
+//
+// The interface is declared here, in the layer that consumes it, so
+// `repository` never imports `service`: the shipped repos satisfy it
+// structurally (compile-time assertions at the bottom of this file).
+type RegionSource interface {
+	// RegisteredRegions returns the routing-regions registry rows (bbox,
+	// level, parent, default flag, datasource).
+	RegisteredRegions() ([]model.RegionRef, error)
+	// Snap returns the nearest road vertex to a pin INSIDE regionID, and
+	// whether the pin is covered. A snap beyond ROUTING_SNAP_RADIUS_M (when
+	// configured) is reported as not covered. datasource "" is the local pool.
+	Snap(lat, lng float64, datasource, regionID string) (model.SnapResult, bool)
+}
+
+// RegionRouter is the optional region-scoped routing capability. A
+// RegionSource that also implements it routes against exactly the region the
+// resolver picked, so one city's graph can never answer for another's pins.
+type RegionRouter interface {
+	RouteInRegion(regionID string, fromLat, fromLng, toLat, toLng float64) ([]repository.RouteResult, error)
+}
+
+// The shipped repos must satisfy both optional capabilities.
+var (
+	_ RegionSource = (*repository.NativeNavigationRepo)(nil)
+	_ RegionSource = (*repository.PGRoutingRepo)(nil)
+	_ RegionRouter = (*repository.NativeNavigationRepo)(nil)
+	_ RegionRouter = (*repository.PGRoutingRepo)(nil)
+)
 
 type NavigationService struct {
 	navRepo repository.NavigationRepository
+
+	// defaultRegionID is ROUTING_DEFAULT_REGION: the registry row to fall back
+	// to when no candidate covers a pin. "" = use the registry's
+	// default_region = TRUE row.
+	defaultRegionID string
 }
 
 func NewNavigationService(navRepo repository.NavigationRepository) *NavigationService {
-	return &NavigationService{navRepo: navRepo}
+	return &NavigationService{
+		navRepo:         navRepo,
+		defaultRegionID: os.Getenv("ROUTING_DEFAULT_REGION"),
+	}
 }
 
+// GetRoute returns the road-following route between two pins, or a
+// straight-line estimate when the pins are outside every imported region.
+//
+// Resolution order (api_plans/05): the repo must advertise RegionSource; the
+// pickup and dropoff must resolve to the SAME region; then routing runs
+// region-scoped (RegionRouter) or unscoped (legacy). A repo without
+// RegionSource takes the legacy path unchanged, which is what keeps mocks and
+// pre-region deployments byte-for-byte compatible.
 func (s *NavigationService) GetRoute(fromLat, fromLng, toLat, toLng float64) (*RouteInfo, error) {
+	if _, ok := s.navRepo.(RegionSource); !ok {
+		return s.legacyRoute(fromLat, fromLng, toLat, toLng)
+	}
+
+	fromRegion, _, err := s.resolveRegion(fromLat, fromLng)
+	if err != nil {
+		// The registry itself is unreadable (e.g. a database whose migrations
+		// predate the region schema). Falling back to the unscoped path keeps
+		// routing alive; serving estimates instead would silently flatten every
+		// route in the deployment, so this is logged loudly.
+		log.Printf("[navigation] region registry unavailable, falling back to unscoped routing: %v", err)
+		return s.legacyRoute(fromLat, fromLng, toLat, toLng)
+	}
+	if fromRegion == nil {
+		return estimateRoute(fromLat, fromLng, toLat, toLng), nil
+	}
+
+	toRegion, _, err := s.resolveRegion(toLat, toLng)
+	if err != nil {
+		log.Printf("[navigation] region registry unavailable, falling back to unscoped routing: %v", err)
+		return s.legacyRoute(fromLat, fromLng, toLat, toLng)
+	}
+	// Uncovered dropoff, or a dropoff owned by another region: the trip is not
+	// a within-region hop. Cross-region planning is the deferred intercity seam
+	// (plan 07), so an estimate is the honest answer.
+	if toRegion == nil || toRegion.RegionID != fromRegion.RegionID {
+		return estimateRoute(fromLat, fromLng, toLat, toLng), nil
+	}
+
+	var (
+		nodes []repository.RouteResult
+		rerr  error
+	)
+	if rr, ok := s.navRepo.(RegionRouter); ok {
+		nodes, rerr = rr.RouteInRegion(fromRegion.RegionID, fromLat, fromLng, toLat, toLng)
+	} else {
+		// RegionSource without RegionRouter: the repo can resolve coverage but
+		// not scope the query, so route the way it always has.
+		nodes, rerr = s.navRepo.GetShortestPath(fromLat, fromLng, toLat, toLng)
+	}
+	if rerr != nil {
+		return nil, rerr
+	}
+	return routeInfo(fromLat, fromLng, toLat, toLng, nodes)
+}
+
+// ResolveRegion returns the single region that serves a pin plus the vertex it
+// snapped to. ok=false means no registered region covers the pin, which the
+// route endpoints turn into a straight-line estimate.
+//
+// Snap-first by design: candidates (every registry row) are tried in order of
+// how close their bbox center is to the pin, and the first real snap wins — so
+// a pin a few meters outside a region's admin box still routes instead of
+// reading as "not covered". Only when every candidate misses does the default
+// region (ROUTING_DEFAULT_REGION, else the registry's default_region row) get
+// a second chance. There is deliberately NO parent-chain escalation: the
+// hierarchy is the deferred intercity seam (plan 07).
+func (s *NavigationService) ResolveRegion(lat, lng float64) (model.RegionRef, model.SnapResult, bool) {
+	ref, snap, err := s.resolveRegion(lat, lng)
+	if err != nil || ref == nil {
+		return model.RegionRef{}, model.SnapResult{}, false
+	}
+	return *ref, snap, true
+}
+
+// resolveRegion is ResolveRegion plus the registry read error and a nil ref
+// for "no coverage" — GetRoute needs the error to tell a broken registry from
+// an uncovered pin.
+func (s *NavigationService) resolveRegion(lat, lng float64) (*model.RegionRef, model.SnapResult, error) {
+	src, ok := s.navRepo.(RegionSource)
+	if !ok {
+		return nil, model.SnapResult{}, nil
+	}
+
+	regions, err := src.RegisteredRegions()
+	if err != nil {
+		return nil, model.SnapResult{}, err
+	}
+
+	candidates := orderRegionsByProximity(regions, lat, lng)
+	attempted := make(map[string]bool, len(candidates))
+	for i := range candidates {
+		ref := candidates[i]
+		attempted[ref.RegionID] = true
+		if snap, ok := src.Snap(lat, lng, ref.Datasource, ref.RegionID); ok {
+			return &ref, snap, nil
+		}
+	}
+
+	// No candidate covered the pin: give the default region its own attempt.
+	fallback, ok := s.defaultRegion(candidates)
+	if ok && !attempted[fallback.RegionID] {
+		if snap, ok := src.Snap(lat, lng, fallback.Datasource, fallback.RegionID); ok {
+			return &fallback, snap, nil
+		}
+	}
+	return nil, model.SnapResult{}, nil
+}
+
+// defaultRegion picks the fallback row: the ROUTING_DEFAULT_REGION id when it
+// is registered, else the registry's default_region = TRUE row. An env id that
+// the registry does not know falls through to the flag rather than disabling
+// coverage altogether.
+func (s *NavigationService) defaultRegion(candidates []model.RegionRef) (model.RegionRef, bool) {
+	if s.defaultRegionID != "" {
+		for _, ref := range candidates {
+			if ref.RegionID == s.defaultRegionID {
+				return ref, true
+			}
+		}
+	}
+	for _, ref := range candidates {
+		if ref.Default {
+			return ref, true
+		}
+	}
+	return model.RegionRef{}, false
+}
+
+// orderRegionsByProximity sorts the registry rows by the distance from the
+// pin to each region's bbox center, nearest first. The sort is stable, so
+// equidistant regions keep the registry's own (region_id) order.
+func orderRegionsByProximity(regions []model.RegionRef, lat, lng float64) []model.RegionRef {
+	ordered := make([]model.RegionRef, len(regions))
+	copy(ordered, regions)
+	sort.SliceStable(ordered, func(i, j int) bool {
+		return bboxCenterDistance(ordered[i], lat, lng) < bboxCenterDistance(ordered[j], lat, lng)
+	})
+	return ordered
+}
+
+func bboxCenterDistance(ref model.RegionRef, lat, lng float64) float64 {
+	centerLat := (ref.BBox[1] + ref.BBox[3]) / 2
+	centerLng := (ref.BBox[0] + ref.BBox[2]) / 2
+	return routing.HaversineMeters(centerLat, centerLng, lat, lng)
+}
+
+// legacyRoute is the pre-region path, kept verbatim: a repo that cannot
+// resolve regions routes exactly the way it did before api_plans/05.
+func (s *NavigationService) legacyRoute(fromLat, fromLng, toLat, toLng float64) (*RouteInfo, error) {
 	nodes, err := s.navRepo.GetShortestPath(fromLat, fromLng, toLat, toLng)
 	if err != nil {
 		return nil, err
 	}
+	return routeInfo(fromLat, fromLng, toLat, toLng, nodes)
+}
+
+// routeInfo turns routed nodes into the wire shape: the polyline is anchored
+// to the exact pins (not just the snapped nodes) and the distance is the last
+// node's accumulated edge cost, which is the route length in meters.
+func routeInfo(fromLat, fromLng, toLat, toLng float64, nodes []repository.RouteResult) (*RouteInfo, error) {
 	if len(nodes) == 0 {
 		return nil, fmt.Errorf("no route found")
 	}
@@ -39,14 +248,30 @@ func (s *NavigationService) GetRoute(fromLat, fromLng, toLat, toLng float64) (*R
 	polyline = appendPoint(polyline, model.LatLng{Lat: toLat, Lng: toLng})
 
 	totalDistance := int(nodes[len(nodes)-1].AggCost)
-	// Simple approximation: average speed 11 m/s (~40 km/h)
-	totalDuration := totalDistance / 11
 
 	return &RouteInfo{
 		DistanceMeters: totalDistance,
-		DurationSecs:   totalDuration,
+		DurationSecs:   totalDistance / avgSpeedMps,
 		Polyline:       polyline,
 	}, nil
+}
+
+// estimateRoute is the no-coverage answer (api_plans/05): a 200 with a
+// straight line between the pins and is_estimate=true. A pin outside every
+// imported region is a DATA gap, not a malformed request, so it must never
+// become a 422.
+func estimateRoute(fromLat, fromLng, toLat, toLng float64) *RouteInfo {
+	distance := int(math.Round(routing.HaversineMeters(fromLat, fromLng, toLat, toLng)))
+
+	polyline := appendPoint(nil, model.LatLng{Lat: fromLat, Lng: fromLng})
+	polyline = appendPoint(polyline, model.LatLng{Lat: toLat, Lng: toLng})
+
+	return &RouteInfo{
+		DistanceMeters: distance,
+		DurationSecs:   distance / avgSpeedMps,
+		Polyline:       polyline,
+		IsEstimate:     true,
+	}
 }
 
 func appendPoint(points []model.LatLng, p model.LatLng) []model.LatLng {

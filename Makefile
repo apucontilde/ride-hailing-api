@@ -44,16 +44,30 @@ clean:
 seed:
 	psql "$(DATABASE_URL)" -f scripts/seed.sql
 
+# Region-scoped import (api_plans/05): --region is the only importable unit and
+# defaults to cr-sj, so these two targets keep their old behavior. Region/datasource
+# flags are intentionally NOT forwarded — the script is the arg-bearing entrypoint.
 import-osm:
 	./scripts/import-road-network.sh
 
-# Same import, forced re-run of osm2pgrouting.
+# Same import, forced re-run of osm2pgrouting for THAT region only.
 import-osm-force:
 	./scripts/import-road-network.sh --force
 
 # To import a different OSM extract (e.g. whole country):
 #	make import-osm-force OSM_INPUT=data/costa-rica-latest.osm.pbf
 # or call ./scripts/import-road-network.sh --force <path/to/input.osm.pbf> directly.
+#
+# To import a SECOND region, download a clip for it and call the script directly
+# (the script registers the region, then imports it region-scoped — no global
+# TRUNCATE, so co-resident regions survive):
+#	./scripts/download-osm.sh --region cr-lc --bbox -84.10,9.95,-83.95,10.05
+#	./scripts/import-road-network.sh --region cr-lc \
+#	    --bbox -84.10,9.95,-83.95,10.05 \
+#	    --name "Ciudad Colón" --parent cr --default data/cr-lc.osm.pbf
+# Re-import just that region: same command with --force.
+# Rows for a region can also live in another Postgres (plan 06) — pass
+# --datasource <id> of a row that already exists in routing_datasources.
 
 download-osm:
 	./scripts/download-osm.sh
@@ -61,6 +75,9 @@ download-osm:
 # Same download, but also clips the extract to the San José bbox.
 download-osm-san-jose:
 	./scripts/download-osm.sh --san-jose
+
+# Clip a region other than San José (writes data/<region>.osm.pbf):
+#	./scripts/download-osm.sh --region cr-lc --bbox -84.10,9.95,-83.95,10.05
 
 export-places:
 	./scripts/export-places.sh

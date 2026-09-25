@@ -69,6 +69,8 @@ definitions:
                 type: integer
             eta_seconds:
                 type: integer
+            is_estimate:
+                type: boolean
         type: object
     handler.EstimatesPriceResponse:
         properties:
@@ -107,6 +109,8 @@ definitions:
         type: object
     handler.NavigationRouteResponse:
         properties:
+            is_estimate:
+                type: boolean
             polyline:
                 items:
                     $ref: '#/definitions/handler.PolylinePoint'

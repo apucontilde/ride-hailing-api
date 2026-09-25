@@ -370,6 +370,7 @@ func (h *PlatformHandler) EstimatesETA(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{
 		"eta_seconds":     route.DurationSecs,
 		"distance_meters": route.DistanceMeters,
+		"is_estimate":     route.IsEstimate,
 	})
 }
 
@@ -421,6 +422,7 @@ func (h *PlatformHandler) NavigationRoute(c *gin.Context) {
 		"polyline":         coords,
 		"total_distance_m": route.DistanceMeters,
 		"total_duration_s": route.DurationSecs,
+		"is_estimate":      route.IsEstimate,
 	})
 }
 

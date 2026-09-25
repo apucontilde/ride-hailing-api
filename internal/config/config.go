@@ -45,6 +45,10 @@ type Config struct {
 	// vertex to count as covered. <= 0 disables the check (always snap, matching
 	// the native engine's behavior).
 	RoutingSnapRadiusM float64
+	// RoutingDefaultRegion names the routing_regions row the resolver falls
+	// back to when no candidate region covers a pin. "" (default) relies on the
+	// registry's own default_region = TRUE row (api_plans/05).
+	RoutingDefaultRegion string
 }
 
 func Load() *Config {
@@ -79,8 +83,9 @@ func Load() *Config {
 		PlacesMaxRadiusM:   float64(getInt("PLACES_MAX_RADIUS_M", 50000)),
 		PlacesDefaultLimit: getInt("PLACES_DEFAULT_LIMIT", 10),
 
-		RoutingEngine:      routingEngineFromEnv(),
-		RoutingSnapRadiusM: getFloat("ROUTING_SNAP_RADIUS_M", 0),
+		RoutingEngine:        routingEngineFromEnv(),
+		RoutingSnapRadiusM:   getFloat("ROUTING_SNAP_RADIUS_M", 0),
+		RoutingDefaultRegion: getEnv("ROUTING_DEFAULT_REGION", ""),
 	}
 }
 
