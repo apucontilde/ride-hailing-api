@@ -36,6 +36,15 @@ type Config struct {
 	PlacesGeoJSONPath  string
 	PlacesMaxRadiusM   float64
 	PlacesDefaultLimit int
+
+	// RoutingEngine selects the shortest-path implementation: "native" (in-process
+	// A*, default) or "pgrouting" (pgRouting via the pgr_dijkstra functions).
+	// Whitelisted at load; anything else falls back to "native".
+	RoutingEngine string
+	// RoutingSnapRadiusM is the max distance (meters) a pin may snap to a road
+	// vertex to count as covered. <= 0 disables the check (always snap, matching
+	// the native engine's behavior).
+	RoutingSnapRadiusM float64
 }
 
 func Load() *Config {
@@ -69,6 +78,9 @@ func Load() *Config {
 		PlacesGeoJSONPath:  getEnv("PLACES_GEOJSON_PATH", "data/places.geojson"),
 		PlacesMaxRadiusM:   float64(getInt("PLACES_MAX_RADIUS_M", 50000)),
 		PlacesDefaultLimit: getInt("PLACES_DEFAULT_LIMIT", 10),
+
+		RoutingEngine:      routingEngineFromEnv(),
+		RoutingSnapRadiusM: getFloat("ROUTING_SNAP_RADIUS_M", 0),
 	}
 }
 
@@ -98,6 +110,26 @@ func getDuration(key string, fallback time.Duration) time.Duration {
 	if v := os.Getenv(key); v != "" {
 		if d, err := time.ParseDuration(v); err == nil {
 			return d
+		}
+	}
+	return fallback
+}
+
+// routingEngineFromEnv whitelists ROUTING_ENGINE to native|pgrouting; any other
+// value (including unset) means the native in-process A* engine.
+func routingEngineFromEnv() string {
+	switch getEnv("ROUTING_ENGINE", "native") {
+	case "native", "pgrouting":
+		return getEnv("ROUTING_ENGINE", "native")
+	default:
+		return "native"
+	}
+}
+
+func getFloat(key string, fallback float64) float64 {
+	if v := os.Getenv(key); v != "" {
+		if f, err := strconv.ParseFloat(v, 64); err == nil {
+			return f
 		}
 	}
 	return fallback

@@ -1,4 +1,4 @@
-.PHONY: all build run test test-integration lint clean docker-up docker-down migrate-up migrate-down seed import-osm download-osm export-places openapi flutter-bootstrap flutter-analyze flutter-test
+.PHONY: all build run test test-integration benchmark bench-integration lint clean docker-up docker-down migrate-up migrate-down seed import-osm download-osm download-osm-san-jose export-places openapi flutter-bootstrap flutter-analyze flutter-test
 
 APP_NAME=ride-hailing-api
 BUILD_DIR=./build
@@ -24,7 +24,16 @@ test:
 	go test -v -count=1 ./...
 
 test-integration:
-	go test -v -count=1 -tags=integration ./tests/...
+	go test -v -count=1 -tags=integration ./...
+
+# Routing engine benchmarks (native A* + spatial snap index); the baseline for
+# the pgRouting comparison gate in api_plans/03.
+benchmark:
+	go test -count=1 -bench=. -benchmem ./internal/routing/
+
+# DB-backed routing benchmarks (pgRouting engine, plan 03+). Requires the DB.
+bench-integration:
+	go test -count=1 -tags=integration -bench=. -benchmem ./internal/...
 
 lint:
 	golangci-lint run ./...
@@ -38,14 +47,26 @@ seed:
 import-osm:
 	./scripts/import-road-network.sh
 
+# Same import, forced re-run of osm2pgrouting.
 import-osm-force:
 	./scripts/import-road-network.sh --force
+
+# To import a different OSM extract (e.g. whole country):
+#	make import-osm-force OSM_INPUT=data/costa-rica-latest.osm.pbf
+# or call ./scripts/import-road-network.sh --force <path/to/input.osm.pbf> directly.
 
 download-osm:
 	./scripts/download-osm.sh
 
+# Same download, but also clips the extract to the San José bbox.
+download-osm-san-jose:
+	./scripts/download-osm.sh --san-jose
+
 export-places:
 	./scripts/export-places.sh
+# To export from a different OSM extract:
+#	make export-places OSM_INPUT=data/costa-rica-latest.osm.pbf
+# or call ./scripts/export-places.sh <path/to/input.osm.pbf> directly.
 
 openapi:
 	./scripts/update-openapi.sh

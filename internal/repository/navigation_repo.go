@@ -23,7 +23,7 @@ type NavigationRepository interface {
 	GetShortestPath(fromLat, fromLng, toLat, toLng float64) ([]RouteResult, error)
 }
 
-var _ NavigationRepository = (*NavigationRepo)(nil)
+var _ NavigationRepository = (*NativeNavigationRepo)(nil)
 
 type roadNode struct {
 	ID  int64   `db:"id"`
@@ -37,7 +37,11 @@ type roadEdge struct {
 	Cost   float64 `db:"cost"`
 }
 
-type NavigationRepo struct {
+// NativeNavigationRepo routes through the in-process A* graph
+// (internal/routing), the pre-pgRouting engine. It stays first-class: the
+// default engine and the fallback when ROUTING_ENGINE=pgrouting is requested
+// on a DB without the extension (api_plans/03).
+type NativeNavigationRepo struct {
 	db *sqlx.DB
 
 	mu             sync.Mutex
@@ -45,15 +49,15 @@ type NavigationRepo struct {
 	graphAttempted bool
 }
 
-func NewNavigationRepo(db *sqlx.DB) *NavigationRepo {
-	return &NavigationRepo{db: db}
+func NewNavigationRepo(db *sqlx.DB) *NativeNavigationRepo {
+	return &NativeNavigationRepo{db: db}
 }
 
 // roadGraph loads the PostGIS road network once and caches it as an
 // immutable routing graph. A successful load is remembered; an empty
 // network (dev DB before scripts/import-road-network.sh) is retried on
 // every call so a later import takes effect without a restart.
-func (r *NavigationRepo) roadGraph() (*routing.Graph, error) {
+func (r *NativeNavigationRepo) roadGraph() (*routing.Graph, error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
@@ -78,7 +82,7 @@ func (r *NavigationRepo) roadGraph() (*routing.Graph, error) {
 	return r.graph, nil
 }
 
-func (r *NavigationRepo) loadNodes() ([]routing.Node, error) {
+func (r *NativeNavigationRepo) loadNodes() ([]routing.Node, error) {
 	query := `
 		SELECT
 			id,
@@ -97,7 +101,7 @@ func (r *NavigationRepo) loadNodes() ([]routing.Node, error) {
 	return nodes, nil
 }
 
-func (r *NavigationRepo) loadEdges() ([]routing.Edge, error) {
+func (r *NativeNavigationRepo) loadEdges() ([]routing.Edge, error) {
 	query := `
 		SELECT source, target, cost
 		FROM road_network_edges_pgr
@@ -113,7 +117,7 @@ func (r *NavigationRepo) loadEdges() ([]routing.Edge, error) {
 	return edges, nil
 }
 
-func (r *NavigationRepo) GetShortestPath(fromLat, fromLng, toLat, toLng float64) ([]RouteResult, error) {
+func (r *NativeNavigationRepo) GetShortestPath(fromLat, fromLng, toLat, toLng float64) ([]RouteResult, error) {
 	g, err := r.roadGraph()
 	if err != nil {
 		return nil, err

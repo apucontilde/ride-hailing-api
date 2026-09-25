@@ -29,7 +29,7 @@ func Setup(cfg *config.Config, db *sqlx.DB) *gin.Engine {
 		repository.NewUserRepo(db),
 		repository.NewRideRepo(db),
 		repository.NewGeoRepo(db),
-		repository.NewNavigationRepo(db),
+		repository.NewRoutingRepository(db, cfg),
 		repository.NewPlacesRepo(db),
 		db,
 	)

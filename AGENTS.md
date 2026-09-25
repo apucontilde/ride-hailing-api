@@ -7,7 +7,7 @@ Operating rules for agents working in this repo. Read before changing anything.
 - **Go API** at repo root: `cmd/server` (entry), `internal/{config,middleware,handler,repository,service,router,routing,websocket,model,database}`.
 - **Flutter monorepo (Melos 8 pub workspace)** at repo root: `pubspec.yaml` (workspace) + three packages — `rider_app/` (Riverpod + flutter_map 7 + Dio + go_router), `driver_app/` (same stack), and `shared/` (`ride_hailing_shared`) holding code shared by both apps (AuthUser/Ride models, ApiClient, AuthStorage, AppAuthController, WebSocketService, AppTheme, Validators, LocationHelper).
 - **Core-file re-export convention**: both apps keep their historical import paths (`lib/core/api/api_client.dart`, `lib/core/auth/auth_provider.dart`, `lib/features/auth/model/auth_user.dart`, ...) as thin shims. The shims either re-export from `shared/` (`export 'package:ride_hailing_shared/ride_hailing_shared.dart' show <Symbol>;`) or define the app-local provider that wires shared classes to `ApiConfig.baseUrl` (`apiClientProvider`, `webSocketServiceProvider`, `authProvider`, `driverProfileProvider`). Do **not** move files out of the apps; keep the shims.
-- **Plans**: `rider_app_plans/NNN_name.md` and `driver_app_plans/NNN_name.md` (numbered, newest last). Read the relevant plan before implementing or debugging a behavior.
+- **Plans**: `rider_app_plans/NNN_name.md`, `driver_app_plans/NNN_name.md`, and `api_plans/NNN_name.md` (numbered, newest last; `api_plans/README.md` indexes the routing/platform series and their dependency order). Read the relevant plan before implementing or debugging a behavior. The api_plans series evolves routing in steps: 01 benchmarks + spatial snap index (done), 02 enable pgRouting, 03 engine swap behind a benchmark gate, 04 region schema, 05 region resolution + import, 06 overlay ports, 07 intercity planner.
 - **Docs**: `RIDER_API_GUIDE.md`, `RIDER_APP_API_PLAN.md`, `DRIVER_APP_PLAN.md`, `USER_STORIES.md`, `data-population-plan.md`.
 
 ## Quick commands
@@ -17,6 +17,7 @@ Operating rules for agents working in this repo. Read before changing anything.
 | Start API (port 8080, live-reload) | `make run` (= `DEBUG_LOGGING=true go run ./cmd/server`) |
 | Unit tests (no DB needed) | `go test -count=1 ./...` |
 | Integration tests | `make test-integration` |
+| Routing benchmarks (routing pkg only) | `make benchmark` |
 | Docker PostGIS + Redis | `docker compose up -d` |
 | Re-seed places | `make seed` |
 | Import road network | `make import-osm` (or `make import-osm-force`) |
@@ -45,21 +46,28 @@ Containers: `ride-hailing-db` (postgis/postgis:16-3.4-alpine), `ride-hailing-red
 2. **`golangci-lint` is NOT installed** — `make lint` will fail. Use `gofmt -w <files>` and
    `go vet ./...` instead. (Some pre-existing files are not gofmt-clean; only format the files
    you touch.)
-3. **pgRouting is NOT available** in the DB image (`CREATE EXTENSION pgrouting` errors: control
-   file missing). Routing is implemented in Go (`internal/routing`, A* over an in-memory graph).
-   Do not write SQL that calls `pgr_dijkstra` expecting the real extension — the
-   `road_network_*_pgr` tables are plain vertex/edge tables and the stub in migration 011 is
-   unused by the code.
+3. **pgRouting IS now available** (`api_plans/02` done): DB image is
+   `pgrouting/pgrouting:16-3.5-4.0` (PostGIS 3.5.2 + pgRouting 4.0.1); migration 012 converges
+   existing volumes, and migration 011's `pgr_dijkstra` stub + NYC seed are guarded behind
+   extension-absent so the real function is never shadowed. Routing STILL runs on the Go
+   engine (`internal/routing`, A* over an in-memory graph) — `ROUTING_ENGINE` defaults to
+   `native` and plan 03 flips it after a benchmark gate. `pgr_dijkstra` calls from code are
+   not yet wired (plan 03); its 8-col output shape matters for that. The OLD alpine image
+   (`postgis/postgis:16-3.4-alpine`) has NO pgRouting — a volume from one is exactly what
+   migration 012 fixes.
 4. **Migrations** (`internal/database/migrate.go`): the runner embeds and executes only
    `migrations/*.up.sql` (alphabetically sorted; version = numeric prefix before the first `_`).
    `.down.sql` files are documentation only — never executed. Running the server applies
    pending migrations on startup.
 5. **Road graph is cached in-process.** After `make import-osm` (or any change to
    `road_network_*_pgr`), restart the API or the route endpoint keeps serving the old graph.
-6. **`scripts/init-pgrouting.sh`** tries `CREATE EXTENSION pgrouting`, which fails on the Alpine
-   image; a fresh `docker compose up -d` volume may abort first-boot init. The routing feature
-   does not need pgRouting, but use the plan/import flow (below), and if recreating the DB,
-   reconcile that script first.
+6. **`scripts/init-pgrouting.sh`** is idempotent and control-file-guarded: it detects the
+   numeric PG version dir (the Debian image has a stray `postgresql.conf.sample.dpkg` file
+   that a bare `ls | sort -V` would pick), skips extensions the image doesn't package, and
+   creates PostGIS before pgRouting. Re-run by hand:
+   `docker exec -i ride-hailing-db sh -s < scripts/init-pgrouting.sh`
+   (do NOT `psql -f` the file — it's a shell script). It runs only on first boot of an empty
+   volume; reused volumes converge via migration 012.
 7. **Tests use mocks, not the live DB.** The `tests/` package boots a server via
    `testutil.NewTestServerE()` which passes mock repos (`MockNavigationRepo` returns a 5000 m /
    454 s route) and `db=nil`. `go test ./...` should pass without Docker/DB up. In noisy gin

@@ -5,6 +5,8 @@ build/
 .env
 *.exe
 *.out
+*.bak
+data/
 
 .dart_tool
 .idea
