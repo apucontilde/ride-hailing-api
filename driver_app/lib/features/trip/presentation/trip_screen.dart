@@ -6,6 +6,7 @@ import 'package:ride_hailing_shared/ride_hailing_shared.dart';
 import 'package:latlong2/latlong.dart';
 import '../../../core/location/location_service.dart';
 import '../../../core/ride/ride_state_notifier.dart';
+import '../../rides/presentation/rate_sheet.dart';
 import '../providers/trip_notifier.dart';
 
 /// Tile layer for the trip map, behind a provider so widget tests can
@@ -166,6 +167,13 @@ class _TripScreenState extends ConsumerState<TripScreen> {
     final position = ref.watch(lastPositionProvider);
     final ride = trip.currentRide;
     final stage = trip.stage;
+    // Watched, not read: a rating submitted from the sheet has to retire this
+    // prompt, and only a subscription rebuilds the screen. The server would
+    // accept a second rating for the same ride, so the prompt is shown at most
+    // once per ride per session.
+    final ratedRideIds = ref.watch(ratedRideIdsProvider);
+    final canRate =
+        ride != null && ride.id.isNotEmpty && !ratedRideIds.contains(ride.id);
 
     // Refetch on GPS moves (collapsed by the 200 m cache) and when the target
     // flips from pickup to dropoff as the trip starts.
@@ -218,6 +226,9 @@ class _TripScreenState extends ConsumerState<TripScreen> {
                   onCancel: _confirmCancel,
                   onComplete: _confirmComplete,
                   onFinish: _finishTrip,
+                  onRate: canRate
+                      ? () => showRateSheet(context, ref, rideId: ride.id)
+                      : null,
                 ),
               ),
             ),
@@ -347,6 +358,10 @@ class _StageControls extends StatelessWidget {
   final VoidCallback onComplete;
   final VoidCallback onFinish;
 
+  /// Opens the rating sheet for the just-finished ride, or `null` when there is
+  /// no ride to rate (or it has already been rated this session).
+  final VoidCallback? onRate;
+
   const _StageControls({
     required this.stage,
     required this.ride,
@@ -357,6 +372,7 @@ class _StageControls extends StatelessWidget {
     required this.onCancel,
     required this.onComplete,
     required this.onFinish,
+    required this.onRate,
   });
 
   @override
@@ -441,6 +457,18 @@ class _StageControls extends StatelessWidget {
             onPressed: onFinish,
             child: const Text('Back to home'),
           ),
+          if (onRate != null) ...[
+            const SizedBox(height: 8),
+            // US-D10: rate the rider while the trip is still on screen — the
+            // ride is cleared by "Back to home", so this is the only moment
+            // the driver has the fare in front of them.
+            OutlinedButton.icon(
+              key: const Key('trip-rate-button'),
+              onPressed: onRate,
+              icon: const Icon(Icons.star_outline),
+              label: const Text('Rate the rider'),
+            ),
+          ],
         ],
       );
     }

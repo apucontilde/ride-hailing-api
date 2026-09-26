@@ -4,6 +4,30 @@ import 'package:ride_hailing_shared/ride_hailing_shared.dart';
 import '../../../core/auth/auth_provider.dart';
 import '../../../core/api/endpoints.dart';
 
+/// One page of `GET /driver/rides/history` plus the pagination metadata the
+/// server echoes back (`internal/handler/ride.go:151-189`).
+///
+/// Pagination is **1-based `page` + `per_page`**, not `limit`/`offset`: the
+/// handler clamps `page >= 1` and `per_page` to 1..50 and silently rewrites
+/// anything out of range, so a bad value comes back as a *valid-looking* page
+/// rather than an error. Rides are ordered `created_at DESC` and include the
+/// fare columns (`SELECT *`), which is what the client-side earnings sum needs.
+class RideHistoryPage {
+  final List<Ride> rides;
+  final int total;
+  final int page;
+  final int perPage;
+  final int totalPages;
+
+  const RideHistoryPage({
+    required this.rides,
+    required this.total,
+    required this.page,
+    required this.perPage,
+    required this.totalPages,
+  });
+}
+
 class RidesRepository {
   final ApiClient apiClient;
 
@@ -43,6 +67,52 @@ class RidesRepository {
     final rideData = data['ride'] as Map<String, dynamic>?;
     if (rideData == null) return null;
     return Ride.fromJson(rideData);
+  }
+
+  /// One page of the driver's past rides.
+  Future<RideHistoryPage> history({int page = 1, int perPage = 20}) async {
+    final response = await apiClient.dio.get(
+      ApiEndpoints.driverRidesHistory,
+      queryParameters: {'page': page, 'per_page': perPage},
+    );
+    final data = response.data as Map<String, dynamic>;
+    final rides = (data['rides'] as List<dynamic>? ?? const [])
+        .whereType<Map<String, dynamic>>()
+        .map((json) => Ride.fromJson(json))
+        .toList();
+    return RideHistoryPage(
+      rides: rides,
+      total: (data['total'] as num?)?.toInt() ?? rides.length,
+      page: (data['page'] as num?)?.toInt() ?? page,
+      perPage: (data['per_page'] as num?)?.toInt() ?? perPage,
+      totalPages: (data['total_pages'] as num?)?.toInt() ?? 1,
+    );
+  }
+
+  /// Rate the rider on a ride.
+  ///
+  /// The wire field is **`score`**, not `rating` (`rateRideRequest` in
+  /// `internal/handler/ride.go:42-45`); sending `rating` binds to zero and the
+  /// server answers 400. The service only range-checks the score
+  /// (`internal/service/ride.go:192-206`) — it never verifies that the ride is
+  /// `completed`, nor that the caller is the assigned driver — so the caller
+  /// owns both rules.
+  Future<void> rateRide({
+    required String rideId,
+    required int score,
+    String? comment,
+  }) async {
+    if (score < 1 || score > 5) {
+      throw ArgumentError.value(score, 'score', 'must be between 1 and 5');
+    }
+    final text = comment?.trim();
+    await apiClient.dio.post(
+      ApiEndpoints.driverRideRate(rideId),
+      data: {
+        'score': score,
+        if (text != null && text.isNotEmpty) 'comment': text,
+      },
+    );
   }
 }
 

@@ -155,6 +155,14 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
               },
             ),
             ListTile(
+              leading: const Icon(Icons.receipt_long_outlined),
+              title: const Text('Ride history & earnings'),
+              onTap: () {
+                Navigator.of(context).pop();
+                context.push('/rides-history');
+              },
+            ),
+            ListTile(
               leading: const Icon(Icons.settings_outlined),
               title: const Text('Settings'),
               onTap: () {

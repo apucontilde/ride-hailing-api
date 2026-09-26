@@ -15,6 +15,7 @@ import 'package:driver_app/core/location/location_service.dart';
 import 'package:driver_app/core/network/websocket_service.dart';
 import 'package:driver_app/core/network/ws_event.dart';
 import 'package:driver_app/core/ride/ride_state_notifier.dart';
+import 'package:driver_app/features/rides/presentation/rate_sheet.dart';
 import 'package:driver_app/features/trip/presentation/trip_screen.dart';
 
 class MockApiClient extends Mock implements ApiClient {}
@@ -267,6 +268,68 @@ void main() {
 
       expect(find.text('home screen'), findsOneWidget);
       expect(rideState.state.currentRide, isNull);
+    });
+  });
+
+  group('rating after the trip', () {
+    void completeTrip() {
+      broadcast(
+        status: 'completed',
+        fare: {'base_fare': 2.5, 'total': 11.8},
+      );
+    }
+
+    testWidgets('the post screen offers to rate the rider', (tester) async {
+      await pumpTrip(tester);
+      completeTrip();
+      await tester.pump();
+
+      expect(find.byKey(const Key('trip-rate-button')), findsOneWidget);
+      expect(find.text('Rate the rider'), findsOneWidget);
+    });
+
+    testWidgets('tapping it opens the sheet for the completed ride',
+        (tester) async {
+      await pumpTrip(tester);
+      completeTrip();
+      await tester.pump();
+
+      await tester.tap(find.byKey(const Key('trip-rate-button')));
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 300));
+      await tester.pump();
+
+      expect(find.byType(RateSheet), findsOneWidget);
+      expect(find.text('Rate your rider'), findsOneWidget);
+    });
+
+    testWidgets('the prompt retires once the ride is rated', (tester) async {
+      await pumpTrip(tester);
+      completeTrip();
+      await tester.pump();
+
+      // A successful submit is what marks the ride rated; the server keeps no
+      // record the app can read back, so the guard is session-local.
+      container.read(ratedRideIdsProvider.notifier).state = {'r1'};
+      await tester.pump();
+
+      expect(find.byKey(const Key('trip-rate-button')), findsNothing);
+    });
+
+    testWidgets('a mid-trip stage offers no rating', (tester) async {
+      await pumpTrip(tester);
+      broadcast(status: 'in_progress');
+      await tester.pump();
+
+      expect(find.byKey(const Key('trip-rate-button')), findsNothing);
+    });
+
+    testWidgets('a cancelled trip offers no rating', (tester) async {
+      await pumpTrip(tester);
+      broadcast(status: 'cancelled', cancelledBy: 'rider');
+      await tester.pump();
+
+      expect(find.byKey(const Key('trip-rate-button')), findsNothing);
     });
   });
 
