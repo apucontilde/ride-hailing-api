@@ -3,13 +3,13 @@
 <head>
   <!--
     If you are serving your web app in a path other than the root, change the
-    href value below to reflect the base path you are serving from.
+    href value below to reflect the base path you're serving from.
 
-    The path provided below has to start and end with a slash "/" in order for
+    The path provided below must start and end with a slash "/" in order for
     it to work correctly.
 
     For more details:
-    * https://developer.mozilla.org/en-US/docs/Web/HTML/Element/base
+    - https://developer.mozilla.org/en-US/docs/Web/HTML/Element/base
 
     This is a placeholder for base href that will be replaced by the value of
     the `--base-href` argument provided to `flutter build`.
@@ -17,8 +17,9 @@
   <base href="$FLUTTER_BASE_HREF">
 
   <meta charset="UTF-8">
-  <meta content="IE=Edge" http-equiv="X-UA-Compatible">
+  <meta http-equiv="X-UA-Compatible" content="IE=Edge">
   <meta name="description" content="A new Flutter project.">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
 
   <!-- iOS meta tags & icons -->
   <meta name="mobile-web-app-capable" content="yes">
@@ -31,6 +32,33 @@
 
   <title>rider_app</title>
   <link rel="manifest" href="manifest.json">
+
+  <!--
+    E2E hook (e2e/ dir, Playwright).
+
+    Flutter web paints into a <canvas>, so its widget tree is invisible to a
+    DOM driver. Flutter ships a hidden "Enable accessibility" placeholder
+    (`flt-semantics-placeholder`); activating it builds the semantics tree,
+    which mirrors every widget into real, focusable, aria-labelled DOM nodes.
+    That is what lets the e2e suite read text and click buttons by label.
+
+    Clicking it programmatically (rather than leaving it to a human) is gated
+    behind a query flag so normal browsing is untouched: the suite loads
+    `/?e2e=1`. `flutter build web` does not rewrite this block, so it survives
+    a release build. Keep it in sync with driver_app/web/index.html.
+  -->
+  <script>
+    (function () {
+      if (!/[?&]e2e=1(&|$)/.test(window.location.search)) return;
+      var attempts = 0;
+      function enableSemantics() {
+        var el = document.querySelector('flt-semantics-placeholder');
+        if (el) { el.click(); return; }
+        if (++attempts < 200) setTimeout(enableSemantics, 100);
+      }
+      window.addEventListener('load', enableSemantics);
+    })();
+  </script>
 </head>
 <body>
   <!--
@@ -39,7 +67,7 @@
     or to give the user feedback during the initialization process.
 
     For more details:
-    * https://docs.flutter.dev/platform-integration/web/initialization
+    - https://docs.flutter.dev/platform-integration/web/initialization
   -->
   <script src="flutter_bootstrap.js" async></script>
 </body>
