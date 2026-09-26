@@ -6,24 +6,31 @@ Scope: a new **Flutter driver app** (passenger side already exists as `rider_app
 > milestone blueprint below is still the design of record, but the app was built
 > incrementally through `driver_app_plans/01–07` and its real state differs from
 > this document's optimistic read. **Landed and tested:** P0–P1 (scaffold, M1
-> auth, M2 onboarding) and plans 01–04 = M3, M4, M5, M6, M7 (online/location loop,
-> offer sheet, accept/decline with the 30 s countdown and the HTTP fallback, and
-> the full trip journey: one stage per server status, the server route polyline
-> with a >200 m refetch, driver cancel, the fare receipt, and a `GET
-> /driver/rides/current` launch restore). Current totals: **121 driver_app tests
-> green, `flutter analyze` clean** in all three packages. Three bugs were fixed on
-> the way — the old stage machine merged `accepted`/`driver_arrived`, so the first
-> button press sent `in_progress` and the server answered 400; `ride.updated` was
-> parsed as a flat `Ride` when the wire shape is a `ride_id`-keyed patch with
-> nested `pickup`/`dropoff`/`fare`; and the trip notifier never seeded from the
-> ride already held, so the screen it was opened *for* rendered empty.
+> auth, M2 onboarding) and plans 01–05 = M3, M4, M5, M6, M7 (online/location loop,
+> offer sheet, accept/decline with the 30 s countdown and the HTTP fallback, the
+> full trip journey: one stage per server status, the server route polyline with a
+> >200 m refetch, driver cancel, the fare receipt, and a `GET /driver/rides/current`
+> launch restore) plus M8/M9 (the paged ride history with a **client-side** earnings
+> header, and rating the rider from the trip receipt or the history list). Current
+> totals: **171 driver_app tests green, `flutter analyze` clean** in all three
+> packages. Five bugs were fixed on the way — the old stage machine merged
+> `accepted`/`driver_arrived`, so the first button press sent `in_progress` and the
+> server answered 400; `ride.updated` was parsed as a flat `Ride` when the wire shape
+> is a `ride_id`-keyed patch with nested `pickup`/`dropoff`/`fare`; the trip notifier
+> never seeded from the ride already held, so the screen it was opened *for* rendered
+> empty; the history page merge *prepended* the fetched page instead of appending it,
+> inverting the newest-first order; and the tile's trailing column overflowed its
+> `ListTile` slot by 8 px. Two contracts in `driver_app_plans/05` were also wrong
+> against the handlers and are corrected there: the rate body field is `score`, not
+> `rating`, and history pagination is 1-based `page`/`per_page`, not
+> `limit`/`offset`.
 > **Code landed, untested:** M10 (profile / gated vehicle / settings).
-> **Not started:** M8 (rate the rider), M9 (history + earnings), and the
-> safety/support surface (SAF-1: `POST /sos` + `POST/feedback` are declared in
-> `endpoints.dart` but never called). Turn-by-turn guidance is also still open —
-> the map draws the road polyline, not a nav session. The fix-up order and the
-> per-plan breakdown live in `driver_app_plans/README.md`; the story-level tiers
-> are in `USER_STORIES.md` (Part B + Appendix).
+> **Not started:** the safety/support surface (SAF-1: `POST /sos` + `POST/feedback`
+> are declared in `endpoints.dart` but never called), and M10's test suites.
+> Turn-by-turn guidance is also still open — the map draws the road polyline, not a
+> nav session. The fix-up order and the per-plan breakdown live in
+> `driver_app_plans/README.md`; the story-level tiers are in `USER_STORIES.md`
+> (Part B + Appendix).
 
 ---
 
@@ -256,15 +263,17 @@ driver_app/
 - **Cancel trip (US-11 driver side):** visible on the trip screen while in `accepted`/`driver_arrived` → `POST /driver/rides/:id/cancel` → confirm → toast + back to IDLE. Not offered once `in_progress` (state machine disallows it, and the rider is aboard).
 - **Tests:** trip_provider transition test with WS-mock; double-tap guard test; driver-cancel path (WS `cancelled` echo + button state hide once `in_progress`).
 
-### M8 — Rate the rider (US-D10)
+### M8 — Rate the rider (US-D10) ✅ landed (`driver_app_plans/05`)
 - **Screen:** `/rate` with 1–5 stars + optional comment.
 - **Data:** `POST /driver/rides/:id/rate {score, comment}` → confirm → go home (idle). Backend has no completed/party check — fine for the app; don't harden client-side beyond disabling double-submit.
 - **Tests:** provider + widget test.
+- *As landed:* a modal `RateSheet` rather than a `/rate` route, reachable from the post-trip receipt and from each completed trip in the history list. The body field is `score` (a `rating` key binds to zero and 400s). Double-submit is blocked by disabling the control in flight, and a failure keeps the sheet open with an inline error. "Already rated" is tracked in-session because `GET /driver/ratings` is a stub.
 
-### M9 — Earnings & history (US-D11)
+### M9 — Earnings & history (US-D11) ✅ landed (`driver_app_plans/05`)
 - **Files:** `features/earnings/{earnings_screen, earnings_provider, ride_tile_widget}.dart`.
 - **Data:** `GET /driver/rides/history?page=1&per_page=20` (infinite scroll using `total_pages`); totals (rides, sum `total_fare`, by-day grouping) computed client-side; **withdraw section hidden** (backend stub).
 - **Tests:** pagination provider test (mock adapter two pages); widget test renders totals.
+- *As landed:* under `features/rides/` instead of `features/earnings/`, reusing the existing repository and the `/rides-history` route the profile screen already linked. Bucketing is by **month**, not by day, and exhaustion follows the page length rather than `total_pages` — a row that loses its id is dropped from the list but still counts towards the server's `total`. Because history is paginated, the earnings header states that it covers only the trips loaded so far.
 
 ### M10 — Profile & settings (US-D3)
 - **Files:** `features/profile/{profile_screen, profile_provider}.dart`, `features/settings/settings_screen.dart`.
