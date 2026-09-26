@@ -1,5 +1,15 @@
 # Plan 07 — Safety/support (ack-only), skip list, and backend follow-ups
 
+> **Status: 🟠 SKIP LIST ONLY** (re-audited 2026-09-25). The skip list below was
+> re-verified against `internal/router/router.go` and is still accurate: never
+> build a real surface on a backend STUB. Nothing else landed —
+> `features/safety/{safety_screen,safety_repository}.dart` do not exist, so
+> `POST /sos` and `POST /feedback` are declared in `endpoints.dart` and never
+> called (US-12 stays ack-only-missing). This is the cheapest remaining win on
+> the board: two small files and a dialog.
+> ⚠️ A real SOS needs the missing push-delivery/alert pipeline; per the rider app
+> rule (SAF-1) an ack-only SOS is acceptable **only** if the UI says so plainly.
+
 Close the loop on the remaining driver-facing API surface and, importantly,
 **write down what we deliberately don't build** and why. This is the "adopt
 everything the API `already` offers" sweep that 01–06 don't cover.

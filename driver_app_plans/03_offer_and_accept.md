@@ -1,5 +1,19 @@
 # Plan 03 — Offer dialog + accept / decline (US-D5, D6)
 
+> **Status: ✅ LANDED** (re-audited 2026-09-25). `features/rides/data/rides_repository.dart`
+> (`fetchRide` via `GET /driver/rides/:id`, `acceptRideHttp` mapping 409 →
+> `OfferExpiredException`), `features/rides/presentation/offer_sheet.dart` (5 s detail
+> fetch with timeout, 30→0 countdown, Accept = WS-first with HTTP fallback,
+> Decline = WS-only, disabled at 0, single-offer policy in `RideStateNotifier`),
+> and the `home_screen.dart` wiring that opens the sheet. Tests:
+> `rides_repository_test.dart` + `offer_sheet_test.dart`, green.
+> **Note:** the sheet shows `total_fare` + pickup/dropoff but **not** the
+> base/surge breakdown the plan asked for — the backend `Ride` JSON has the fields,
+> so this is presentation-only, not a contract gap.
+> ⚠️ This repository file was untracked until 2026-09-25: a bare `data/` rule in
+> `.gitignore` matched `features/rides/data/`, so the layer was missing from a
+> fresh clone. `.gitignore` is now root-anchored and the file is committed.
+
 Turn the `ride.offer` event into a real decision surface: fetch ride detail, show
 fare/pickup/dropoff, count down the 30 s window, accept (WS first, HTTP fallback)
 or decline (WS only).

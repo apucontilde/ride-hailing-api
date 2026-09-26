@@ -1,5 +1,22 @@
 # Plan 01 — WebSocket contract + ride-state machine
 
+> **Status: ✅ LANDED** (re-audited 2026-09-25). `core/network/ws_event.dart` maps
+> every backend type (`ride.offer` with only a `ride_id`, `ride.updated`,
+> `driver.location`, unknown → `other`) and nests `data` per
+> `internal/websocket/hub.go:95-110`, so the send helpers use the real wire
+> format. `RideStateNotifier` owns the machine: offer + 30 s expiry, single-offer
+> policy, `clearOffer()`/`clearRide()`, `adoptRide()` for rides learned over
+> HTTP, and a `ride.updated` **patch merge** (`core/ride/ride_update.dart` —
+> the broadcast is `ride_id` + nested `pickup`/`dropoff`/`fare`, not a flat
+> `Ride`; plan 04 found that out the hard way). Tests:
+> `websocket_service_test.dart` + `ride_state_notifier_test.dart`.
+> **Superseded:** the plan's debug banner on `ride.offer` was replaced by plan
+> 03's real offer sheet, which `home_screen.dart` opens.
+> **One loose end:** `lastLocation` is stored but still has no consumer, and it
+> never will: the server only pushes `driver.location` to the **rider**, so the
+> driver app receives nothing on that event. Plan 04 therefore routes from the
+> driver's own GPS fix (see `04`'s status block).
+
 Make the driver app a first-class `/ws` participant: consume every broadcast event,
 send accept/decline/ping in the **real nested wire format**, and own the ride-state
 machine in one notifier so every later plan (offers, trip, history) feeds off it.

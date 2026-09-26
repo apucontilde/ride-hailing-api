@@ -1,5 +1,16 @@
 # Plan 06 — Profile / vehicle & documents (feature-gated) / settings (US-D3)
 
+> **Status: 🟠 CODE LANDED, NO TESTS** (re-audited 2026-09-25). All the screens
+> exist — `ProfileNotifier.updateProfile` (PATCH-style partial fields, replaces
+> the cached profile, preserves the previous value on failure), the profile screen
+> (avatar, editable first/last name, vehicle + document chips, ★ rating summary,
+> validated form), the feature-gated vehicle screen (fetches
+> `GET /driver/me/vehicle` behind `ApiConfig.vehicleFeatureEnabled`, which is a
+> backend STUB so it is gated, not faked), and settings (sign-out + version +
+> server URL). **The plan's three test suites were never written** — the whole
+> surface is unprotected. Also still open: onboarding collects first/last name and
+> never `PUT`s it (US-D1 🟡), and the history entry point links to a placeholder.
+
 Finish the personal profile surface: read + update `GET/PUT /driver/me`, show the
 rating summary, and add vehicle + documents **as feature-gated placeholders**
 because those endpoints are backend STUBs. Settings keeps sign-out/version. This

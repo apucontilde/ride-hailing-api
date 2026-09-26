@@ -2,6 +2,29 @@
 
 Scope: a new **Flutter driver app** (passenger side already exists as `rider_app/`). This plan builds the app end-to-end against the backend contract documented in `USER_STORIES.md` (v2) and verified against the code at `051ecaf`. It is written **from zero** — no skeleton exists yet.
 
+> **Delivery status (audited 2026-09-25 against the working tree).** The
+> milestone blueprint below is still the design of record, but the app was built
+> incrementally through `driver_app_plans/01–07` and its real state differs from
+> this document's optimistic read. **Landed and tested:** P0–P1 (scaffold, M1
+> auth, M2 onboarding) and plans 01–04 = M3, M4, M5, M6, M7 (online/location loop,
+> offer sheet, accept/decline with the 30 s countdown and the HTTP fallback, and
+> the full trip journey: one stage per server status, the server route polyline
+> with a >200 m refetch, driver cancel, the fare receipt, and a `GET
+> /driver/rides/current` launch restore). Current totals: **121 driver_app tests
+> green, `flutter analyze` clean** in all three packages. Three bugs were fixed on
+> the way — the old stage machine merged `accepted`/`driver_arrived`, so the first
+> button press sent `in_progress` and the server answered 400; `ride.updated` was
+> parsed as a flat `Ride` when the wire shape is a `ride_id`-keyed patch with
+> nested `pickup`/`dropoff`/`fare`; and the trip notifier never seeded from the
+> ride already held, so the screen it was opened *for* rendered empty.
+> **Code landed, untested:** M10 (profile / gated vehicle / settings).
+> **Not started:** M8 (rate the rider), M9 (history + earnings), and the
+> safety/support surface (SAF-1: `POST /sos` + `POST/feedback` are declared in
+> `endpoints.dart` but never called). Turn-by-turn guidance is also still open —
+> the map draws the road polyline, not a nav session. The fix-up order and the
+> per-plan breakdown live in `driver_app_plans/README.md`; the story-level tiers
+> are in `USER_STORIES.md` (Part B + Appendix).
+
 ---
 
 ## 1. What we're building

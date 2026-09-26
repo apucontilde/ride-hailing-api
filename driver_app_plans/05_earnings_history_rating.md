@@ -1,5 +1,24 @@
 # Plan 05 — Ride history + client-side earnings + rating (US-D10, D11)
 
+> **Status: 🔴 NOT STARTED** (re-audited 2026-09-25). Nothing in this plan landed.
+> Concretely, none of these exist:
+> - `RidesRepository.history()` / `rateRide()` — absent; the repository has only
+>   `fetchRide`, `acceptRideHttp` and `currentRide` (plans 03/04).
+> - `features/rides/providers/history_provider.dart` — file does not exist (no
+>   `historyProvider`, no `earningsProvider`, no month bucketing, no pagination).
+> - `features/rides/presentation/rate_sheet.dart` — file does not exist; no
+>   `ratedRideIds` tracking anywhere.
+> - `features/rides/presentation/rides_history_screen.dart` is still the
+>   **placeholder**: a `Scaffold` with the text "Your ride history and earnings
+>   arrive with the earnings & history plan (driver_app_plans/05)". It calls
+>   nothing. `GET /driver/rides/history` and `POST /driver/rides/:id/rate` are
+>   declared in `endpoints.dart` and never invoked.
+> - No tests for any of it.
+> This is the largest single gap in the driver app: US-D10 (rate the rider) and
+> US-D11 (history/earnings) are entirely absent from the running app, and it also
+> blocks the post-trip rating prompt on the trip screen — plan 04 landed the trip
+> journey but deliberately left rating out, since it is this plan's surface.
+
 Give drivers their completed-rides history with **derived earnings**
 (the `GET /driver/me/earnings` endpoint is a backend STUB — compute from history,
 never build UI on the stub), and let them rate the rider after each completed trip.

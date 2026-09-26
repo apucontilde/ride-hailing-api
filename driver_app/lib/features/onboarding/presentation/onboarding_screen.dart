@@ -5,9 +5,12 @@ import '../../../core/auth/auth_provider.dart';
 import '../../../core/utils/validators.dart';
 
 /// US-D1 — driver onboarding. The registered account holds the `rider` role;
-/// this screen promotes it to `driver` via `POST /driver/register`, then banks
-/// identity fields via `PUT /driver/me`. Vehicle/documents onboarding is real
-/// backend work and is delivered in driver_app_plans (feature-gated).
+/// this screen promotes it to `driver` via `POST /driver/register`, then routes
+/// to `/home`. ⚠️ The name fields collected below are **not** persisted: nothing
+/// here calls `PUT /driver/me`, so a freshly onboarded driver has an empty name
+/// until they set it on the profile screen (`driver_app_plans/06`, step 5 —
+/// still open). Vehicle/documents onboarding is real backend work and is
+/// feature-gated behind `ApiConfig.vehicleFeatureEnabled`.
 class OnboardingScreen extends ConsumerStatefulWidget {
   const OnboardingScreen({super.key});
 
@@ -37,8 +40,10 @@ class _OnboardingScreenState extends ConsumerState<OnboardingScreen> {
       setState(() => _registering = false);
       return;
     }
-    // Identity field persist is a follow-up (plan 04); the router gate already
-    // flips to /home once the session role becomes `driver`.
+    // ⚠️ The name fields above are collected but never sent: there is no
+    // `PUT /driver/me` call here, so the driver lands on `/home` with an empty
+    // name until the profile screen is used (driver_app_plans/06, step 5).
+    // The router gate already flips to /home once the role becomes `driver`.
     context.go('/home');
   }
 

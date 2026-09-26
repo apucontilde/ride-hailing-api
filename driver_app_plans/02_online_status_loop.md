@@ -1,5 +1,22 @@
 # Plan 02 — Online/offline + live location loop (US-D4)
 
+> **Status: ✅ LANDED** (re-audited 2026-09-25). `AvailabilityNotifier` flips
+> `PUT /driver/me/status` with a double-tap guard that reverts the switch if the
+> call fails, and `syncFromProfile` keeps it truthful after a profile refresh.
+> `LocationService` streams geolocator fixes, pushes
+> `PUT /geo/driver/location` at ≥5 s intervals only while online, and buffers
+> failures in a bounded 60-point batch flushed to
+> `PUT /geo/driver/location/batch`. `home_screen.dart` renders the toggle, the
+> status chip, the permission banner and the offer trigger. Tests:
+> `availability_notifier_test.dart` + `location_service_test.dart`.
+> **Added by plan 04:** `lastPositionProvider` + an `onPosition` callback that
+> fires for **every** fix, before the online/throttle gates — the trip map and
+> the route refetch need the driver's real position whether or not it is pushed
+> to the server.
+> **Still open:** `appPermissionProvider` is never written by
+> `requestPermission()`, so the "permission denied" banner can never fire;
+> `app.dart`'s two authenticated branches are redundant.
+
 The heartbeat of the driver app: a single availability switch that flips the
 driver's server status and starts/stops a throttled GPS ping so the dispatcher can
 find the driver. Everything else (offers, trips) depends on this.
