@@ -23,6 +23,7 @@ pitfalls) are embedded inline; the routing stack is documented in
 | `06_multi_city_single_stack.md` | **One API stack, many cities, position-loaded**: per-region native graph cache ("native after the region is determined", lazy/import-fresh/evictable via `ROUTING_MAX_REGIONS_IN_MEMORY`), `map[datasourceID]*sqlx.DB` pools from the plan-04 registry, importer `--datasource`; deployment shapes near (one cluster, per-city DBs + pgbouncer packs) / far (separate full deploys sharing only the registry); everything per-region so one city never blocks another; unreachable datasource → that region degrades to estimate | 05 (resolver), 04 (registry) |
 | `07_intercity_future_stub.md` | **Intercity — DEFERRED.** No ports, no leg chaining, no chain-escalation; only prep that cannot interfere (level/parent hierarchy in the plan-04 schema). Holds the deferred design register + the archived overlay-ports/intercity-planner detail for the later revisit | none (never blocks 04–06) |
 | [`elevation/README.md`](elevation/README.md) | **Sub-series — elevation-aware routing (native engine).** 5 small stages in `api_plans/elevation/`: directional cost model (01, no DB) → `elevation_m` column + repo/config plumbing (02, migration 015) → DEM ingest + noise control (03) → calibration + rollout gate (04) → deferred duration/API/parity (05). Orthogonal to 03–06: changes the native engine's *cost function*, not the engine, the region model, or the endpoint contract. Default OFF. See `elevation/REVIEW.md` for the adversarial review | none (engine-internal; composes with 04–06) |
+| [`errors/README.md`](errors/README.md) | **Sub-series — the API error contract.** 3 small stages in `api_plans/errors/`: repository error taxonomy (`ErrNotFound`/`ErrConflict` + `*pq.Error` SQLSTATE, mocks moved in lockstep — 01) → one `respond`/`respondRepo` over the already-dead `ErrorResponse` types, `errors.Is` → status/code, and `c.Error` instrumentation for the 5 handler files that have none (02) → stop leaking go-playground/validator text from the 22 `ShouldBindJSON` sites, document the envelope (03). Orthogonal to everything above: changes **what the API says when it fails**, not routing. Generalises the pattern the routing layer already uses (`routing.ErrNoRoute`, `repository.ErrDatasourceUnavailable`, `navigation.go:141`) | none (composes with 01–07) |
 
 Recommended order: 01 → 02 → 03 → 04 → 05 → 06 → 07. Each plan lands a working, testable
 state; nothing except 01→02 and the numbering requires the previous plan to be *deployed*,
@@ -31,10 +32,13 @@ only that it *exists* (later plans assume the interface and file layout from ear
 before adding a second real city. 07 is a stub only: intercity is deferred and must not
 block or interfere with 04–06.
 
-`elevation/` is a separate sub-series with its own ordering; it never blocks 01–07 and none of
-01–07 block it. Read `elevation/README.md` first — it carries the invariants the whole series
-is judged against (reported distance stays in true meters; default off; missing elevation
-degrades to flat).
+`elevation/` and `errors/` are separate sub-series with their own ordering; neither ever blocks
+01–07 and none of 01–07 block them. Read each sub-series' `README.md` first — they carry the
+invariants their series is judged against. For `elevation/`: reported distance stays in true
+meters, default off, missing elevation degrades to flat. For `errors/`: success paths and
+status codes for *valid* requests never change, the rider app's straight-line fallback stays
+500-only, a cause is logged whenever a message is generalised, and the mocks move in lockstep
+with the repositories.
 
 ## Golden rules (carried over from the rest of the repo)
 
