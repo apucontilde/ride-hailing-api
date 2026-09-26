@@ -1,3 +1,5 @@
+import 'package:dio/dio.dart';
+
 class ApiException implements Exception {
   final String message;
   final int? statusCode;
@@ -6,6 +8,34 @@ class ApiException implements Exception {
 
   @override
   String toString() => 'ApiException($statusCode): $message';
+}
+
+/// User-facing text for a failed API call, or [fallback] if there isn't one.
+///
+/// `ApiClient`'s error interceptor maps every non-2xx response to an
+/// `ApiException` carrying the backend's own `error.message`, then re-throws it
+/// as a `DioException` with that mapped exception in `DioException.error`
+/// (the field is final, so it cannot be mutated in place).
+///
+/// Read the mapped exception, never `DioException.message`: Dio's own message
+/// is a verbose multi-line description — "This exception was thrown because the
+/// response has a status code of 409 but the status code included in the
+/// response is not a valid status code…" — and rendering it put a wall of
+/// English, punctuation and an MDN link in front of the user where "That email
+/// is already registered" belongs.
+///
+/// [fallback] covers what the server cannot describe: a timeout, a dropped
+/// connection, a malformed body, or a 200 with an empty `error.message` — an
+/// empty string here would leave the error banner rendering nothing at all,
+/// which reads as a button that silently does nothing.
+String apiErrorMessage(Object error, String fallback) {
+  final message = switch (error) {
+    ApiException() => error.message,
+    DioException(error: final Object? mapped) when mapped is ApiException =>
+      mapped.message,
+    _ => '',
+  };
+  return message.trim().isEmpty ? fallback : message;
 }
 
 class UnauthorizedException extends ApiException {

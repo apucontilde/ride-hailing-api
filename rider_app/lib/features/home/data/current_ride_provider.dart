@@ -3,6 +3,7 @@ import 'package:dio/dio.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../../../core/api/endpoints.dart';
 import '../../../core/api/api_client.dart';
+import '../../../core/api/api_exceptions.dart';
 import '../../../core/auth/auth_provider.dart';
 import 'ride_status_provider.dart';
 
@@ -102,7 +103,7 @@ class CurrentRideNotifier extends StateNotifier<CurrentRideState> {
     } on DioException catch (e) {
       state = state.copyWith(
         loading: false,
-        error: e.message ?? 'Failed to load ride',
+        error: apiErrorMessage(e, 'Failed to load ride'),
       );
     } catch (_) {
       state = state.copyWith(loading: false);

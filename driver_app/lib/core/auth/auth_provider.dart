@@ -93,7 +93,7 @@ class AuthNotifier extends AppAuthController {
     } on DioException catch (e) {
       state = state.copyWith(
         status: AuthStatus.authenticated,
-        error: e.message ?? 'Driver registration failed. Please try again.',
+        error: apiErrorMessage(e, 'Driver registration failed. Please try again.'),
       );
       return false;
     }

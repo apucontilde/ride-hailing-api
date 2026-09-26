@@ -10,4 +10,5 @@ export 'package:ride_hailing_shared/ride_hailing_shared.dart'
         OfferExpiredException,
         ValidationException,
         RateLimitedException,
-        mapStatusCodeToException;
+        mapStatusCodeToException,
+        apiErrorMessage;

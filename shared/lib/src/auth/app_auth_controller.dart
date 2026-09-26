@@ -150,7 +150,7 @@ abstract class AppAuthController extends StateNotifier<AuthState> {
     } on DioException catch (e) {
       state = state.copyWith(
         status: AuthStatus.unauthenticated,
-        error: e.message ?? 'Login failed. Please check your credentials.',
+        error: apiErrorMessage(e, 'Login failed. Please check your credentials.'),
       );
     }
   }
@@ -176,7 +176,7 @@ abstract class AppAuthController extends StateNotifier<AuthState> {
     } on DioException catch (e) {
       state = state.copyWith(
         status: AuthStatus.unauthenticated,
-        error: e.message ?? 'Registration failed. Please try again.',
+        error: apiErrorMessage(e, 'Registration failed. Please try again.'),
       );
     }
   }

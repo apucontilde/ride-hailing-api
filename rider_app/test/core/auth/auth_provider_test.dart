@@ -195,6 +195,43 @@ void main() {
         expect(authNotifier.state.status, AuthStatus.unauthenticated);
         expect(authNotifier.state.error, contains('already registered'));
       });
+
+      test('surfaces the backend message, not Dio’s verbose text', () async {
+        // Regression, found by e2e/specs/ride-offer.spec.ts: a duplicate
+        // account returns 409, and the register screen rendered the raw
+        // `DioException.message` — a multi-paragraph description of the
+        // response status code, ending in an MDN link, on the form itself.
+        // This reproduces the real shape: the error interceptor's mapped
+        // `ConflictException` in `DioException.error`.
+        when(() => mockDio.post(
+          any(),
+          data: any(named: 'data'),
+        )).thenThrow(DioException(
+          requestOptions: RequestOptions(path: '/auth/register'),
+          response: Response(
+            requestOptions: RequestOptions(path: '/auth/register'),
+            statusCode: 409,
+            data: {
+              'error': {
+                'code': 'CONFLICT',
+                'message': 'email already registered',
+              },
+            },
+          ),
+          type: DioExceptionType.badResponse,
+          error: mapStatusCodeToException(409, 'email already registered'),
+          message: 'This exception was thrown because the response has a '
+              'status code of 409 but the status code included in the response '
+              'is not a valid status code. ...',
+        ));
+
+        await authNotifier.register(
+          'existing@example.com', '+1234567890', 'Password1');
+
+        expect(authNotifier.state.error, 'email already registered');
+        expect(authNotifier.state.error, isNot(contains('This exception')));
+        expect(authNotifier.state.error, isNot(contains('mozilla')));
+      });
     });
 
     group('logout', () {
