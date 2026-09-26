@@ -20,15 +20,31 @@ Only a real browser against a real server closes that gap.
 
 ## What it found
 
-The suite is not hypothetical: its first red run located the actual defect.
-`AvailabilityNotifier.toggle()` updated only its own state and never wrote the
-resulting profile back into the shared `driverProfileProvider`; the home screen
-then gated the offer sheet on that stale cache's `isOnline`. So the driver was
-visibly online, the backend **did** send the offer (the server logged
-`all drivers declined` 30 s later), and the client dropped it on arrival. Two
-more client-side fixes followed — the gate now reads the offer itself, and the
-`_offerShown` latch is keyed to the ride id so a withdrawn offer cannot block the
-next one. See `driver_app_plans/03_offer_and_accept.md`.
+The suite is not hypothetical. Its first red run located the actual defect, and
+a later one found a second:
+
+1. **The offer was delivered and thrown away.**
+   `AvailabilityNotifier.toggle()` updated only its own state and never wrote the
+   resulting profile back into the shared `driverProfileProvider`; the home
+   screen then gated the offer sheet on that stale cache's `isOnline`. So the
+   driver was visibly online, the backend **did** send the offer (the server
+   logged `all drivers declined` 30 s later), and the client dropped it on
+   arrival. The gate now reads the offer itself, and the `_offerShown` latch is
+   keyed to the ride id so a withdrawn offer cannot block the next one. See
+   `driver_app_plans/03_offer_and_accept.md`.
+2. **Going online published no position.** `LocationService` discards fixes
+   while offline and geolocator only re-emits on movement, so a driver who
+   toggled online while stationary had **no** `driver_positions` row and
+   dispatch could not find them for as long as they stood still — online,
+   waiting, never offered a ride, nothing on screen to explain it. This one
+   presented as a 1-in-3 flake, because the spec used to sleep a guessed
+   interval and hope a fix had landed. `waitForDriverLocation` now polls
+   `GET /drivers/:id/location` until the row exists. See
+   `driver_app_plans/02_online_status_loop.md`.
+
+The suite also runs about twice as fast as it did with the sleep, because the
+push now happens the instant the driver goes online instead of whenever
+geolocator next felt like emitting.
 
 ## The hard problems, and how they are solved
 

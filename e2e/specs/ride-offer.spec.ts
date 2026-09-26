@@ -13,7 +13,12 @@
  *    they prove the reaction to an offer but never that one is produced and
  *    delivered.
  *
- * Only a real browser against a real server closes that gap.
+ * Only a real browser against a real server closes that gap — and it has now
+ * earned its keep twice, finding two independent causes of this exact symptom.
+ * The second surfaced as a 1-in-3 flake: the driver was online, but going
+ * online had never published a position, so a stationary driver had no
+ * `driver_positions` row for dispatch to search. See `waitForDriverLocation`,
+ * which waits for the row rather than sleeping a guessed interval.
  */
 
 import { expect, test, type Page } from '@playwright/test';
@@ -29,6 +34,7 @@ import {
   switchToggle,
   tap,
   text,
+  waitForDriverLocation,
   waitForFlutter,
   VIEWPORT,
 } from '../helpers';
@@ -117,7 +123,7 @@ async function requestRide(page: Page): Promise<void> {
 }
 
 test.describe('US-D5 / US-D6 — rider requests a ride, driver sees the offer', () => {
-  test('the offer sheet reaches the driver', async ({ browser }) => {
+  test('the offer sheet reaches the driver', async ({ browser, request }) => {
     const rider = uniq('rider');
     const driver = uniq('driver');
 
@@ -136,14 +142,20 @@ test.describe('US-D5 / US-D6 — rider requests a ride, driver sees the offer', 
     await tap(driverPage, switchToggle(driverPage));
     await expectText(driverPage, 'Online', 30_000);
 
-    // LocationService pushes a fix only when the geolocator stream emits, and
-    // throttles to >=5s. Nudge the position so a fix is guaranteed, then wait
-    // out the throttle — this is the step the original bug report hinged on.
+    // Wait until the server has actually received a location push from this
+    // driver, rather than sleeping a guessed interval.
+    //
+    // `LocationService` only pushes when the geolocator stream *emits*, and
+    // throttles to >=5 s. Nudging the position makes an emission likely but
+    // does not guarantee one, so a fixed sleep was a coin flip: if the push had
+    // not landed when the rider requested, dispatch found nobody and the offer
+    // never existed. (This is the production bug behind the original report —
+    // the app pushes on a new fix only, and toggling online does not force one.)
     await driverCtx.setGeolocation({
       latitude: DRIVER_SPOT.latitude + 0.0001,
       longitude: DRIVER_SPOT.longitude,
     });
-    await driverPage.waitForTimeout(9000);
+    await waitForDriverLocation(request, driver, PASSWORD);
 
     // --- Rider: request a ride -------------------------------------------
     const riderCtx = await browser.newContext({

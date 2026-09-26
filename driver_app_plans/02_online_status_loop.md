@@ -17,6 +17,23 @@
 > `requestPermission()`, so the "permission denied" banner can never fire;
 > `app.dart`'s two authenticated branches are redundant.
 
+> **⚠️ Fixed 2026-09-26 — going online did not publish a position.** This was
+> the second, independent cause of "the driver never receives a ride offer" and
+> the one the browser suite caught. `LocationService._onPosition` discards
+> fixes while offline, and geolocator only re-emits on movement, so a driver
+> who toggled online while stationary could hold **no** `driver_positions` row
+> at all. Dispatch only considers a driver whose last position is younger than
+> 30 s (`internal/repository/geo_repo.go:73`), so such a driver was invisible
+> indefinitely: online, watching the app, never offered a ride, nothing on
+> screen to say why. `LocationService` now remembers the last fix and gained
+> `publishLastPosition()`, which pushes it immediately and bypasses the
+> throttle; `home_screen.dart` calls it whenever the switch goes on. The
+> throttle exists to spare the *routine* ping stream, not to delay the first
+> row dispatch can see. Covered by three cases in `location_service_test.dart`
+> and end-to-end by `e2e/specs/ride-offer.spec.ts`, which polls
+> `GET /drivers/:id/location` for the row instead of sleeping a guessed
+> interval.
+
 The heartbeat of the driver app: a single availability switch that flips the
 driver's server status and starts/stops a throttled GPS ping so the dispatcher can
 find the driver. Everything else (offers, trips) depends on this.
@@ -94,3 +111,10 @@ make flutter-test
 ```
 Live: dashboard → go online → move around → rider app "request ride" finds you;
 go offline → rider request shows no drivers.
+
+The "go online" half of that walkthrough is now automated too — and is exactly
+the half that used to require you to physically move first:
+
+```bash
+cd e2e && npm install && npm run build:apps && npm test
+```

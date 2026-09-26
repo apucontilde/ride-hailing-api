@@ -68,6 +68,7 @@ class LocationService {
 
   StreamSubscription<Position>? _subscription;
   DateTime? _lastPushTime;
+  Position? _lastPosition;
   final List<Map<String, dynamic>> _buffer = [];
   static const int _maxBuffer = 60;
 
@@ -107,6 +108,10 @@ class LocationService {
   }
 
   void _onPosition(Position position) {
+    // Remember the fix even when the push below is gated, so going online can
+    // publish it without waiting for the next one.
+    _lastPosition = position;
+
     // Publish the fix first: the trip map / route refetch need the driver's
     // real position even when the server push below is gated or throttled.
     onPosition?.call(position);
@@ -114,11 +119,17 @@ class LocationService {
     // Only push when online.
     if (!availabilityNotifier.online) return;
 
-    // Throttle to ≥5 s between pings.
+    _throttledPush(position);
+  }
+
+  /// Pushes [position] unless the throttle window is still open.
+  ///
+  /// Returns whether the push actually went out.
+  bool _throttledPush(Position position) {
     final now = DateTime.now();
     if (_lastPushTime != null &&
         now.difference(_lastPushTime!) < throttle) {
-      return;
+      return false;
     }
     _lastPushTime = now;
 
@@ -130,6 +141,29 @@ class LocationService {
     };
 
     _pushPoint(point);
+    return true;
+  }
+
+  /// Publishes the most recent fix immediately, ignoring the throttle.
+  ///
+  /// Called when the driver goes online. Without this the driver is invisible
+  /// to dispatch: `_onPosition` discards fixes while offline, and geolocator
+  /// only re-emits on movement (or on its own cache interval), so a driver who
+  /// went online while stationary could hold *no* `driver_positions` row at
+  /// all — and dispatch only ever considers a driver whose last position is
+  /// younger than 30 s. The result is a driver who is online, watching the app,
+  /// and never offered a ride, with nothing on screen to explain why.
+  ///
+  /// No-op when no fix has arrived yet or the service is stopped; the next
+  /// stream event will carry it.
+  void publishLastPosition({bool force = true}) {
+    final position = _lastPosition;
+    if (position == null) return;
+    if (!availabilityNotifier.online) return;
+    if (force) {
+      _lastPushTime = null;
+    }
+    _throttledPush(position);
   }
 
   Future<void> _pushPoint(Map<String, dynamic> point) async {

@@ -266,6 +266,19 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
                               ref
                                   .read(availabilityProvider.notifier)
                                   .toggle();
+                              // Going online must publish a position straight
+                              // away. Fixes that arrived while offline were
+                              // dropped, and geolocator does not re-emit while
+                              // the driver is stationary, so without this the
+                              // driver has no `driver_positions` row at all and
+                              // dispatch can never find them — online, waiting,
+                              // never offered a ride, nothing on screen to
+                              // explain why.
+                              if (value) {
+                                ref
+                                    .read(locationServiceProvider)
+                                    .publishLastPosition();
+                              }
                             },
                     ),
                     const SizedBox(height: 16),

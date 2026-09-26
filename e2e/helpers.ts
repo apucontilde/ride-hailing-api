@@ -25,7 +25,12 @@
  * nodes, all with empty labels".
  */
 
-import { expect, type Locator, type Page } from '@playwright/test';
+import {
+  expect,
+  type APIRequestContext,
+  type Locator,
+  type Page,
+} from '@playwright/test';
 
 /** Overridden by env in CI; defaults match cmd/e2eserver's -addr. */
 export const API_BASE_URL = process.env.E2E_API_BASE_URL ?? 'http://127.0.0.1:8099';
@@ -165,6 +170,56 @@ export async function fill(page: Page, label: string, value: string): Promise<vo
 /** Assert a label is present. */
 export async function expectText(page: Page, label: string, timeout = 20_000): Promise<void> {
   await expect(text(page, label)).toBeVisible({ timeout });
+}
+
+/**
+ * Block until the server has a `driver_positions` row for this driver.
+ *
+ * Dispatch only finds a driver whose last position is younger than 30 s
+ * (`internal/repository/geo_repo.go:73`), and the app creates that row solely by
+ * pushing a fix — which it does when the geolocator stream emits, throttled to
+ * >=5 s. So "the driver went online" is not the same as "the server knows where
+ * they are", and guessing a sleep interval races the 30 s window.
+ *
+ * Probed over the API rather than through the UI on purpose: the thing being
+ * waited for is a server-side side effect of the app, so the assertion reads the
+ * server's own state. Uses the driver's own token, obtained by logging in with
+ * the same credentials the UI registered.
+ */
+export async function waitForDriverLocation(
+  request: APIRequestContext,
+  who: { email: string; phone: string },
+  password: string,
+  timeout = 30_000,
+): Promise<void> {
+  const login = await request.post(`${API_BASE_URL}/api/v1/auth/login`, {
+    data: { email: who.email, password },
+  });
+  if (!login.ok()) {
+    throw new Error(`probe login failed: ${login.status()} ${await login.text()}`);
+  }
+  const { access_token: token } = (await login.json()) as { access_token: string };
+  const auth = { Authorization: `Bearer ${token}` };
+
+  const me = await request.get(`${API_BASE_URL}/api/v1/driver/me`, { headers: auth });
+  if (!me.ok()) throw new Error(`driver/me failed: ${me.status()}`);
+  const { driver } = (await me.json()) as { driver: { user_id: string } };
+
+  const deadline = Date.now() + timeout;
+  let lastStatus: number | undefined;
+  while (Date.now() < deadline) {
+    // 404 until the first push lands — that *is* the readiness signal.
+    const res = await request.get(`${API_BASE_URL}/api/v1/drivers/${driver.user_id}/location`, {
+      headers: auth,
+    });
+    lastStatus = res.status();
+    if (res.ok()) return;
+    await new Promise((r) => setTimeout(r, 500));
+  }
+  throw new Error(
+    `no location push reached the server for ${who.email} within ${timeout}ms ` +
+      `(last GET /drivers/:id/location status ${lastStatus})`,
+  );
 }
 
 /** Assert a label is absent (used for "the offer sheet never appeared"). */
