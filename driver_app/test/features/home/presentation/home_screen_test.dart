@@ -16,6 +16,7 @@ import 'package:driver_app/core/ride/ride_state_notifier.dart';
 import 'package:driver_app/features/driver/model/driver_profile.dart';
 import 'package:driver_app/features/home/presentation/home_screen.dart';
 import 'package:driver_app/features/home/providers/availability_notifier.dart';
+import 'package:driver_app/features/rides/presentation/offer_sheet.dart';
 import 'package:driver_app/features/trip/presentation/trip_screen.dart';
 
 class MockApiClient extends Mock implements ApiClient {}
@@ -199,5 +200,66 @@ void main() {
     await tester.pumpAndSettle();
 
     expect(find.byType(TripScreen), findsOneWidget);
+  });
+
+  testWidgets('an offer opens the sheet even when the profile cache says offline',
+      (tester) async {
+    // Regression: the sheet used to be gated on `driverProfileProvider`'s
+    // `isOnline`, and the status toggle never wrote the new status back into
+    // that cache — so a driver who had just gone online (correctly showing
+    // "You're online" and a checked switch) silently dropped every offer the
+    // websocket delivered, and it then expired after 30 s. The gate must read
+    // the offer, not a cache that can be stale or not yet loaded.
+    //
+    // `profile` above is `status: 'offline'`, i.e. exactly that stale state.
+    expect(container.read(driverProfileProvider)?.isOnline, isFalse);
+
+    await pumpHome(tester);
+    expect(find.byType(OfferSheet), findsNothing);
+
+    rideState.onWsEvent(
+      WsEvent(type: WsEventType.offer, data: {'ride_id': 'r7'}),
+    );
+    await tester.pumpAndSettle();
+
+    expect(find.byType(OfferSheet), findsOneWidget);
+    expect(find.text('New Ride Offer'), findsOneWidget);
+
+    // Withdraw the offer: `_onOffer` arms a 30 s expiry timer and flutter_test
+    // fails the test if one is still pending when the tree is torn down.
+    rideState.declineOffer();
+    await tester.pumpAndSettle();
+  });
+
+  testWidgets('a later offer still opens after the first is withdrawn',
+      (tester) async {
+    await pumpHome(tester);
+
+    rideState.onWsEvent(
+      WsEvent(type: WsEventType.offer, data: {'ride_id': 'r7'}),
+    );
+    await tester.pumpAndSettle();
+    expect(find.byType(OfferSheet), findsOneWidget);
+
+    // Dismiss the sheet, then let the offer go (declined, or the 30 s timer).
+    Navigator.of(tester.element(find.byType(OfferSheet))).pop();
+    await tester.pumpAndSettle();
+    rideState.declineOffer();
+    await tester.pumpAndSettle();
+    expect(find.byType(OfferSheet), findsNothing);
+
+    // The old latch was a bare bool cleared only in the sheet's `.then()`; a
+    // driver who never saw the first offer would be shielded from the second
+    // one forever. Keying it to the ride id releases it when the offer goes.
+    rideState.onWsEvent(
+      WsEvent(type: WsEventType.offer, data: {'ride_id': 'r8'}),
+    );
+    await tester.pumpAndSettle();
+
+    expect(find.byType(OfferSheet), findsOneWidget);
+
+    // See above: cancel the outstanding 30 s expiry timer before teardown.
+    rideState.declineOffer();
+    await tester.pumpAndSettle();
   });
 }

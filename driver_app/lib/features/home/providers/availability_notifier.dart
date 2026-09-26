@@ -31,10 +31,11 @@ class AvailabilityState {
 }
 
 class AvailabilityNotifier extends StateNotifier<AvailabilityState> {
-  final ApiClient apiClient;
+  final Ref _ref;
 
-  AvailabilityNotifier({required this.apiClient})
-      : super(const AvailabilityState());
+  AvailabilityNotifier(this._ref) : super(const AvailabilityState());
+
+  ApiClient get _apiClient => _ref.read(apiClientProvider);
 
   bool get online => state.online;
   bool get inFlight => state.inFlight;
@@ -65,13 +66,23 @@ class AvailabilityNotifier extends StateNotifier<AvailabilityState> {
     final target = !state.online;
     state = state.copyWith(inFlight: true, error: null);
     try {
-      final response = await apiClient.dio.put(
+      final response = await _apiClient.dio.put(
         ApiEndpoints.driverMeStatus,
         data: {'status': target ? 'online' : 'offline'},
       );
       final data = response.data as Map<String, dynamic>;
       final driverData = data['driver'] as Map<String, dynamic>? ?? {};
       final profile = DriverProfile.fromJson(driverData);
+      // The status flip must be written back into the shared profile cache.
+      //
+      // This is the bug behind "the driver never sees an offer": the switch
+      // drove `availabilityProvider` (so the UI said "You're online") but left
+      // `driverProfileProvider` at the status the auth bootstrap cached. The
+      // home screen gates the offer sheet on `driverProfileProvider`'s
+      // `isOnline`, so every offer delivered over the websocket was dropped on
+      // the floor and then expired after 30 s. Mirrors what
+      // `ProfileNotifier.updateProfile` already does on a profile save.
+      _ref.read(driverProfileProvider.notifier).state = profile;
       state = AvailabilityState(
         online: profile.isOnline,
         inFlight: false,
@@ -90,5 +101,5 @@ class AvailabilityNotifier extends StateNotifier<AvailabilityState> {
 
 final availabilityProvider =
     StateNotifierProvider<AvailabilityNotifier, AvailabilityState>((ref) {
-  return AvailabilityNotifier(apiClient: ref.read(apiClientProvider));
+  return AvailabilityNotifier(ref);
 });

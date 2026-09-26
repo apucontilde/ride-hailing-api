@@ -24,7 +24,7 @@ void main() {
     container = ProviderContainer(
       overrides: [
         apiClientProvider.overrideWithValue(mockApiClient),
-        availabilityProvider.overrideWith((ref) => AvailabilityNotifier(apiClient: mockApiClient)),
+        availabilityProvider.overrideWith((ref) => AvailabilityNotifier(ref)),
       ],
     );
     addTearDown(container.dispose);
@@ -113,6 +113,53 @@ void main() {
       expect(notifier.online, isTrue);
       notifier.syncFromProfile(DriverProfile(status: 'offline'));
       expect(notifier.online, isFalse);
+    });
+
+    test('toggle() writes the new status into driverProfileProvider', () async {
+      // Regression: the status flip used to update only `availabilityProvider`,
+      // leaving the shared profile cache at its login-time value. The home
+      // screen gates the offer sheet on that cache's `isOnline`, so every
+      // offer delivered over the websocket was dropped and then expired —
+      // "the driver never receives an offer". Covered end-to-end by
+      // e2e/specs/ride-offer.spec.ts.
+      container.read(driverProfileProvider.notifier).state =
+          DriverProfile(status: 'offline');
+      when(() => mockDio.put(
+        ApiEndpoints.driverMeStatus,
+        data: any(named: 'data'),
+      )).thenAnswer((_) async => Response(
+        requestOptions: RequestOptions(path: ApiEndpoints.driverMeStatus),
+        statusCode: 200,
+        data: {'driver': {'status': 'online'}},
+      ));
+
+      await notifier.toggle();
+
+      expect(notifier.online, isTrue);
+      expect(
+        container.read(driverProfileProvider)?.status,
+        'online',
+        reason: 'the shared profile cache must follow the status toggle',
+      );
+    });
+
+    test('toggle() off updates the profile cache too', () async {
+      container.read(driverProfileProvider.notifier).state =
+          DriverProfile(status: 'online');
+      notifier.syncFromProfile(DriverProfile(status: 'online'));
+      when(() => mockDio.put(
+        ApiEndpoints.driverMeStatus,
+        data: any(named: 'data'),
+      )).thenAnswer((_) async => Response(
+        requestOptions: RequestOptions(path: ApiEndpoints.driverMeStatus),
+        statusCode: 200,
+        data: {'driver': {'status': 'offline'}},
+      ));
+
+      await notifier.toggle();
+
+      expect(notifier.online, isFalse);
+      expect(container.read(driverProfileProvider)?.status, 'offline');
     });
   });
 }

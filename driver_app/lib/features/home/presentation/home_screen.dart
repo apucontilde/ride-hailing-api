@@ -24,7 +24,13 @@ class HomeScreen extends ConsumerStatefulWidget {
 }
 
 class _HomeScreenState extends ConsumerState<HomeScreen> {
-  bool _offerShown = false;
+  /// Id of the offer whose sheet has already been presented.
+  ///
+  /// Keyed to the ride id rather than a bare bool so the latch releases itself
+  /// when the offer is withdrawn (declined, timed out, or replaced): a driver
+  /// who missed the first offer would otherwise be permanently shielded from
+  /// the second one by a flag for a sheet that is not on screen.
+  String? _offerLatch;
   bool _tripPushed = false;
   bool _restoreTried = false;
 
@@ -75,17 +81,29 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
     final heldRide = rideState.currentRide;
     final permission = ref.watch(appPermissionProvider);
 
-    if (offerId != null && driver?.isOnline == true && !_offerShown) {
-      _offerShown = true;
+    // Gated on the offer alone — deliberately *not* on
+    // `driverProfileProvider`'s `isOnline`.
+    //
+    // Dispatch only ever offers to a driver the server already considers
+    // online, located and websocket-connected, so re-deriving that here from a
+    // cached profile could only ever discard a legitimate offer. It did
+    // exactly that: the status toggle left the cache at its login-time value
+    // (see AvailabilityNotifier.toggle), so every offer the websocket
+    // delivered was dropped and then expired after 30 s. Reading the offer
+    // itself makes the sheet immune to cache staleness.
+    if (offerId != null && offerId != _offerLatch) {
+      _offerLatch = offerId;
       WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (!mounted) return;
         showModalBottomSheet(
           context: context,
           isScrollControlled: true,
           builder: (context) => const OfferSheet(),
-        ).then((_) {
-          if (mounted) setState(() => _offerShown = false);
-        });
+        );
       });
+    } else if (offerId == null) {
+      // Withdrawn or expired: let the next offer through.
+      _offerLatch = null;
     }
 
     if (heldRide == null) {

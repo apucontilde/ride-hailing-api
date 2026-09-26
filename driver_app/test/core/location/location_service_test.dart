@@ -43,7 +43,7 @@ void main() {
     container = ProviderContainer(
       overrides: [
         availabilityProvider.overrideWith(
-          (ref) => AvailabilityNotifier(apiClient: mockApiClient),
+          (ref) => AvailabilityNotifier(ref),
         ),
       ],
     );

@@ -1,6 +1,7 @@
 # Plan 03 — Offer dialog + accept / decline (US-D5, D6)
 
-> **Status: ✅ LANDED** (re-audited 2026-09-25). `features/rides/data/rides_repository.dart`
+> **Status: ✅ LANDED** (re-audited 2026-09-25). **Offers never reached the driver
+> until 2026-09-25 — see "The dropped-offer bug" below.** `features/rides/data/rides_repository.dart`
 > (`fetchRide` via `GET /driver/rides/:id`, `acceptRideHttp` mapping 409 →
 > `OfferExpiredException`), `features/rides/presentation/offer_sheet.dart` (5 s detail
 > fetch with timeout, 30→0 countdown, Accept = WS-first with HTTP fallback,
@@ -91,3 +92,43 @@ make flutter-test
 ```
 Live: two accounts → rider books → driver sees offer with countdown → accept →
 both apps show accepted ride; decline → rider sees "no driver available".
+
+## The dropped-offer bug (fixed 2026-09-25)
+
+"US-D5: the driver never receives a ride offer." The backend delivered the offer
+correctly all along — the **client dropped it on arrival**. Two independent
+defects, both in the wiring this plan added:
+
+1. **Stale profile cache.** `AvailabilityNotifier.toggle()` wrote the new status
+   to its own `AvailabilityState` but never back into the shared
+   `driverProfileProvider`, which therefore kept the value the auth bootstrap
+   cached at login. The driver went online (switch checked, "You're online",
+   location pushing) while `driverProfileProvider.isOnline` stayed `false`.
+   `toggle()` now writes the returned profile into the cache, mirroring
+   `ProfileNotifier.updateProfile`.
+2. **The gate itself.** `home_screen.dart` opened the sheet only when
+   `driver?.isOnline == true` — i.e. only when the *cache* agreed. Dispatch
+   already offers only to drivers the server considers online, located and
+   websocket-connected, so re-deriving it from a cache that can be stale, `null`
+   or not-yet-loaded could only ever discard a legitimate offer. The gate is now
+   the offer alone. The `_offerShown` bool is now `_offerLatch`, keyed to the
+   ride id, so an offer that is withdrawn (declined, or the 30 s timer firing on
+   a sheet that never appeared) releases the latch instead of shielding the
+   driver from the *next* offer forever.
+
+Symptom of (1)+(2) together: the `ride.offer` event set `offeredRideId`, the
+`build` guard evaluated false, 30 s later `_onOffer`'s timer cleared the offer,
+and the server logged `all drivers declined`. From the driver's seat nothing at
+all happened.
+
+Regression coverage: `driver_app/test/features/home/presentation/home_screen_test.dart`
+(sheet opens with a stale `offline` profile; a later offer still opens after the
+first is withdrawn), `driver_app/test/features/home/providers/availability_notifier_test.dart`
+(`toggle()` updates the profile cache both ways), and end-to-end in
+`e2e/specs/ride-offer.spec.ts`, which drives both real UIs in a browser.
+
+The live walkthrough above is now automated end-to-end:
+
+```bash
+cd e2e && npm install && npm run build:apps && npm test
+```
