@@ -17,7 +17,7 @@ import (
 )
 
 type AuthService struct {
-	cfg    *config.Config
+	cfg      *config.Config
 	userRepo repository.UserRepository
 }
 
@@ -153,11 +153,24 @@ func (s *AuthService) ValidateAccessToken(tokenStr string) (*TokenClaims, error)
 
 func (s *AuthService) generateTokenPair(userID, role string) (*TokenPair, *model.RefreshToken, error) {
 	now := time.Now()
+
+	// `jti` is random rather than a timestamp. The rest of the claims have
+	// only second granularity, so a timestamp-derived `jti` made every token
+	// minted inside the same clock tick byte-identical: a login immediately
+	// followed by a refresh returned the *same* access token, and any
+	// `jti`-keyed revocation or replay tracking would treat them as one
+	// token. Windows' coarse clock (~0.5-15ms) made that an intermittent test
+	// failure; it is a latent identity collision in production too.
+	jti, err := generateRandomToken(16)
+	if err != nil {
+		return nil, nil, fmt.Errorf("failed to generate token id: %w", err)
+	}
+
 	accessClaims := &TokenClaims{
 		UserID: userID,
 		Role:   role,
 		RegisteredClaims: jwt.RegisteredClaims{
-			ID:        fmt.Sprintf("%d", now.UnixNano()),
+			ID:        jti,
 			ExpiresAt: jwt.NewNumericDate(now.Add(s.cfg.JWTAccessTTL)),
 			IssuedAt:  jwt.NewNumericDate(now),
 		},
