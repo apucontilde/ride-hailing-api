@@ -62,6 +62,19 @@ void main() {
     );
   }
 
+  LocationService buildServiceWithObserver(
+    List<GeoPoint> seen, {
+    Duration throttle = const Duration(milliseconds: 50),
+  }) {
+    return LocationService(
+      apiClient: mockApiClient,
+      availabilityNotifier: availability,
+      positionStreamProvider: () => positions.stream,
+      throttle: throttle,
+      onPosition: (position) => seen.add(GeoPoint(position.latitude, position.longitude)),
+    );
+  }
+
   Response okResponse(String path) => Response(
         requestOptions: RequestOptions(path: path),
         statusCode: 200,
@@ -104,6 +117,57 @@ void main() {
 
       verifyNever(() => mockDio.put(any(), data: any(named: 'data')));
       service.stop();
+    });
+
+    test('publishes every fix even when the server push is gated or throttled',
+        () async {
+      // The trip map and the >200 m route refetch read the driver's real
+      // position, which must not depend on the online/throttle gates.
+      final seen = <GeoPoint>[];
+      final service = buildServiceWithObserver(
+        seen,
+        throttle: const Duration(seconds: 30),
+      );
+      availability.setOnline();
+      when(() => mockDio.put(
+            ApiEndpoints.driverLocation,
+            data: any(named: 'data'),
+          )).thenAnswer((_) async => okResponse(ApiEndpoints.driverLocation));
+      service.start();
+
+      positions.add(positionFor(9.93, -84.08));
+      await Future<void>.delayed(const Duration(milliseconds: 20));
+      // Throttled out of the server push, but the app still sees it.
+      positions.add(positionFor(9.94, -84.09));
+      await Future<void>.delayed(const Duration(milliseconds: 20));
+
+      expect(seen, const [GeoPoint(9.93, -84.08), GeoPoint(9.94, -84.09)]);
+      verify(() => mockDio.put(
+            ApiEndpoints.driverLocation,
+            data: any(named: 'data'),
+          )).called(1);
+      service.stop();
+    });
+
+    test('publishes fixes while offline', () async {
+      final seen = <GeoPoint>[];
+      final service = buildServiceWithObserver(seen);
+      availability.setOffline();
+      service.start();
+
+      positions.add(positionFor(9.93, -84.08));
+      await Future<void>.delayed(const Duration(milliseconds: 20));
+
+      expect(seen, const [GeoPoint(9.93, -84.08)]);
+      verifyNever(() => mockDio.put(any(), data: any(named: 'data')));
+      service.stop();
+    });
+
+    test('GeoPoint compares by value', () {
+      expect(const GeoPoint(9.93, -84.08), const GeoPoint(9.93, -84.08));
+      expect(const GeoPoint(9.93, -84.08).hashCode,
+          const GeoPoint(9.93, -84.08).hashCode);
+      expect(const GeoPoint(9.93, -84.08), isNot(const GeoPoint(9.94, -84.08)));
     });
 
     test('buffers a failed push and flushes it as a batch on next success',

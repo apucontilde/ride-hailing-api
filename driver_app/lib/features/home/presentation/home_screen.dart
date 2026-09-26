@@ -5,11 +5,17 @@ import '../../../core/auth/auth_provider.dart';
 import '../../../core/ride/ride_state_notifier.dart';
 import '../../../core/location/location_service.dart';
 import '../providers/availability_notifier.dart';
+import '../../rides/data/rides_repository.dart';
 import '../../rides/presentation/offer_sheet.dart';
 
 /// Driver home (online/offline + live location loop, plan 02).
 /// Availability switch mirrors server profile; location stream pushes
 /// when online and throttled to ≥5 s.
+///
+/// Also the entry point to the trip journey (plan 04): once a ride is held the
+/// driver is pushed onto `/trip`, and a ride that is still active when the app
+/// launches is restored from `GET /driver/rides/current` (the websocket has no
+/// replay, so without this a driver mid-trip would land on an empty home).
 class HomeScreen extends ConsumerStatefulWidget {
   const HomeScreen({super.key});
 
@@ -19,6 +25,9 @@ class HomeScreen extends ConsumerStatefulWidget {
 
 class _HomeScreenState extends ConsumerState<HomeScreen> {
   bool _offerShown = false;
+  bool _tripPushed = false;
+  bool _restoreTried = false;
+
   @override
   void initState() {
     super.initState();
@@ -36,7 +45,22 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
         service.start();
         service.requestPermission();
       }
+      _restoreActiveTrip();
     });
+  }
+
+  /// Adopts the server's active ride (if any) so the trip screen can be
+  /// entered straight away after a cold start or a crash.
+  Future<void> _restoreActiveTrip() async {
+    if (_restoreTried) return;
+    _restoreTried = true;
+    try {
+      final ride = await ref.read(ridesRepositoryProvider).currentRide();
+      if (ride == null || !mounted) return;
+      ref.read(rideStateProvider.notifier).adoptRide(ride);
+    } catch (_) {
+      // Non-fatal: an offline or rejected restore just means no active trip.
+    }
   }
 
   @override
@@ -48,6 +72,7 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
     final availability = ref.watch(availabilityProvider);
     final rideState = ref.watch(rideStateProvider);
     final offerId = rideState.offeredRideId;
+    final heldRide = rideState.currentRide;
     final permission = ref.watch(appPermissionProvider);
 
     if (offerId != null && driver?.isOnline == true && !_offerShown) {
@@ -60,6 +85,15 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
         ).then((_) {
           if (mounted) setState(() => _offerShown = false);
         });
+      });
+    }
+
+    if (heldRide == null) {
+      _tripPushed = false;
+    } else if (!_tripPushed) {
+      _tripPushed = true;
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (mounted) context.push('/trip');
       });
     }
 
@@ -149,6 +183,45 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
                       ),
                     ),
                   ],
+                ),
+              ),
+            ),
+          if (heldRide != null)
+            Material(
+              color: Colors.blue.shade50,
+              child: InkWell(
+                key: const Key('home-active-trip'),
+                onTap: () {
+                  _tripPushed = true;
+                  context.push('/trip');
+                },
+                child: Padding(
+                  padding: const EdgeInsets.symmetric(
+                    horizontal: 16,
+                    vertical: 12,
+                  ),
+                  child: Row(
+                    children: [
+                      const Icon(Icons.local_taxi, color: Colors.blue),
+                      const SizedBox(width: 12),
+                      Expanded(
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            Text(
+                              'Active trip (${heldRide.status})',
+                              style: Theme.of(context).textTheme.titleSmall,
+                            ),
+                            Text(
+                              'Tap to return to the trip',
+                              style: Theme.of(context).textTheme.bodySmall,
+                            ),
+                          ],
+                        ),
+                      ),
+                      const Icon(Icons.chevron_right),
+                    ],
+                  ),
                 ),
               ),
             ),

@@ -30,6 +30,30 @@ class AppPermissionState {
 final appPermissionProvider =
     StateProvider<AppPermissionState>((ref) => const AppPermissionState());
 
+/// An immutable lat/lng snapshot that compares by value, so widgets only
+/// rebuild when the driver actually moved.
+class GeoPoint {
+  final double lat;
+  final double lng;
+
+  const GeoPoint(this.lat, this.lng);
+
+  @override
+  bool operator ==(Object other) =>
+      other is GeoPoint && other.lat == lat && other.lng == lng;
+
+  @override
+  int get hashCode => Object.hash(lat, lng);
+
+  @override
+  String toString() => 'GeoPoint($lat, $lng)';
+}
+
+/// The driver's latest GPS fix, published by [LocationService] on every stream
+/// event (before the online/throttle gates, so the trip map keeps tracking the
+/// car even while the server pushes are throttled). `null` until the first fix.
+final lastPositionProvider = StateProvider<GeoPoint?>((ref) => null);
+
 /// Throttled GPS ping service. Only pushes when the driver is [online];
 /// buffers failed points and flushes as a batch on recovery.
 class LocationService {
@@ -37,6 +61,10 @@ class LocationService {
   final AvailabilityNotifier availabilityNotifier;
   final Stream<Position> Function() positionStreamProvider;
   final Duration throttle;
+
+  /// Called with every fix, before any online/throttle gate. Wired to
+  /// [lastPositionProvider] so the trip map and route fetch have an origin.
+  final void Function(Position position)? onPosition;
 
   StreamSubscription<Position>? _subscription;
   DateTime? _lastPushTime;
@@ -48,6 +76,7 @@ class LocationService {
     required this.availabilityNotifier,
     Stream<Position> Function()? positionStreamProvider,
     this.throttle = const Duration(seconds: 5),
+    this.onPosition,
   }) : positionStreamProvider =
             positionStreamProvider ?? LocationHelper.getPositionStream;
 
@@ -78,6 +107,10 @@ class LocationService {
   }
 
   void _onPosition(Position position) {
+    // Publish the fix first: the trip map / route refetch need the driver's
+    // real position even when the server push below is gated or throttled.
+    onPosition?.call(position);
+
     // Only push when online.
     if (!availabilityNotifier.online) return;
 
@@ -146,5 +179,9 @@ final locationServiceProvider = Provider<LocationService>((ref) {
   return LocationService(
     apiClient: ref.read(apiClientProvider),
     availabilityNotifier: ref.read(availabilityProvider.notifier),
+    onPosition: (position) {
+      ref.read(lastPositionProvider.notifier).state =
+          GeoPoint(position.latitude, position.longitude);
+    },
   );
 });
