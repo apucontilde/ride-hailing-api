@@ -3,7 +3,10 @@ package testutil
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"io"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -32,6 +35,49 @@ type TestServer struct {
 type TestResponse struct {
 	*http.Response
 	Body []byte
+}
+
+// NewStrictTestServerE builds a server whose geo repo never fabricates a
+// nearby driver (see MockGeoRepo.FabricateNearbyDriver). Use it for the
+// dispatch/offer suites: with the lenient repo a ride is always dispatched to
+// an invented driver, so "the driver never received the offer" cannot fail.
+func NewStrictTestServerE() (*TestServer, error) {
+	cfg := config.Load()
+
+	cfg.RateLimitRegister = 9999
+	cfg.RateLimitLogin = 9999
+	cfg.RateLimitGeneral = 9999
+	cfg.RateLimitRide = 9999
+
+	userRepo := NewMockUserRepo()
+	rideRepo := NewMockRideRepo()
+	geoRepo := NewStrictMockGeoRepo()
+	navRepo := NewMockNavigationRepo()
+	placesRepo := NewMockPlacesRepo()
+
+	r := router.SetupWithRepos(cfg, userRepo, rideRepo, geoRepo, navRepo, placesRepo, nil)
+
+	return &TestServer{
+		Server:     httptest.NewServer(r),
+		Config:     cfg,
+		AuthTokens: make(map[string]string),
+		UserRepo:   userRepo,
+		RideRepo:   rideRepo,
+		GeoRepo:    geoRepo,
+		PlacesRepo: placesRepo,
+	}, nil
+}
+
+// NewStrictTestServer is NewStrictTestServerE with t.Skip semantics, matching
+// NewTestServer.
+func NewStrictTestServer(t *testing.T) *TestServer {
+	t.Helper()
+	ts, err := NewStrictTestServerE()
+	if err != nil {
+		t.Skipf("skipping: %v", err)
+		return nil
+	}
+	return ts
 }
 
 func NewTestServerE() (*TestServer, error) {
@@ -269,4 +315,28 @@ func ReadWSMessage(t *testing.T, conn *websocket.Conn) map[string]interface{} {
 		t.Fatalf("failed to parse ws message: %v", err)
 	}
 	return msg
+}
+
+// TryReadWSMessage reads one message without failing the test on timeout.
+// Negative assertions need this: ReadWSMessage calls t.Fatalf, so it cannot
+// express "the driver must NOT receive an offer". A read timeout returns
+// (nil, nil) — silence is the expected outcome for those cases.
+func TryReadWSMessage(conn *websocket.Conn, timeout time.Duration) (map[string]interface{}, error) {
+	conn.SetReadDeadline(time.Now().Add(timeout))
+	_, msgBytes, err := conn.ReadMessage()
+	if err != nil {
+		if websocket.IsUnexpectedCloseError(err) || errors.Is(err, io.EOF) {
+			return nil, err
+		}
+		var netErr net.Error
+		if errors.As(err, &netErr) && netErr.Timeout() {
+			return nil, nil
+		}
+		return nil, err
+	}
+	var msg map[string]interface{}
+	if err := json.Unmarshal(msgBytes, &msg); err != nil {
+		return nil, err
+	}
+	return msg, nil
 }

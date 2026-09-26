@@ -19,21 +19,21 @@ func newID() string {
 // --- MockUserRepo ---
 
 type MockUserRepo struct {
-	mu                sync.Mutex
-	users             map[string]*model.User
-	riders            map[string]*model.Rider
-	drivers           map[string]*model.Driver
-	byEmail           map[string]string
-	refreshTokens     map[string]*model.RefreshToken
+	mu                  sync.Mutex
+	users               map[string]*model.User
+	riders              map[string]*model.Rider
+	drivers             map[string]*model.Driver
+	byEmail             map[string]string
+	refreshTokens       map[string]*model.RefreshToken
 	passwordResetTokens map[string]*model.PasswordResetToken
 }
 
 func NewMockUserRepo() *MockUserRepo {
 	return &MockUserRepo{
-		users:         make(map[string]*model.User),
-		riders:        make(map[string]*model.Rider),
-		drivers:       make(map[string]*model.Driver),
-		byEmail:       make(map[string]string),
+		users:               make(map[string]*model.User),
+		riders:              make(map[string]*model.Rider),
+		drivers:             make(map[string]*model.Driver),
+		byEmail:             make(map[string]string),
 		refreshTokens:       make(map[string]*model.RefreshToken),
 		passwordResetTokens: make(map[string]*model.PasswordResetToken),
 	}
@@ -509,16 +509,61 @@ type riderPosEntry struct {
 }
 
 type MockGeoRepo struct {
-	mu       sync.Mutex
-	drivers  map[string]*driverPosEntry
-	riders   map[string]*riderPosEntry
+	mu      sync.Mutex
+	drivers map[string]*driverPosEntry
+	riders  map[string]*riderPosEntry
+
+	// FabricateNearbyDriver makes FindNearbyDrivers invent a driver when no
+	// real one is online, so the dispatch goroutine does not flip the ride to
+	// no_driver_available mid-test. That hides every real way a driver can
+	// become unfindable (never pushed a fix, push went stale, not WS-connected),
+	// which is exactly the "rider requests a ride, driver never sees the offer"
+	// bug class. Keep it on for legacy tests; use NewStrictMockGeoRepo (and the
+	// dispatch_offer_test.go suite) to assert the real chain.
+	//
+	// It mirrors the production query, which has no such fallback
+	// (internal/repository/geo_repo.go:61-87).
+	FabricateNearbyDriver bool
 }
 
 func NewMockGeoRepo() *MockGeoRepo {
 	return &MockGeoRepo{
-		drivers: make(map[string]*driverPosEntry),
-		riders:  make(map[string]*riderPosEntry),
+		drivers:               make(map[string]*driverPosEntry),
+		riders:                make(map[string]*riderPosEntry),
+		FabricateNearbyDriver: true,
 	}
+}
+
+// NewStrictMockGeoRepo returns a repo that never fabricates a driver: a ride
+// is only dispatched to a driver that actually went online, pushed a location
+// inside the 30s liveness window, and is within the search radius.
+func NewStrictMockGeoRepo() *MockGeoRepo {
+	m := NewMockGeoRepo()
+	m.FabricateNearbyDriver = false
+	return m
+}
+
+// AgeDriverPosition backdates a driver's last fix so the 30s staleness filter
+// (the same INTERVAL the real query uses) excludes them. Used to pin the rule
+// that a driver who stops moving stops being dispatchable.
+func (m *MockGeoRepo) AgeDriverPosition(driverID string, age time.Duration) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if d, ok := m.drivers[driverID]; ok {
+		d.updatedAt = time.Now().Add(-age)
+	}
+}
+
+// DriverIDs returns the ids of every driver with a recorded position, in no
+// particular order.
+func (m *MockGeoRepo) DriverIDs() []string {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	ids := make([]string, 0, len(m.drivers))
+	for id := range m.drivers {
+		ids = append(ids, id)
+	}
+	return ids
 }
 
 func (m *MockGeoRepo) UpsertDriverPosition(driverID string, lat, lng, heading, speed float64, status string) error {
@@ -568,7 +613,7 @@ func (m *MockGeoRepo) FindNearbyDrivers(lat, lng float64, radiusM float64, limit
 	// the dispatch goroutine does not set the ride to no_driver_available
 	// before the test can accept it (avoids a mock-speed race that does
 	// not happen with a real database).
-	if len(results) == 0 {
+	if len(results) == 0 && m.FabricateNearbyDriver {
 		results = append(results, model.NearbyDriverResult{
 			DriverID:  "simulated-driver",
 			Lat:       lat + 0.001,
