@@ -86,10 +86,22 @@ client now faithfully showing the server's message, a leaky server message is a 
 1. **Success paths and status codes for *valid* requests do not change.** Only the `message`
    string, and only the status code where a failure was misclassified as a client error. A
    request that returns 200 today returns 200 after.
-2. **The rider app's straight-line fallback is contract, not behaviour.** It triggers **only** on
-   a 500. So "the datasource is down → 500" must stay a 500 (or become a 200 estimate, as
-   api_plans/06 already does). Never convert a genuine outage into a 4xx: a 4xx tells the app
-   the user did something wrong, and the app will not fall back.
+2. **A misclassified outage must not become a client error — for the user's sake, not the app's.**
+   An earlier draft of this invariant claimed the rider app falls back to a straight line *only*
+   on a 500, so a 4xx would remove the fallback. **That was wrong**, and so was the `AGENTS.md`
+   line it came from. `rider_app/lib/features/home/presentation/home_screen.dart:127` is
+   `error: (_, _) => Polyline(...)` — it falls back on **every** error status and discards the
+   exception. `AGENTS.md` has been corrected to match.
+   The real risk is the opposite of what was first assumed: a misclassified outage produces a
+   **silently wrong straight line** — no error, no hint it is a guess, and a confident line across
+   a city the app has no road data for. It bites hardest on `POST /auth/login`, where an outage
+   becomes 401 "invalid credentials" and `auth.go` logs nothing, so the user is told they
+   mistyped their password and nobody can diagnose it.
+   So the rule stands, but for the right reason: **an outage must answer 5xx or 200+`is_estimate`,
+   never 4xx.** Uncovered regions are 200+`is_estimate` (invariant 3), which means a 4xx on
+   `/navigation/route` is a genuine client error and should stay one.
+   *Follow-up, deliberately out of scope:* `error: (_, _)` is too broad and should be narrowed to
+   5xx-only, so a real 4xx surfaces instead of a fake route. That is app work, not error strings.
 3. **`is_estimate` stays.** api_plans/05/06: no coverage or an unreachable datasource is a
    **200** with `is_estimate: true`, never a 422 and never a 500. This series must not turn a
    degraded route into an error response.
@@ -97,9 +109,11 @@ client now faithfully showing the server's message, a leaky server message is a 
    `VALIDATION_ERROR`, `INTERNAL`, `BAD_REQUEST`, `NOT_FOUND`, `CONFLICT`, `UNAUTHORIZED` — are
    what the clients and the swagger docs already describe. Stage 2 may *apply* them more
    consistently; it must not invent new ones or rename existing ones.
-5. **Causes are logged, not returned.** A stage that swaps a leaked `err.Error()` for a generic
-   string **must** attach the cause with `c.Error(...)` in the same edit, or it deletes the only
-   trace of the failure.
+5. **Causes are logged, not returned.** A stage that swaps a leaked `err.Error()` for a safe
+   sentence **must** attach the cause with `c.Error(...)` in the same edit, or it deletes the only
+   trace of the failure. The replacement sentence names the *operation*
+   (`"failed to load nearby drivers"`), never the driver — but it is still a replacement, and the
+   cause still has to go somewhere.
 6. **Mocks move in lockstep with the repos.** See the trap below.
 
 ## Stages
@@ -111,6 +125,17 @@ client now faithfully showing the server's message, a leaky server message is a 
 | `03_validation_and_client_contract.md` | Replace the 22 `ShouldBindJSON` → `err.Error()` sites with a `bindJSON` that maps validator errors to public field names; align swagger `@Failure` text with reality; document the envelope in `RIDER_API_GUIDE.md`; turn `e2e/scripts/probe-register-error.mjs` into a real regression check. | 02 |
 
 Recommended order: 01 → 02 → 03. Each lands green and can stop there; 03 is the most cosmetic.
+
+## Decisions already taken (do not re-litigate)
+
+Recorded here so a fresh context executing a stage knows these were choices, not accidents:
+
+| Decision | Choice | Where |
+|---|---|---|
+| Taxonomy shape | Two sentinels (`ErrNotFound`, `ErrConflict`) + a `wrapDB` classifier — **not** a typed `RepoError` struct, **not** service-layer classification | 01 |
+| 5xx body text | **Operation-specific** (`"failed to load nearby drivers"`), not a flat `"internal error"`, not `internal error + request_id` | 02 |
+| Duplicate-register copy | **`"Account already exists"`** — the wording `auth.go:59` already documents. Not the mock's `user with email … already exists` | 02 |
+| Client fallback | **Out of scope.** Corrected the plan and `AGENTS.md` to state the truth (any-error, not 500-only); narrowing it to 5xx-only is a logged follow-up | — |
 
 > ## ⚠ The trap in stage 1: the mocks will keep passing and stop meaning anything
 >

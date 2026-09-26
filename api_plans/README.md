@@ -36,9 +36,10 @@ block or interfere with 04–06.
 01–07 and none of 01–07 block them. Read each sub-series' `README.md` first — they carry the
 invariants their series is judged against. For `elevation/`: reported distance stays in true
 meters, default off, missing elevation degrades to flat. For `errors/`: success paths and
-status codes for *valid* requests never change, the rider app's straight-line fallback stays
-500-only, a cause is logged whenever a message is generalised, and the mocks move in lockstep
-with the repositories.
+status codes for *valid* requests never change, a genuine outage answers 5xx or 200 +
+`is_estimate` and never 4xx (the rider app draws a straight line on *every* error status, so a
+misclassified 4xx silently renders a wrong route), a cause is logged whenever a message is
+generalised, and the mocks move in lockstep with the repositories.
 
 ## Golden rules (carried over from the rest of the repo)
 
@@ -51,9 +52,11 @@ with the repositories.
 2. **Route cost must stay in meters.** `total_distance_m`, `total_duration_s`, and the fare
    estimator all assume `AggCost` == distance in meters. `pgr_dijkstra` must run over edges
    whose `cost` is meters (`road_network_edges_pgr.cost` already is; don't "fix" it).
-3. **Keep the Go engine alive as a fallback.** The app falls back to a straight line only on
-   a 500. The native engine (plan 01 retains it) is the dev/edge fallback behind a
-   `ROUTING_ENGINE` toggle until untested — never delete the package outright.
+3. **Keep the Go engine alive as a fallback.** The native engine (plan 01 retains it) is the
+   dev/edge fallback behind a `ROUTING_ENGINE` toggle until untested — never delete the package
+   outright. Separately, the rider app's straight-line fallback fires on **every** error status
+   (`rider_app/.../home_screen.dart:127` is `error: (_, _)`), not only on a 500 — so any routing
+   failure that should be visible to the user must not be answered with a 4xx.
 4. **Migrations are append-only, executed in sorted order.** The runner
    (`internal/database/migrate.go`) executes only `*.up.sql`, version = numeric prefix before
    the first `_`. `.down.sql` files are documentation only. New work = a new numbered

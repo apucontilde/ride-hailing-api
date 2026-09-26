@@ -56,25 +56,46 @@ func fail(c *gin.Context, status int, code, message string, cause error) {
 
 // respondRepo classifies a repository/service error and writes the response.
 //
-// notFound and conflict are the two public sentences for the client-actionable
-// cases. Everything else — a dropped connection, a SQLSTATE nobody modelled, a
-// bug — is a 500 with one fixed sentence, and its cause goes to the log.
+// All three sentences are chosen by the call site, because all three are
+// PUBLIC and rendered verbatim on a Flutter form. Pass the operation's own
+// words for internal ("failed to load nearby drivers"), not "internal error":
+// a name the user and support can act on, and it leaks nothing — the
+// operation is not a secret, the driver error underneath it is.
 //
-// The asymmetry is the point. Guessing wrong in the *user-actionable* direction
-// (500 for a typo) is recoverable: they retry. Guessing wrong in the other
-// direction (4xx for an outage) is not: the Flutter apps only fall back to a
-// straight line on a 500, and a 4xx tells them the user did something wrong.
-func respondRepo(c *gin.Context, err error, notFound, conflict string) {
+// The status split is the part that matters. Guessing wrong towards 5xx (a
+// 500 for a typo) is recoverable: they retry. Guessing wrong towards 4xx is
+// not: the rider app draws a straight line on EVERY error status
+// (home_screen.dart:127), so a 4xx-for-an-outage silently renders a
+// confident road-less route instead of showing anything is wrong.
+func respondRepo(c *gin.Context, err error, notFound, conflict, internal string) {
 	switch {
 	case errors.Is(err, repository.ErrNotFound):
 		fail(c, http.StatusNotFound, "NOT_FOUND", notFound, err)
 	case errors.Is(err, repository.ErrConflict):
 		fail(c, http.StatusConflict, "CONFLICT", conflict, err)
 	default:
-		fail(c, http.StatusInternalServerError, "INTERNAL", "internal error", err)
+		fail(c, http.StatusInternalServerError, "INTERNAL", internal, err)
 	}
 }
 ```
+
+> **Decision recorded: 5xx bodies stay operation-specific.** The three options were (a)
+> operation-specific, (b) `"internal error"` plus a `request_id` for support to grep, (c) flat
+> `"internal error"`. (a) won because it is strictly more informative at zero leakage cost — the
+> existing 8 `INTERNAL` sites already use this vocabulary (`"failed to update location"`,
+> `"failed to query drivers"`, `"failed to compute estimate"`), so choosing it *shrinks* this
+> stage's diff instead of growing it.
+>
+> (b) remains available and is cheap if it is ever wanted: `ErrorLogger` calls
+> `ensureRequestID(c)` before `c.Next()` (`middleware/error_logger.go:21`), so
+> `c.GetString("request_id")` works in any handler. Note the `X-Request-ID` *header* is not
+> usable from a browser — `router.go:57` exposes only `Content-Length` via CORS — so an id shown
+> to a user would have to go in the body.
+>
+> Consequence for review: the 3 real leaks (`ride.go:83`, `ride.go:176`, `platform.go:412`) get
+> the *operation* sentence, and the 8 already-correct sites keep theirs. Nothing in the codebase
+> ends up saying `"internal error"`, so the uniform-looking generic string never appears and
+> cannot become a habit.
 
 **Use the existing types.** `ErrorResponse` / `ErrorDetail` at `responses.go:6-14` are currently
 dead. This is their first caller. That is deliberate: the envelope shape
@@ -96,7 +117,9 @@ consistently.
 
 The mechanical rule, per site:
 
-- **Service/repository failure** → `respondRepo(c, err, "<public not-found>", "<public conflict>")`.
+- **Service/repository failure** → `respondRepo(c, err, "<public not-found>", "<public
+  conflict>", "<public internal>")`. All three are yours to write; see the decision note above
+  on keeping 5xx bodies operation-specific.
 - **Client input failure** (bad JSON, bad field, bad query param) → `fail(c, 422 or 400,
   "VALIDATION_ERROR" or "BAD_REQUEST", "<public sentence>", err)`. The `err` goes to the log
   only; the 22 `ShouldBindJSON` sites are stage 03, so for this stage pass a stable sentence and
@@ -117,21 +140,23 @@ Per-file guidance:
 **`auth.go` (17 sites).** The important ones:
 
 - `Register` (`:73`) — currently `409 CONFLICT` + `err.Error()` for *everything*. Becomes
-  `respondRepo(c, err, "account not found", "<duplicate sentence>")`. A database failure during
-  registration becomes a **500**, not a 409. The `@Failure 409 … "Account already exists"`
-  annotation at `:59` becomes true instead of aspirational.
-  > **Decide the duplicate sentence deliberately.** The friendly text
-  > `user with email … already exists` exists only in `tests/testutil/mock_repos.go:46`. The real
-  > repository will say only `ErrConflict`. Options: `"that email is already registered"` (no
-  > echo), or `"email already registered"`. Echoing the address is not a leak — it is the user's
-  > own input — but it makes the sentence long and the address is already in the field above the
-  > message. Prefer not echoing.
+  `respondRepo(c, err, "account not found", "Account already exists", "failed to create
+  account")`. A database failure during registration becomes a **500**, not a 409. The
+  `@Failure 409 … "Account already exists"` annotation at `:59` becomes true instead of
+  aspirational.
+  > **Duplicate sentence: decided — `"Account already exists"`.** It is the wording the swagger
+  > annotation at `auth.go:59` already promises, so docs and code agree with no new copy to
+  > review. The friendly text `user with email … already exists` exists only in
+  > `tests/testutil/mock_repos.go:46` and is a *mock* string, not a contract — do not adopt it.
+  > Not echoing the address keeps the sentence short; the address is in the field directly above
+  > the message anyway.
 - `Login` (`:116`) — currently `401 UNAUTHORIZED` for *everything*, which is how a database
   outage became a 401. `AuthService.Login` returns a bare `errors.New("invalid credentials")`
   (`service/auth.go:68` and `:76`) and deliberately erases the distinction, so **the handler
   cannot fix this alone.** Either:
   1. change `service/auth.go:68` to pass the repository error through (widest blast radius: the
-     service's own tests assert on `"invalid credentials"`), or
+     service would no longer own a single stable message, and its behaviour becomes a function of
+     the repository's internals), or
   2. have `Login` return a sentinel — `var ErrInvalidCredentials = errors.New("invalid
      credentials")` in the service — and have the handler map it to 401 while anything else
      falls through to 500.
@@ -148,9 +173,10 @@ Per-file guidance:
 
 **`ride.go` (14 sites).** `CreateRide` at `:83` dumps the ride/fare/nav error into the body of a
 **rider-facing** request — the most visible remaining leak. `ListRides` at `:176` is the same
-shape on a paged read. Both become `respondRepo`. Note the rider app's fallback: it draws a
-straight line **only on a 500**, and a genuine nav/native-engine failure *should* be a 500, so
-this change must not accidentally turn an outage into a 4xx.
+shape on a paged read. Both become `respondRepo`. A genuine nav/native-engine failure *should* be
+a 5xx, and per series invariant 2 it must stay one: the rider app draws a straight line on
+**every** error status, so turning a real routing failure into a 4xx would not surface an error —
+it would silently render a road-less line (`home_screen.dart:127`).
 
 **`geo.go` (10 sites).** `GetNearbyDrivers` (`:170`) and the places handlers return generic
 sentences with no cause. `GetDriverLocation` already returns a clean 404 (`:190`). The batch
@@ -174,18 +200,19 @@ The misclassifications this fixes, all of which currently make an outage look li
 
 | endpoint | today | after | why |
 |---|---|---|---|
-| `POST /auth/register` | 409 for any failure | 409 only for `ErrConflict`, else 500 | a 409 tells the app the account exists; on an outage the app retries a register and the user sees a nonsense conflict |
-| `POST /auth/login` | 401 for any failure | 401 only for `ErrInvalidCredentials`, else 500 | the core of series failure #1 |
-| `POST /rides` | 500 + leaked internals | 500 + fixed sentence, cause logged | keeps the rider's straight-line fallback working, stops the leak |
+| `POST /auth/register` | 409 for any failure | 409 (`"Account already exists"`) only for `ErrConflict`, else 500 | a 409 tells the app the account exists; on an outage the user sees a nonsense conflict, or is retried into one |
+| `POST /auth/login` | 401 for any failure | 401 only for `ErrInvalidCredentials`, else 500 | the core of series failure #1: today the user is told they mistyped their password when the database is simply down, and `auth.go` logs nothing |
+| `POST /rides` | 500 + leaked internals | 500 + operation sentence, cause logged | stops the leak without turning a routing failure into a client error |
 | `GET /driver/rides` | 500 + leaked internals | same | idem |
 | `GET /rider/me`, `GET /driver/me` | 404 always | 404 only for `ErrNotFound`, else 500 | a 500 here is a signal; a 404 is a dead end |
 
-**Invariant check — do not "improve" the 500s to 4xx.** Series invariant 2: the rider app falls
-back to a straight line only on a 500. A misclassified 4xx on `/navigation/route` or
-`/estimates/*` silently removes that fallback. And invariant 3: no-coverage and unreachable
-datasource stay **200 + `is_estimate`**, which `service/navigation.go:141` already does with
-`errors.Is(rerr, repository.ErrDatasourceUnavailable)`. Leave it alone; it is the best-behaved
-error path in the codebase and the model for the rest.
+**Invariant check — do not "improve" a 5xx into a 4xx.** Series invariant 2: the rider app draws
+a straight line on **every** error status (`home_screen.dart:127` is `error: (_, _)`), so a
+misclassified 4xx on `/navigation/route` or `/estimates/*` does not remove a fallback — it
+produces a *confidently wrong* one, with no error shown at all. The correct answer for an outage
+is 5xx, or the 200 + `is_estimate` that invariant 3 and `service/navigation.go:141` already
+produce via `errors.Is(rerr, repository.ErrDatasourceUnavailable)`. Leave that path alone; it is
+the best-behaved error handling in the codebase and the model for the rest of this stage.
 
 ## Tests
 
@@ -195,10 +222,16 @@ New `internal/handler/respond_test.go`, table-driven, with a fake `gin` context:
   in `c.Errors`.
 - `ErrConflict` → 409 + `CONFLICT` + the conflict sentence.
 - an unclassified error (`errors.New("boom")`, and a `*pq.Error` with an unmodelled SQLSTATE) →
-  500 + `INTERNAL` + `"internal error"`, cause attached.
+  500 + `INTERNAL` + **the caller's own `internal` sentence**, cause attached. Also assert the
+  body carries that sentence and not a substitute, so the "operation-specific" decision cannot
+  quietly decay into a shared `"internal error"` later.
 - **the regression test for invariant 5**: the 500 body must not contain the cause's text. Assert
-  `not(contains(body, "boom"))` and `contains(c.Errors[0].Error(), "boom")`. This is the test that
-  makes "log it, don't return it" enforceable rather than aspirational.
+  `not(contains(body, "boom"))` and `contains(c.Errors[0].Error(), "boom")`, for each of the three
+  branches. This is the test that makes "log it, don't return it" enforceable rather than
+  aspirational.
+- a 409 from `Register`'s conflict branch carries exactly `"Account already exists"` — the string
+  `auth.go:59` documents. This pins the copy decision so a later refactor cannot quietly
+  reintroduce the mock's `user with email … already exists`.
 - `fail` with `cause == nil` does not append to `c.Errors` (no `nil` entries).
 - the envelope is exactly `{"error":{"code":…,"message":…}}` — the clients parse it.
 
@@ -253,6 +286,9 @@ grep -rn 'ErrorResponse{' internal/handler/                   # -> > 0
 
 # 4. no handler still hand-builds the envelope
 grep -rn 'gin.H{"error": gin.H' internal/handler/ | wc -l    # -> 0
+
+# 5. 5xx bodies stayed operation-specific: no site fell back to a shared string
+grep -rn '"INTERNAL", *"internal error"' internal/handler/   # -> 0
 ```
 
 Live, with the DB up:
@@ -263,7 +299,7 @@ curl -s -X POST localhost:8080/api/v1/auth/register -H 'Content-Type: applicatio
   -d '{"email":"stage02@example.com","phone":"+15550000003","password":"SecurePass1"}'
 curl -s -X POST localhost:8080/api/v1/auth/register -H 'Content-Type: application/json' \
   -d '{"email":"stage02@example.com","phone":"+15550000003","password":"SecurePass1"}'
-#   -> {"error":{"code":"CONFLICT","message":"that email is already registered"}}
+#   -> {"error":{"code":"CONFLICT","message":"Account already exists"}}
 #   -> the log must contain the pq.Error with Code 23505
 
 # 2. THE headline assertion: an outage is a 500, not a 401
@@ -284,13 +320,14 @@ curl -s -o /dev/null -w '%{http_code}\n' -X POST localhost:8080/api/v1/auth/logi
 And the browser, because the client now renders these sentences:
 
 ```bash
-cd e2e && npm run build:apps && node scripts/probe-register-error.mjs   # friendly, no "pq:"
+cd e2e && npm run build:apps && node scripts/probe-register-error.mjs   # "Account already exists", no "pq:"
 cd e2e && npx playwright test                                      # 2 passed
 ```
 
 The probe output changes here for the first time in a good way: it should stop printing
 `failed to create user: …` (a service-layer prefix that exists only because the mock's error was
-being forwarded verbatim) and print the new deliberate sentence instead.
+being forwarded verbatim) and print `Account already exists` instead — the same string
+`auth.go:59` has been documenting all along.
 
 ## Rollout note
 
@@ -299,6 +336,12 @@ failure paths, and the Flutter apps branch on status. Before landing, check the 
 that care:
 
 - `shared/lib/src/api/api_exceptions.dart` `mapStatusCodeToException` — a new 500 on a path that
-  used to 401/409 changes which exception the apps throw. That is handled, but read it.
-- The rider app's straight-line fallback (500-only, series invariant 2). Any 4xx introduced here
-  on a routing/estimate path removes it. There should be none; verify rather than assume.
+  used to 401/409 changes which exception the apps throw. That is handled, but read it. Note the
+  interceptor exempts `/auth/login` and `/auth/refresh` from refresh-and-retry
+  (`api_client.dart:50-69`), so the login 401→500 change does **not** trigger a pointless token
+  refresh; the other 401s in the API come from `AuthRequired`, which fails before the service and
+  so is not outage-driven. Check rather than assume — this is the one place a status change could
+  have a compounding effect.
+- The rider app's straight-line fallback. It is **not** 500-only (`home_screen.dart:127` is
+  `error: (_, _)`), so any 4xx introduced here on a routing/estimate path does not remove it — it
+  produces a silently-wrong line. There should be no such 4xx; verify rather than assume.

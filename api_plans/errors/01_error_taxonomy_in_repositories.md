@@ -105,6 +105,22 @@ taxonomy on top. Single-`%w` would be the tidier-looking choice and is a trap.
 **Do not** add `ErrInvalid`/`ErrUnauthorized` in this stage. Nothing in the repository layer
 distinguishes them today, and inventing sentinels with no caller is how a taxonomy rots.
 
+> **Decision recorded: two sentinels, not a typed error.** The alternatives weighed were
+> (a) `ErrNotFound` + `ErrConflict` + a `wrapDB` classifier, (b) a typed
+> `type RepoError struct { Op string; Kind Kind; Err error }` needing custom `Is` methods, and
+> (c) pushing classification up into the service layer. (a) won because it matches the pattern
+> the repo already has exactly one practitioner of (`routing.ErrNoRoute`,
+> `repository.ErrDatasourceUnavailable`, consumed at `service/navigation.go:141`), keeps the diff
+> to ~30 mechanical call sites, and works with plain `errors.Is`.
+>
+> (b) was rejected as structure with no current consumer: nothing wants `Op` programmatically yet,
+> and every `errors.Is` would need a hand-written method. (c) was rejected because the service is
+> the layer that *erases* the distinction this series needs — `AuthService.Login` collapses
+> everything to one message (`service/auth.go:68`) — so classifying there would not fix series
+> failure #1 by itself.
+>
+> Do not "improve" this into a struct later without a caller that needs it.
+
 ## Step 2 — route every repository error through `wrapDB`
 
 33 sites across 6 non-test files. The table below covers the 23 `fmt.Errorf` sites that

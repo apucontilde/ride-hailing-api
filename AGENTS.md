@@ -95,8 +95,14 @@ Query params `from_lat`, `from_lng`, `to_lat`, `to_lng` are **mandatory and vali
 ```
 
 Polyline endpoints are pinned to the exact pickup/dropoff coords. Distance = A* edge costs
-(edge `cost` = road length in meters); duration = distance / 11 m/s. No route → 500 (the app
-falls back to a straight line).
+(edge `cost` = road length in meters); duration = distance / 11 m/s. No route → 500, and the
+rider app falls back to a straight line.
+
+⚠️ That fallback is **not** 500-only. `rider_app/lib/features/home/presentation/home_screen.dart:127`
+is `error: (_, _) => Polyline(...)`: it draws a pickup→dropoff straight line on **every** error
+status and discards the exception. So a misclassified 4xx does not surface an error — it silently
+renders a confident, road-less route. Never classify an outage as a 4xx; answer 5xx, or 200 with
+`is_estimate: true` (see below). Narrowing the fallback to 5xx-only is a known follow-up.
 
 Since api_plans/05, routing is **region-scoped**: both pins must snap to the SAME
 `routing_regions` row (resolution is snap-first over candidates ordered by bbox-center
