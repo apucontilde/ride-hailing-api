@@ -6,7 +6,10 @@ build/
 *.exe
 *.out
 *.bak
-data/
+# Root-anchored on purpose: a bare `data/` also matches the Flutter feature
+# layers `*/lib/features/*/data/`, which silently untracked
+# `driver_app/lib/features/rides/data/rides_repository.dart`.
+/data/
 
 .dart_tool
 .idea
