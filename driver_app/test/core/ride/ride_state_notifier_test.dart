@@ -167,4 +167,144 @@ void main() {
     expect(notifier.state.currentRide, isNull);
     expect(notifier.state.lastLocation, isNull);
   });
+
+  group('ride.updated in the real broadcast shape', () {
+    // `internal/websocket.RideUpdateData` keys the ride `ride_id` and nests the
+    // places and the fare, so parsing it as a flat `model.Ride` used to blank
+    // the id and the coordinates the trip screen needs.
+    const accepted = {
+      'ride_id': 'r1',
+      'status': 'accepted',
+      'pickup': {'lat': 9.93, 'lng': -84.08, 'address': 'Central Park'},
+      'dropoff': {'lat': 9.95, 'lng': -84.1, 'address': 'Airport'},
+    };
+
+    test('reads the id and the nested places', () async {
+      events.add(updated(accepted));
+      await flush();
+
+      final ride = notifier.state.currentRide!;
+      expect(ride.id, 'r1');
+      expect(ride.status, 'accepted');
+      expect(ride.pickupLat, 9.93);
+      expect(ride.pickupLng, -84.08);
+      expect(ride.pickupAddress, 'Central Park');
+      expect(ride.dropoffLat, 9.95);
+      expect(ride.dropoffAddress, 'Airport');
+    });
+
+    test('a status-only event keeps the places already known', () async {
+      events.add(updated(accepted));
+      await flush();
+
+      events.add(const WsEvent(
+        type: WsEventType.updated,
+        data: {'ride_id': 'r1', 'status': 'driver_arrived'},
+      ));
+      await flush();
+
+      final ride = notifier.state.currentRide!;
+      expect(ride.id, 'r1');
+      expect(ride.status, 'driver_arrived');
+      expect(ride.pickupLat, 9.93);
+      expect(ride.dropoffLng, -84.1);
+    });
+
+    test('a completed event stores the nested fare', () async {
+      events.add(updated(accepted));
+      await flush();
+
+      events.add(const WsEvent(
+        type: WsEventType.updated,
+        data: {
+          'ride_id': 'r1',
+          'status': 'completed',
+          'fare': {
+            'base_fare': 2.5,
+            'distance_fare': 6.0,
+            'time_fare': 3.3,
+            'total': 13.2,
+          },
+        },
+      ));
+      await flush();
+
+      final ride = notifier.state.currentRide!;
+      expect(ride.status, 'completed');
+      expect(ride.baseFare, 2.5);
+      expect(ride.distanceFare, 6.0);
+      expect(ride.timeFare, 3.3);
+      expect(ride.totalFare, 13.2);
+      expect(ride.pickupLat, 9.93);
+    });
+
+    test('a cancellation records who cancelled', () async {
+      events.add(updated(accepted));
+      await flush();
+
+      events.add(const WsEvent(
+        type: WsEventType.updated,
+        data: {
+          'ride_id': 'r1',
+          'status': 'cancelled',
+          'cancelled_by': 'rider',
+        },
+      ));
+      await flush();
+
+      expect(notifier.state.currentRide!.cancelledBy, 'rider');
+    });
+
+    test('an event for a different ride is ignored', () async {
+      events.add(updated(accepted));
+      await flush();
+
+      events.add(const WsEvent(
+        type: WsEventType.updated,
+        data: {'ride_id': 'r2', 'status': 'cancelled'},
+      ));
+      await flush();
+
+      final ride = notifier.state.currentRide!;
+      expect(ride.id, 'r1');
+      expect(ride.status, 'accepted');
+    });
+
+    test('an event without an id or status is ignored', () async {
+      events.add(updated(accepted));
+      await flush();
+
+      events.add(const WsEvent(
+        type: WsEventType.updated,
+        data: {'status': 'completed'},
+      ));
+      await flush();
+
+      expect(notifier.state.currentRide!.status, 'accepted');
+    });
+  });
+
+  test('adoptRide stores a ride learned over HTTP and clears the offer',
+      () async {
+    events.add(offer('r7'));
+    await flush();
+
+    notifier.adoptRide(const Ride(
+      id: 'r7',
+      riderId: 'u9',
+      status: 'in_progress',
+      pickupLat: 9.93,
+      pickupLng: -84.08,
+    ));
+
+    expect(notifier.state.offeredRideId, isNull);
+    expect(notifier.state.currentRide!.id, 'r7');
+    expect(notifier.state.currentRide!.status, 'in_progress');
+  });
+
+  test('adoptRide ignores an id-less ride', () {
+    notifier.adoptRide(const Ride(id: '', riderId: 'u', status: 'accepted'));
+
+    expect(notifier.state.currentRide, isNull);
+  });
 }

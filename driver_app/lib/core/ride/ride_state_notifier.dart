@@ -6,6 +6,7 @@ import 'package:ride_hailing_shared/ride_hailing_shared.dart';
 import '../network/websocket_service.dart';
 import '../network/ws_event.dart';
 import '../auth/auth_provider.dart';
+import 'ride_update.dart';
 
 /// The driver's single source of truth for the offer + ride touchpoints:
 /// the outstanding offer (id + 30 s deadline) and the currently held ride.
@@ -70,16 +71,40 @@ class RideStateNotifier extends StateNotifier<RideState> {
       case WsEventType.offer:
         _onOffer(event.data['ride_id'] as String?);
       case WsEventType.updated:
-        final status = event.data['status'] as String? ?? '';
-        state = state.copyWith(
-          currentRide: Ride.fromJson(event.data),
-          clearOffer: status != 'pending',
-        );
+        _onRideUpdated(event.data);
       case WsEventType.location:
         state = state.copyWith(lastLocation: event.data);
       case WsEventType.other:
         break;
     }
+  }
+
+  /// `ride.updated` is a *patch* keyed by `ride_id` with nested pickup/dropoff
+  /// and fare objects, so it is merged onto the held ride — a plain
+  /// `Ride.fromJson` of the event would blank the id and the coordinates the
+  /// trip screen and the next status call depend on.
+  void _onRideUpdated(Map<String, dynamic> data) {
+    final update = RideUpdate.fromJson(data);
+    if (update.rideId.isEmpty || update.status.isEmpty) return;
+    final held = state.currentRide;
+    // Ignore traffic for a ride this driver is not holding, so a late event
+    // for a previous ride cannot swap the trip out from under the screen.
+    if (held != null && held.id.isNotEmpty && held.id != update.rideId) return;
+    state = state.copyWith(
+      currentRide: update.applyTo(held),
+      clearOffer: update.status != 'pending',
+    );
+  }
+
+  /// Adopts a ride the app learned about over HTTP — the `advance`/cancel
+  /// responses, or the `GET /driver/rides/current` launch restore — so the
+  /// websocket store and the HTTP store agree on what the driver holds.
+  void adoptRide(Ride ride) {
+    if (ride.id.isEmpty) return;
+    state = state.copyWith(
+      currentRide: ride,
+      clearOffer: ride.status != 'pending',
+    );
   }
 
   void _onOffer(String? rideId) {
