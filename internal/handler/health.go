@@ -16,6 +16,7 @@ func NewHealthHandler(db *sqlx.DB) *HealthHandler {
 }
 
 // Liveness godoc
+//
 //	@Summary		Liveness probe
 //	@Description	Returns the liveness status of the server process.
 //	@Tags			health
@@ -27,6 +28,7 @@ func (h *HealthHandler) Liveness(c *gin.Context) {
 }
 
 // Readiness godoc
+//
 //	@Summary		Readiness probe
 //	@Description	Returns readiness status including dependency checks (database, redis).
 //	@Tags			health

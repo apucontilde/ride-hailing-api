@@ -31,7 +31,7 @@ a later one found a second:
    logged `all drivers declined` 30 s later), and the client dropped it on
    arrival. The gate now reads the offer itself, and the `_offerShown` latch is
    keyed to the ride id so a withdrawn offer cannot block the next one. See
-   `driver_app_plans/03_offer_and_accept.md`.
+   `driver_app_plans/STATUS.md` `[offer]`.
 2. **Going online published no position.** `LocationService` discards fixes
    while offline and geolocator only re-emits on movement, so a driver who
    toggled online while stationary had **no** `driver_positions` row and
@@ -40,7 +40,7 @@ a later one found a second:
    presented as a 1-in-3 flake, because the spec used to sleep a guessed
    interval and hope a fix had landed. `waitForDriverLocation` now polls
    `GET /drivers/:id/location` until the row exists. See
-   `driver_app_plans/02_online_status_loop.md`.
+   `driver_app_plans/STATUS.md` `[online]`.
 
 The suite also runs about twice as fast as it did with the sleep, because the
 push now happens the instant the driver goes online instead of whenever

@@ -196,7 +196,7 @@ func TestResetPasswordWithValidToken(t *testing.T) {
 	testutil.ParseJSON(t, forgotResp.Body, &forgotResult)
 
 	resetResp := ts.DoRequest("POST", "/api/v1/auth/reset-password", "", map[string]string{
-		"token":       forgotResult.ResetToken,
+		"token":        forgotResult.ResetToken,
 		"new_password": "NewPass1",
 	})
 	resetResp.AssertStatus(t, http.StatusOK)
@@ -218,7 +218,7 @@ func TestResetPasswordWithValidToken(t *testing.T) {
 
 func TestResetPasswordRejectsInvalidToken(t *testing.T) {
 	resp := ts.DoRequest("POST", "/api/v1/auth/reset-password", "", map[string]string{
-		"token":       "invalid-token",
+		"token":        "invalid-token",
 		"new_password": "NewPass1",
 	})
 	resp.AssertStatus(t, http.StatusBadRequest)

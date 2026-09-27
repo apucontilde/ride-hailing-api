@@ -62,7 +62,8 @@ func (h *Hub) HandleWS(c *gin.Context) {
 
 	h.mu.Lock()
 	if existing, ok := h.clients[userIDStr]; ok {
-		existing.Conn.Close()
+		// Evicting the old socket: a Close error is not actionable here.
+		_ = existing.Conn.Close()
 	}
 	client := &Client{UserID: userIDStr, Role: role.(string), Conn: conn}
 	h.clients[userIDStr] = client
@@ -74,7 +75,7 @@ func (h *Hub) HandleWS(c *gin.Context) {
 		h.mu.Lock()
 		delete(h.clients, userIDStr)
 		h.mu.Unlock()
-		conn.Close()
+		_ = conn.Close()
 	}()
 
 	for {

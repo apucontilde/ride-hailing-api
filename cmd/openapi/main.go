@@ -42,8 +42,8 @@ func main() {
 	}
 
 	var spec map[string]any
-	if err := json.Unmarshal(raw, &spec); err != nil {
-		fmt.Fprintf(os.Stderr, "openapi: invalid JSON in %s: %v\n", specPath, err)
+	if jsonErr := json.Unmarshal(raw, &spec); jsonErr != nil {
+		fmt.Fprintf(os.Stderr, "openapi: invalid JSON in %s: %v\n", specPath, jsonErr)
 		os.Exit(1)
 	}
 
@@ -159,8 +159,8 @@ func main() {
 		fmt.Fprintf(os.Stderr, "openapi: %v\n", err)
 		os.Exit(1)
 	}
-	if err := os.WriteFile(specPath, append(out, '\n'), 0o644); err != nil {
-		fmt.Fprintf(os.Stderr, "openapi: %v\n", err)
+	if writeErr := os.WriteFile(specPath, append(out, '\n'), 0o644); writeErr != nil {
+		fmt.Fprintf(os.Stderr, "openapi: %v\n", writeErr)
 		os.Exit(1)
 	}
 
@@ -184,15 +184,15 @@ func main() {
 }
 
 var publicRoutes = map[string]bool{
-	"GET /health":                    true,
-	"GET /health/ready":              true,
-	"GET /api/v1/version":            true,
-	"POST /api/v1/auth/register":     true,
-	"POST /api/v1/auth/login":        true,
-	"POST /api/v1/auth/refresh":      true,
+	"GET /health":                       true,
+	"GET /health/ready":                 true,
+	"GET /api/v1/version":               true,
+	"POST /api/v1/auth/register":        true,
+	"POST /api/v1/auth/login":           true,
+	"POST /api/v1/auth/refresh":         true,
 	"POST /api/v1/auth/forgot-password": true,
 	"POST /api/v1/auth/reset-password":  true,
-	"POST /api/v1/auth/social":       true,
+	"POST /api/v1/auth/social":          true,
 }
 
 func isPublic(method, path string) bool {

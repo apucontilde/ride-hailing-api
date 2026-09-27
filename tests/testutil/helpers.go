@@ -154,8 +154,10 @@ func (ts *TestServer) DoRequest(method, path, token string, body interface{}) *T
 	}
 
 	buf := new(bytes.Buffer)
-	buf.ReadFrom(resp.Body)
-	resp.Body.Close()
+	if _, err := buf.ReadFrom(resp.Body); err != nil {
+		panic(fmt.Errorf("reading response body for %s %s: %w", method, path, err))
+	}
+	_ = resp.Body.Close()
 
 	return &TestResponse{Response: resp, Body: buf.Bytes()}
 }
@@ -168,7 +170,9 @@ func (ts *TestServer) LoginAsRider(email, password string) {
 	var result struct {
 		AccessToken string `json:"access_token"`
 	}
-	json.Unmarshal(resp.Body, &result)
+	if err := json.Unmarshal(resp.Body, &result); err != nil {
+		panic(fmt.Errorf("login as %s: decoding response: %w", email, err))
+	}
 	ts.AuthTokens["rider"] = result.AccessToken
 }
 
@@ -183,7 +187,9 @@ func (r *TestResponse) AssertJSONHas(t *testing.T, key string, expected ...inter
 	t.Helper()
 
 	var body map[string]interface{}
-	json.Unmarshal(r.Body, &body)
+	if err := json.Unmarshal(r.Body, &body); err != nil {
+		t.Fatalf("decoding response body: %v (body=%s)", err, string(r.Body))
+	}
 
 	keys := nestedKeys(key)
 	current := any(body)
@@ -222,7 +228,9 @@ func (r *TestResponse) AssertJSONMissing(t *testing.T, key string) {
 	t.Helper()
 
 	var body map[string]interface{}
-	json.Unmarshal(r.Body, &body)
+	if err := json.Unmarshal(r.Body, &body); err != nil {
+		t.Fatalf("decoding response body: %v (body=%s)", err, string(r.Body))
+	}
 
 	keys := nestedKeys(key)
 	current := any(body)
@@ -287,7 +295,9 @@ func (ts *TestServer) DialWS(t *testing.T, token string) *websocket.Conn {
 	if err := conn.WriteJSON(map[string]string{"type": "ping"}); err != nil {
 		t.Fatalf("readiness ping failed: %v", err)
 	}
-	conn.SetReadDeadline(time.Now().Add(5 * time.Second))
+	if err := conn.SetReadDeadline(time.Now().Add(5 * time.Second)); err != nil {
+		t.Fatalf("failed to set readiness read deadline: %v", err)
+	}
 	for {
 		_, msgBytes, err := conn.ReadMessage()
 		if err != nil {
@@ -305,7 +315,9 @@ func (ts *TestServer) DialWS(t *testing.T, token string) *websocket.Conn {
 
 func ReadWSMessage(t *testing.T, conn *websocket.Conn) map[string]interface{} {
 	t.Helper()
-	conn.SetReadDeadline(time.Now().Add(3 * time.Second))
+	if err := conn.SetReadDeadline(time.Now().Add(3 * time.Second)); err != nil {
+		t.Fatalf("failed to set read deadline: %v", err)
+	}
 	_, msgBytes, err := conn.ReadMessage()
 	if err != nil {
 		t.Fatalf("websocket read failed: %v", err)
@@ -322,7 +334,9 @@ func ReadWSMessage(t *testing.T, conn *websocket.Conn) map[string]interface{} {
 // express "the driver must NOT receive an offer". A read timeout returns
 // (nil, nil) — silence is the expected outcome for those cases.
 func TryReadWSMessage(conn *websocket.Conn, timeout time.Duration) (map[string]interface{}, error) {
-	conn.SetReadDeadline(time.Now().Add(timeout))
+	if err := conn.SetReadDeadline(time.Now().Add(timeout)); err != nil {
+		return nil, err
+	}
 	_, msgBytes, err := conn.ReadMessage()
 	if err != nil {
 		if websocket.IsUnexpectedCloseError(err) || errors.Is(err, io.EOF) {

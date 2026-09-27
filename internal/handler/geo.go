@@ -11,9 +11,9 @@ import (
 )
 
 type GeoHandler struct {
-	geoRepo repository.GeoRepository
+	geoRepo  repository.GeoRepository
 	rideRepo repository.RideRepository
-	wsHub   *websocket.Hub
+	wsHub    *websocket.Hub
 }
 
 func NewGeoHandler(geoRepo repository.GeoRepository, rideRepo repository.RideRepository, wsHub *websocket.Hub) *GeoHandler {
@@ -28,6 +28,7 @@ type locationUpdate struct {
 }
 
 // UpdateDriverLocation godoc
+//
 //	@Summary		Update a driver's live location
 //	@Description	Upserts the driver position and streams it to the rider over WebSocket.
 //	@Tags			geo
@@ -76,6 +77,7 @@ func (h *GeoHandler) UpdateDriverLocation(c *gin.Context) {
 }
 
 // UpdateDriverLocationBatch godoc
+//
 //	@Summary	Batch update a driver's live location
 //	@Tags		geo
 //	@Accept		json
@@ -98,13 +100,17 @@ func (h *GeoHandler) UpdateDriverLocationBatch(c *gin.Context) {
 			c.JSON(http.StatusUnprocessableEntity, gin.H{"error": gin.H{"code": "VALIDATION_ERROR", "message": "lat/lng out of range"}})
 			return
 		}
-		h.geoRepo.UpsertDriverPosition(driverID.(string), r.Lat, r.Lng, r.Heading, r.Speed, "online")
+		if err := h.geoRepo.UpsertDriverPosition(driverID.(string), r.Lat, r.Lng, r.Heading, r.Speed, "online"); err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": gin.H{"code": "INTERNAL", "message": "failed to update location"}})
+			return
+		}
 	}
 
 	c.Status(http.StatusNoContent)
 }
 
 // UpdateRiderLocation godoc
+//
 //	@Summary	Update a rider's live location
 //	@Tags		geo
 //	@Accept		json
@@ -122,11 +128,15 @@ func (h *GeoHandler) UpdateRiderLocation(c *gin.Context) {
 		return
 	}
 
-	h.geoRepo.UpsertRiderPosition(riderID.(string), req.Lat, req.Lng)
+	if err := h.geoRepo.UpsertRiderPosition(riderID.(string), req.Lat, req.Lng); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": gin.H{"code": "INTERNAL", "message": "failed to update location"}})
+		return
+	}
 	c.Status(http.StatusNoContent)
 }
 
 // GetNearbyDrivers godoc
+//
 //	@Summary		Find nearby drivers
 //	@Description	Returns online drivers within a radius of the given coordinates.
 //	@Tags			geo
@@ -175,6 +185,7 @@ func (h *GeoHandler) GetNearbyDrivers(c *gin.Context) {
 }
 
 // GetDriverLocation godoc
+//
 //	@Summary	Get a driver's current location
 //	@Tags		geo
 //	@Produce	json

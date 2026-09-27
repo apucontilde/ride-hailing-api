@@ -166,7 +166,7 @@ func TestOfferReachesDriverWhenOnlineAndLocated(t *testing.T) {
 	}).AssertStatus(t, http.StatusNoContent)
 
 	driverConn := srv.DialWS(t, driverToken)
-	defer driverConn.Close()
+	defer func() { _ = driverConn.Close() }()
 
 	createResp := srv.DoRequest("POST", "/api/v1/rides", riderToken, map[string]float64{
 		"pickup_lat": pickupLat, "pickup_lng": pickupLng,
@@ -220,9 +220,9 @@ func TestNoOfferWhenDriverNeverPushedLocation(t *testing.T) {
 		map[string]string{"status": "online"}).AssertStatus(t, http.StatusOK)
 
 	driverConn := srv.DialWS(t, driverToken)
-	defer driverConn.Close()
+	defer func() { _ = driverConn.Close() }()
 	riderConn := srv.DialWS(t, riderToken)
-	defer riderConn.Close()
+	defer func() { _ = riderConn.Close() }()
 
 	pickupLat, pickupLng, dropoffLat, dropoffLng, _, _ := offerCoords(seed)
 	createResp := srv.DoRequest("POST", "/api/v1/rides", riderToken, map[string]float64{
@@ -263,9 +263,9 @@ func TestNoOfferWhenDriverLocationIsStale(t *testing.T) {
 	}).AssertStatus(t, http.StatusNoContent)
 
 	driverConn := srv.DialWS(t, driverToken)
-	defer driverConn.Close()
+	defer func() { _ = driverConn.Close() }()
 	riderConn := srv.DialWS(t, riderToken)
-	defer riderConn.Close()
+	defer func() { _ = riderConn.Close() }()
 
 	// The driver's last fix ages past the 30s window — a parked driver whose
 	// geolocator stream went quiet.
@@ -306,7 +306,7 @@ func TestNoOfferWhenDriverSocketIsDown(t *testing.T) {
 	// from the hub.
 
 	riderConn := srv.DialWS(t, riderToken)
-	defer riderConn.Close()
+	defer func() { _ = riderConn.Close() }()
 
 	createResp := srv.DoRequest("POST", "/api/v1/rides", riderToken, map[string]float64{
 		"pickup_lat": pickupLat, "pickup_lng": pickupLng,

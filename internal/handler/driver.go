@@ -24,6 +24,7 @@ type updateDriverRequest struct {
 }
 
 // Register godoc
+//
 //	@Summary		Register the authenticated user as a driver
 //	@Description	Promotes the current user to the driver role and creates a driver profile.
 //	@Tags			driver
@@ -36,19 +37,26 @@ func (h *DriverHandler) Register(c *gin.Context) {
 
 	user, _ := h.userRepo.FindByID(userID.(string))
 	user.Role = "driver"
-	h.userRepo.UpdateUser(user)
+	if err := h.userRepo.UpdateUser(user); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": gin.H{"code": "INTERNAL", "message": "failed to update user role"}})
+		return
+	}
 
 	driver := &model.Driver{
 		UserID:           user.ID,
 		Status:           "offline",
 		OnboardingStatus: "documents_submitted",
 	}
-	h.userRepo.CreateDriver(driver)
+	if err := h.userRepo.CreateDriver(driver); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": gin.H{"code": "INTERNAL", "message": "failed to create driver profile"}})
+		return
+	}
 
 	c.JSON(http.StatusCreated, gin.H{"driver": driver})
 }
 
 // GetProfile godoc
+//
 //	@Summary	Get the driver profile
 //	@Tags		driver
 //	@Produce	json
@@ -67,6 +75,7 @@ func (h *DriverHandler) GetProfile(c *gin.Context) {
 }
 
 // UpdateProfile godoc
+//
 //	@Summary	Update the driver profile
 //	@Tags		driver
 //	@Accept		json
@@ -88,11 +97,15 @@ func (h *DriverHandler) UpdateProfile(c *gin.Context) {
 	driver.FirstName = body.FirstName
 	driver.LastName = body.LastName
 	driver.PhotoURL = body.PhotoURL
-	h.userRepo.UpdateDriver(driver)
+	if err := h.userRepo.UpdateDriver(driver); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": gin.H{"code": "INTERNAL", "message": "failed to update driver profile"}})
+		return
+	}
 	c.JSON(http.StatusOK, gin.H{"driver": driver})
 }
 
 // UpdateStatus godoc
+//
 //	@Summary	Update the driver availability status
 //	@Tags		driver
 //	@Accept		json
@@ -112,6 +125,9 @@ func (h *DriverHandler) UpdateStatus(c *gin.Context) {
 
 	driver, _ := h.userRepo.FindDriverByID(userID.(string))
 	driver.Status = body.Status
-	h.userRepo.UpdateDriver(driver)
+	if err := h.userRepo.UpdateDriver(driver); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": gin.H{"code": "INTERNAL", "message": "failed to update driver status"}})
+		return
+	}
 	c.JSON(http.StatusOK, gin.H{"driver": driver})
 }

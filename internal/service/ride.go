@@ -3,6 +3,7 @@ package service
 import (
 	"errors"
 	"fmt"
+	"log"
 	"time"
 
 	"ride-hailing-api/internal/model"
@@ -22,12 +23,12 @@ func NewRideService(rideRepo repository.RideRepository, userRepo repository.User
 }
 
 var validTransitions = map[string][]string{
-	"pending":       {"accepted", "cancelled", "no_driver_available"},
-	"accepted":      {"driver_arrived", "cancelled"},
+	"pending":        {"accepted", "cancelled", "no_driver_available"},
+	"accepted":       {"driver_arrived", "cancelled"},
 	"driver_arrived": {"in_progress", "cancelled"},
-	"in_progress":   {"completed"},
-	"completed":     {},
-	"cancelled":     {},
+	"in_progress":    {"completed"},
+	"completed":      {},
+	"cancelled":      {},
 }
 
 func (s *RideService) RequestRide(riderID string, pickupLat, pickupLng, dropoffLat, dropoffLng float64,
@@ -39,32 +40,36 @@ func (s *RideService) RequestRide(riderID string, pickupLat, pickupLng, dropoffL
 	}
 
 	ride := &model.Ride{
-		RiderID:        riderID,
-		PickupLat:      pickupLat,
-		PickupLng:      pickupLng,
-		DropoffLat:     dropoffLat,
-		DropoffLng:     dropoffLng,
-		PickupAddress:  pickupAddr,
-		DropoffAddress: dropoffAddr,
-		VehicleType:    vehicleType,
-		IdempotencyKey: idempotencyKey,
-		BaseFare:       estimate.BaseFare,
-		DistanceFare:   estimate.DistanceFare,
-		TimeFare:       estimate.TimeFare,
+		RiderID:         riderID,
+		PickupLat:       pickupLat,
+		PickupLng:       pickupLng,
+		DropoffLat:      dropoffLat,
+		DropoffLng:      dropoffLng,
+		PickupAddress:   pickupAddr,
+		DropoffAddress:  dropoffAddr,
+		VehicleType:     vehicleType,
+		IdempotencyKey:  idempotencyKey,
+		BaseFare:        estimate.BaseFare,
+		DistanceFare:    estimate.DistanceFare,
+		TimeFare:        estimate.TimeFare,
 		SurgeMultiplier: estimate.SurgeMultiplier,
-		TotalFare:      estimate.Total,
+		TotalFare:       estimate.Total,
 	}
 
 	if err := s.rideRepo.CreateRide(ride); err != nil {
 		return nil, fmt.Errorf("failed to create ride: %w", err)
 	}
 
-	s.rideRepo.CreateEvent(&model.RideEvent{
+	if err := s.rideRepo.CreateEvent(&model.RideEvent{
 		RideID:     ride.ID,
 		FromStatus: "",
 		ToStatus:   "pending",
 		Actor:      "rider",
-	})
+	}); err != nil {
+		// The ride row is already committed; a missing audit row must not fail
+		// the request.
+		log.Printf("ride %s: failed to record pending event: %v", ride.ID, err)
+	}
 
 	s.hub.SendToUser(riderID, websocket.OutgoingMessage{
 		Type: "ride.updated",
@@ -104,12 +109,14 @@ func (s *RideService) CancelRide(rideID, actor string) (*model.Ride, error) {
 		return nil, err
 	}
 
-	s.rideRepo.CreateEvent(&model.RideEvent{
+	if err := s.rideRepo.CreateEvent(&model.RideEvent{
 		RideID:     rideID,
 		FromStatus: ride.Status,
 		ToStatus:   "cancelled",
 		Actor:      actor,
-	})
+	}); err != nil {
+		log.Printf("ride %s: failed to record cancelled event: %v", rideID, err)
+	}
 
 	ride.Status = "cancelled"
 
@@ -146,12 +153,14 @@ func (s *RideService) AdvanceStatus(rideID, newStatus, actor string) (*model.Rid
 		return nil, err
 	}
 
-	s.rideRepo.CreateEvent(&model.RideEvent{
+	if err := s.rideRepo.CreateEvent(&model.RideEvent{
 		RideID:     rideID,
 		FromStatus: ride.Status,
 		ToStatus:   newStatus,
 		Actor:      actor,
-	})
+	}); err != nil {
+		log.Printf("ride %s: failed to record %s event: %v", rideID, newStatus, err)
+	}
 
 	ride.Status = newStatus
 
@@ -166,7 +175,7 @@ func (s *RideService) AdvanceStatus(rideID, newStatus, actor string) (*model.Rid
 	if newStatus == "completed" {
 		// In a real system, we would get actual distance/time from GPS logs
 		// Here we'll just assume it's 10% different from the estimate for demonstration
-		ride.TotalFare = ride.TotalFare * 1.1 
+		ride.TotalFare *= 1.1
 
 		msg.Data = websocket.RideUpdateData{
 			RideID:    rideID,

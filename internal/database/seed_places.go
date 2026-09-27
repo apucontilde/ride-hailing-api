@@ -59,8 +59,8 @@ func SeedPlaces(db *sqlx.DB, cfg *config.Config) error {
 	}
 
 	var fc geoJSONFeatureCollection
-	if err := json.Unmarshal(raw, &fc); err != nil {
-		return fmt.Errorf("failed to parse places GeoJSON: %w", err)
+	if jsonErr := json.Unmarshal(raw, &fc); jsonErr != nil {
+		return fmt.Errorf("failed to parse places GeoJSON: %w", jsonErr)
 	}
 
 	seeds := make([]model.PlaceSeed, 0, len(fc.Features))
@@ -207,8 +207,7 @@ func representativePoint(g geoJSONGeometry) (lat, lng float64, ok bool) {
 }
 
 func collectCoords(v interface{}, sumLat, sumLng *float64, n *int) {
-	switch t := v.(type) {
-	case []interface{}:
+	if t, ok := v.([]interface{}); ok {
 		if len(t) >= 2 {
 			lng, lngOk := t[0].(float64)
 			lat, latOk := t[1].(float64)

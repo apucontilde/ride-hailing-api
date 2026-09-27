@@ -32,8 +32,8 @@ func TestGeoDriverLocationUpsert(t *testing.T) {
 	token = loginResult.AccessToken
 
 	resp := ts.DoRequest("PUT", "/api/v1/geo/driver/location", token, map[string]float64{
-		"lat":   40.7128,
-		"lng":   -74.0060,
+		"lat":     40.7128,
+		"lng":     -74.0060,
 		"heading": 270,
 		"speed":   8.5,
 	})
@@ -67,8 +67,8 @@ func TestGeoDriverLocationRejectsOutOfRange(t *testing.T) {
 	token = loginResult.AccessToken
 
 	resp := ts.DoRequest("PUT", "/api/v1/geo/driver/location", token, map[string]float64{
-		"lat":  100.0,
-		"lng":  200.0,
+		"lat": 100.0,
+		"lng": 200.0,
 	})
 	resp.AssertStatus(t, http.StatusUnprocessableEntity)
 }

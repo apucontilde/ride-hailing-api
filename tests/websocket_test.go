@@ -31,9 +31,11 @@ func TestWSRiderConnectsAuthenticated(t *testing.T) {
 	if err != nil {
 		t.Skipf("websocket endpoint not available: %v", err)
 	}
-	defer conn.Close()
+	defer func() { _ = conn.Close() }()
 
-	conn.SetReadDeadline(time.Now().Add(2 * time.Second))
+	if deadlineErr := conn.SetReadDeadline(time.Now().Add(2 * time.Second)); deadlineErr != nil {
+		t.Fatalf("failed to set read deadline: %v", deadlineErr)
+	}
 	_, _, err = conn.ReadMessage()
 	if err == nil {
 		t.Log("websocket connected and received message")

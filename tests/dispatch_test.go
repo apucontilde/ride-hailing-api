@@ -84,7 +84,7 @@ func TestDriverAcceptRide(t *testing.T) {
 	driverToken = driverLoginResult.AccessToken
 
 	conn := ts.DialWS(t, riderToken)
-	defer conn.Close()
+	defer func() { _ = conn.Close() }()
 
 	createResp := ts.DoRequest("POST", "/api/v1/rides", riderToken, map[string]float64{
 		"pickup_lat":  40.7128,

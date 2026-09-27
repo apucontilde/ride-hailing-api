@@ -1,9 +1,9 @@
 package testutil
 
 import (
+	crand "crypto/rand"
 	"fmt"
 	"math"
-	"math/rand"
 	"sync"
 	"time"
 
@@ -12,7 +12,9 @@ import (
 
 func newID() string {
 	b := make([]byte, 16)
-	rand.Read(b)
+	if _, err := crand.Read(b); err != nil {
+		panic(fmt.Sprintf("testutil: cannot read random bytes: %v", err))
+	}
 	return fmt.Sprintf("%x-%x-%x-%x-%x", b[0:4], b[4:6], b[6:8], b[8:10], b[10:])
 }
 

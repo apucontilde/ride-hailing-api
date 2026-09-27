@@ -1,12 +1,11 @@
-linters-settings:
-  govet:
-    check-shadowing: true
-  revive:
-    severity: warning
-    confidence: 0.8
+# golangci-lint v2 configuration (schema version "2").
+# Verify with: golangci-lint config verify
+version: "2"
 
 linters:
-  disable-all: true
+  # v1 equivalent of `disable-all: true` — no default linters, only the ones
+  # listed below.
+  default: none
   enable:
     - errcheck
     - govet
@@ -14,7 +13,22 @@ linters:
     - unused
     - revive
     - gocritic
+  settings:
+    govet:
+      # v1 equivalent of `check-shadowing: true`.
+      enable:
+        - shadow
+    revive:
+      severity: warning
+      confidence: 0.8
+
+# v2 split the formatters out of `linters`; gofmt lives here now.
+formatters:
+  enable:
     - gofmt
+  settings:
+    gofmt:
+      simplify: true
 
 run:
   timeout: 5m

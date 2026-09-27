@@ -21,6 +21,13 @@ type AuthService struct {
 	userRepo repository.UserRepository
 }
 
+// ErrTokenRevoke marks a repository failure while revoking a token. Every
+// other error in this file is a client mistake and is answered 4xx; a failure
+// here is a backend outage and must be answered 5xx without echoing the driver
+// error back to the caller. api_plans [errors] stage 01 replaces this ad-hoc
+// sentinel with the full taxonomy.
+var ErrTokenRevoke = errors.New("token revocation failed")
+
 func NewAuthService(cfg *config.Config, userRepo repository.UserRepository) *AuthService {
 	return &AuthService{cfg: cfg, userRepo: userRepo}
 }
@@ -72,7 +79,7 @@ func (s *AuthService) Login(email, password string) (*TokenPair, *model.User, er
 		return nil, nil, errors.New("account is disabled")
 	}
 
-	if err := bcrypt.CompareHashAndPassword([]byte(user.PasswordHash), []byte(password)); err != nil {
+	if bcrypt.CompareHashAndPassword([]byte(user.PasswordHash), []byte(password)) != nil {
 		return nil, nil, errors.New("invalid credentials")
 	}
 
@@ -108,7 +115,9 @@ func (s *AuthService) RefreshAccessToken(refreshTokenStr string) (*TokenPair, er
 		return nil, errors.New("user not found")
 	}
 
-	s.userRepo.RevokeRefreshToken(stored.ID)
+	if revokeErr := s.userRepo.RevokeRefreshToken(stored.ID); revokeErr != nil {
+		return nil, fmt.Errorf("%w: failed to revoke refresh token: %w", ErrTokenRevoke, revokeErr)
+	}
 
 	tokens, refreshModel, err := s.generateTokenPair(user.ID, user.Role)
 	if err != nil {
@@ -217,7 +226,9 @@ func (s *AuthService) ForgotPassword(email string) (string, error) {
 		return "", fmt.Errorf("failed to generate reset token: %w", err)
 	}
 
-	s.userRepo.RevokeUserPasswordResetTokens(user.ID)
+	if err := s.userRepo.RevokeUserPasswordResetTokens(user.ID); err != nil {
+		return "", fmt.Errorf("%w: failed to revoke previous reset tokens: %w", ErrTokenRevoke, err)
+	}
 
 	resetModel := &model.PasswordResetToken{
 		UserID:    user.ID,
@@ -248,7 +259,11 @@ func (s *AuthService) ResetPassword(tokenStr, newPassword string) error {
 		return fmt.Errorf("failed to hash password: %w", err)
 	}
 
-	s.userRepo.RevokePasswordResetToken(stored.ID)
+	// Fail closed: if the consumed token cannot be revoked it would stay
+	// reusable, so abort before the password is changed.
+	if revokeErr := s.userRepo.RevokePasswordResetToken(stored.ID); revokeErr != nil {
+		return fmt.Errorf("%w: failed to revoke reset token: %w", ErrTokenRevoke, revokeErr)
+	}
 
 	user, err := s.userRepo.FindByID(stored.UserID)
 	if err != nil {

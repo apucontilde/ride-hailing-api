@@ -56,7 +56,9 @@ func (s *DispatchService) Dispatch(ride *model.Ride) error {
 		}
 	}
 
-	s.rideRepo.UpdateRideStatus(ride.ID, "no_driver_available", nil)
+	if err := s.rideRepo.UpdateRideStatus(ride.ID, "no_driver_available", nil); err != nil {
+		log.Printf("ride %s: failed to persist no_driver_available: %v", ride.ID, err)
+	}
 	log.Printf("ride %s: no drivers found in service area", ride.ID)
 	s.pushNoDriverAvailable(ride)
 	return nil
@@ -87,7 +89,10 @@ func (s *DispatchService) sendRequestsSequentially(ride *model.Ride, drivers []m
 
 	current, err := s.rideRepo.FindByID(ride.ID)
 	if err == nil && current.Status == "pending" {
-		s.rideRepo.UpdateRideStatus(ride.ID, "no_driver_available", nil)
+		if err := s.rideRepo.UpdateRideStatus(ride.ID, "no_driver_available", nil); err != nil {
+			log.Printf("ride %s: failed to persist no_driver_available: %v", ride.ID, err)
+			return
+		}
 		log.Printf("ride %s: all drivers declined", ride.ID)
 		s.pushNoDriverAvailable(ride)
 	}
@@ -158,12 +163,14 @@ func (s *DispatchService) AcceptRide(rideID, driverID string) error {
 		return err
 	}
 
-	s.rideRepo.CreateEvent(&model.RideEvent{
+	if err := s.rideRepo.CreateEvent(&model.RideEvent{
 		RideID:     rideID,
 		FromStatus: "pending",
 		ToStatus:   "accepted",
 		Actor:      "driver",
-	})
+	}); err != nil {
+		log.Printf("ride %s: failed to record accepted event: %v", rideID, err)
+	}
 
 	driver, _ := s.userRepo.FindDriverByID(driverID)
 	// Real driver→pickup ETA (US-6): the rider sees how long until

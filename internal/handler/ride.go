@@ -1,6 +1,7 @@
 package handler
 
 import (
+	"log"
 	"net/http"
 	"strconv"
 
@@ -45,6 +46,7 @@ type rateRideRequest struct {
 }
 
 // CreateRide godoc
+//
 //	@Summary		Request a new ride
 //	@Description	Creates a ride request and dispatches it to nearby drivers.
 //	@Tags			rides
@@ -84,12 +86,17 @@ func (h *RideHandler) CreateRide(c *gin.Context) {
 		return
 	}
 
-	go h.dispatchService.Dispatch(ride)
+	go func() {
+		if err := h.dispatchService.Dispatch(ride); err != nil {
+			log.Printf("ride %s: dispatch failed: %v", ride.ID, err)
+		}
+	}()
 
 	c.JSON(http.StatusCreated, gin.H{"ride": ride})
 }
 
 // GetCurrentRide godoc
+//
 //	@Summary		Get the current ride for the authenticated user
 //	@Description	Returns the active ride for the current rider or driver, or `null`.
 //	@Tags			rides
@@ -119,6 +126,7 @@ func (h *RideHandler) GetCurrentRide(c *gin.Context) {
 }
 
 // GetRideByID godoc
+//
 //	@Summary	Get a ride by ID
 //	@Tags		rides
 //	@Produce	json
@@ -138,6 +146,7 @@ func (h *RideHandler) GetRideByID(c *gin.Context) {
 }
 
 // GetRideHistory godoc
+//
 //	@Summary		List ride history
 //	@Description	Returns a paginated list of past rides for the current rider or driver.
 //	@Tags			rides
@@ -189,6 +198,7 @@ func (h *RideHandler) GetRideHistory(c *gin.Context) {
 }
 
 // CancelRide godoc
+//
 //	@Summary	Cancel a ride
 //	@Tags		rides
 //	@Produce	json
@@ -211,6 +221,7 @@ func (h *RideHandler) CancelRide(c *gin.Context) {
 }
 
 // AdvanceStatus godoc
+//
 //	@Summary	Advance a ride to the next status
 //	@Tags		rides
 //	@Accept		json
@@ -242,6 +253,7 @@ func (h *RideHandler) AdvanceStatus(c *gin.Context) {
 }
 
 // RateRide godoc
+//
 //	@Summary		Rate a completed ride
 //	@Description	Submits a 1-5 rating for the other party on a completed ride.
 //	@Tags			rides
@@ -293,6 +305,7 @@ func (h *RideHandler) RateRide(c *gin.Context) {
 }
 
 // AcceptRide godoc
+//
 //	@Summary	Accept a dispatched ride offer
 //	@Tags		rides
 //	@Produce	json
@@ -319,6 +332,7 @@ func (h *RideHandler) AcceptRide(c *gin.Context) {
 }
 
 // GetRideReceipt godoc
+//
 //	@Summary	Get the fare breakdown for a ride
 //	@Tags		rides
 //	@Produce	json
@@ -347,6 +361,7 @@ func (h *RideHandler) GetRideReceipt(c *gin.Context) {
 }
 
 // TipDriver godoc
+//
 //	@Summary	Tip a driver (stub)
 //	@Tags		rides
 //	@Produce	json

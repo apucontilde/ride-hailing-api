@@ -16,3 +16,5 @@ build/
 .opencode
 .vscode
 .tmp
+# Widget Preview related
+.widget_preview/

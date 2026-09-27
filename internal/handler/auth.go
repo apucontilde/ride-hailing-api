@@ -1,6 +1,7 @@
 package handler
 
 import (
+	"errors"
 	"net/http"
 
 	"github.com/gin-gonic/gin"
@@ -49,6 +50,7 @@ type registerRequest struct {
 }
 
 // Register godoc
+//
 //	@Summary		Register a new user account
 //	@Description	Creates a user account with email, phone, and password. The account starts in the `rider` role.
 //	@Tags			auth
@@ -92,6 +94,7 @@ type loginRequest struct {
 }
 
 // Login godoc
+//
 //	@Summary		Log in a user
 //	@Description	Authenticates credentials and returns access and refresh tokens.
 //	@Tags			auth
@@ -131,6 +134,7 @@ func (h *AuthHandler) Login(c *gin.Context) {
 }
 
 // Refresh godoc
+//
 //	@Summary		Refresh an access token
 //	@Description	Exchanges a valid refresh token for a new token pair.
 //	@Tags			auth
@@ -152,6 +156,14 @@ func (h *AuthHandler) Refresh(c *gin.Context) {
 
 	tokens, err := h.authService.RefreshAccessToken(req.RefreshToken)
 	if err != nil {
+		if errors.Is(err, service.ErrTokenRevoke) {
+			// A backend outage is not the client's fault, and the driver error
+			// must not reach the client.
+			c.JSON(http.StatusInternalServerError, gin.H{
+				"error": gin.H{"code": "INTERNAL", "message": "failed to revoke refresh token"},
+			})
+			return
+		}
 		c.JSON(http.StatusUnauthorized, gin.H{
 			"error": gin.H{"code": "UNAUTHORIZED", "message": err.Error()},
 		})
@@ -165,6 +177,7 @@ func (h *AuthHandler) Refresh(c *gin.Context) {
 }
 
 // Logout godoc
+//
 //	@Summary		Log out a user
 //	@Description	Revokes the supplied refresh token.
 //	@Tags			auth
@@ -196,6 +209,7 @@ func (h *AuthHandler) Logout(c *gin.Context) {
 }
 
 // ForgotPassword godoc
+//
 //	@Summary		Request a password reset
 //	@Description	Triggers a password reset flow for the given email. A reset token is returned in development.
 //	@Tags			auth
@@ -231,6 +245,7 @@ func (h *AuthHandler) ForgotPassword(c *gin.Context) {
 }
 
 // ResetPassword godoc
+//
 //	@Summary		Reset a password
 //	@Description	Sets a new password using a reset token obtained from forgot-password.
 //	@Tags			auth
@@ -251,6 +266,14 @@ func (h *AuthHandler) ResetPassword(c *gin.Context) {
 	}
 
 	if err := h.authService.ResetPassword(req.Token, req.NewPassword); err != nil {
+		if errors.Is(err, service.ErrTokenRevoke) {
+			// A backend outage is not the client's fault, and the driver error
+			// must not reach the client.
+			c.JSON(http.StatusInternalServerError, gin.H{
+				"error": gin.H{"code": "INTERNAL", "message": "failed to revoke reset token"},
+			})
+			return
+		}
 		c.JSON(http.StatusBadRequest, gin.H{
 			"error": gin.H{"code": "BAD_REQUEST", "message": err.Error()},
 		})
@@ -261,6 +284,7 @@ func (h *AuthHandler) ResetPassword(c *gin.Context) {
 }
 
 // VerifyEmail godoc
+//
 //	@Summary	Verify the user's email
 //	@Tags		auth
 //	@Accept		json
@@ -293,6 +317,7 @@ func (h *AuthHandler) VerifyEmail(c *gin.Context) {
 }
 
 // VerifyPhone godoc
+//
 //	@Summary	Verify the user's phone number
 //	@Tags		auth
 //	@Accept		json
@@ -325,6 +350,7 @@ func (h *AuthHandler) VerifyPhone(c *gin.Context) {
 }
 
 // SocialLogin godoc
+//
 //	@Summary		Social login (stub)
 //	@Description	Placeholder for OAuth-based social login. Not yet implemented.
 //	@Tags			auth

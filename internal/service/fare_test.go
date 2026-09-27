@@ -11,10 +11,16 @@ type mockGeoRepo struct {
 	countFunc func(lat, lng float64, radiusM float64) (int, error)
 }
 
-func (m *mockGeoRepo) UpsertDriverPosition(driverID string, lat, lng, heading, speed float64, status string) error { return nil }
+func (m *mockGeoRepo) UpsertDriverPosition(driverID string, lat, lng, heading, speed float64, status string) error {
+	return nil
+}
 func (m *mockGeoRepo) UpsertRiderPosition(riderID string, lat, lng float64) error { return nil }
-func (m *mockGeoRepo) FindNearbyDrivers(lat, lng float64, radiusM float64, limit int) ([]model.NearbyDriverResult, error) { return nil, nil }
-func (m *mockGeoRepo) GetDriverLocation(driverID string) (*model.NearbyDriverResult, error) { return nil, nil }
+func (m *mockGeoRepo) FindNearbyDrivers(lat, lng float64, radiusM float64, limit int) ([]model.NearbyDriverResult, error) {
+	return nil, nil
+}
+func (m *mockGeoRepo) GetDriverLocation(driverID string) (*model.NearbyDriverResult, error) {
+	return nil, nil
+}
 func (m *mockGeoRepo) MarkStaleDriversOffline() error { return nil }
 func (m *mockGeoRepo) CountNearbyDrivers(lat, lng float64, radiusM float64) (int, error) {
 	return m.countFunc(lat, lng, radiusM)

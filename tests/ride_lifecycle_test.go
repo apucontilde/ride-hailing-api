@@ -50,7 +50,7 @@ func TestRideShowsInDriverOptions(t *testing.T) {
 
 	// Only drivers with a live /ws connection receive offers (US-6 notes).
 	driverConn := ts.DialWS(t, driverToken)
-	defer driverConn.Close()
+	defer func() { _ = driverConn.Close() }()
 
 	createResp := ts.DoRequest("POST", "/api/v1/rides", riderToken, map[string]float64{
 		"pickup_lat":  pickupLat,
@@ -90,10 +90,12 @@ func TestRideShowsInDriverOptions(t *testing.T) {
 
 	// Decline so the dispatcher's offer loop finishes instead of lingering
 	// (dispatch then marks the ride no_driver_available, per US-6).
-	driverConn.WriteJSON(map[string]interface{}{
+	if err := driverConn.WriteJSON(map[string]interface{}{
 		"type": "ride.decline",
 		"data": map[string]string{"ride_id": rideID},
-	})
+	}); err != nil {
+		t.Fatalf("failed to send ride.decline: %v", err)
+	}
 }
 
 // TestDriverAcceptsRide covers US-6 (search → accepted) and US-D6.
@@ -305,9 +307,9 @@ func setupAcceptedRide(t *testing.T, seed int) (*websocket.Conn, string, string,
 
 	// Live /ws connections: required for the driver to be offered the ride.
 	riderConn := ts.DialWS(t, riderToken)
-	t.Cleanup(func() { riderConn.Close() })
+	t.Cleanup(func() { _ = riderConn.Close() })
 	driverConn := ts.DialWS(t, driverToken)
-	t.Cleanup(func() { driverConn.Close() })
+	t.Cleanup(func() { _ = driverConn.Close() })
 
 	createResp := ts.DoRequest("POST", "/api/v1/rides", riderToken, map[string]float64{
 		"pickup_lat":  pickupLat,
@@ -333,10 +335,12 @@ func setupAcceptedRide(t *testing.T, seed int) (*websocket.Conn, string, string,
 	if offer["type"] != "ride.offer" {
 		t.Fatalf("expected ride.offer, got %v", offer["type"])
 	}
-	driverConn.WriteJSON(map[string]interface{}{
+	if err := driverConn.WriteJSON(map[string]interface{}{
 		"type": "ride.accept",
 		"data": map[string]string{"ride_id": rideID},
-	})
+	}); err != nil {
+		t.Fatalf("failed to send ride.accept: %v", err)
+	}
 
 	msg = testutil.ReadWSMessage(t, riderConn)
 	if msg["type"] != "ride.updated" {

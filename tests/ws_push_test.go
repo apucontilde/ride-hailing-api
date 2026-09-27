@@ -24,7 +24,7 @@ func TestWSRiderReceivesRideCreated(t *testing.T) {
 	token := loginResult.AccessToken
 
 	conn := ts.DialWS(t, token)
-	defer conn.Close()
+	defer func() { _ = conn.Close() }()
 
 	createResp := ts.DoRequest("POST", "/api/v1/rides", token, map[string]float64{
 		"pickup_lat":  40.7128,
@@ -88,7 +88,7 @@ func TestWSRiderReceivesDriverAccept(t *testing.T) {
 	driverToken = driverLoginResult.AccessToken
 
 	conn := ts.DialWS(t, riderToken)
-	defer conn.Close()
+	defer func() { _ = conn.Close() }()
 
 	createResp := ts.DoRequest("POST", "/api/v1/rides", riderToken, map[string]float64{
 		"pickup_lat":  40.7128,
@@ -145,7 +145,7 @@ func TestWSRiderReceivesCancel(t *testing.T) {
 	token := loginResult.AccessToken
 
 	conn := ts.DialWS(t, token)
-	defer conn.Close()
+	defer func() { _ = conn.Close() }()
 
 	createResp := ts.DoRequest("POST", "/api/v1/rides", token, map[string]float64{
 		"pickup_lat":  40.7128,
@@ -242,7 +242,7 @@ func TestWSDriverLocationPush(t *testing.T) {
 	acceptResp.AssertStatus(t, http.StatusOK)
 
 	conn := ts.DialWS(t, riderToken)
-	defer conn.Close()
+	defer func() { _ = conn.Close() }()
 
 	locResp := ts.DoRequest("PUT", "/api/v1/geo/driver/location", driverToken, map[string]float64{
 		"lat":     40.7150,
@@ -307,7 +307,7 @@ func TestWSRiderReceivesStatusTransition(t *testing.T) {
 	driverToken = driverLoginResult.AccessToken
 
 	conn := ts.DialWS(t, riderToken)
-	defer conn.Close()
+	defer func() { _ = conn.Close() }()
 
 	createResp := ts.DoRequest("POST", "/api/v1/rides", riderToken, map[string]float64{
 		"pickup_lat":  40.7128,
@@ -359,5 +359,3 @@ func checkStatus(t *testing.T, msg map[string]interface{}, expectedStatus, expec
 		t.Errorf("expected ride_id %s, got %v", expectedRideID, data["ride_id"])
 	}
 }
-
-

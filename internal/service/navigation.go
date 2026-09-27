@@ -185,7 +185,7 @@ func (s *NavigationService) resolveRegion(lat, lng float64) (*model.RegionRef, m
 	for i := range candidates {
 		ref := candidates[i]
 		attempted[ref.RegionID] = true
-		if snap, ok := src.Snap(lat, lng, ref.Datasource, ref.RegionID); ok {
+		if snap, snapped := src.Snap(lat, lng, ref.Datasource, ref.RegionID); snapped {
 			return &ref, snap, nil
 		}
 	}
@@ -193,7 +193,7 @@ func (s *NavigationService) resolveRegion(lat, lng float64) (*model.RegionRef, m
 	// No candidate covered the pin: give the default region its own attempt.
 	fallback, ok := s.defaultRegion(candidates)
 	if ok && !attempted[fallback.RegionID] {
-		if snap, ok := src.Snap(lat, lng, fallback.Datasource, fallback.RegionID); ok {
+		if snap, snapped := src.Snap(lat, lng, fallback.Datasource, fallback.RegionID); snapped {
 			return &fallback, snap, nil
 		}
 	}
