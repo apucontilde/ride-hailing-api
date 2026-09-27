@@ -67,7 +67,7 @@ unambiguous; Go and cross-package paths are repo-relative. Never cite a bare
 ## Invariants
 - Tests use `mocktail` + `http_mock_adapter`, mirroring `driver_app/test/core/...`; never build UI on a backend STUB — the authoritative skip list is in `[safety]_sos_feedback.md`.
 - Don't remove public providers used by other screens; extend them. `core/auth/auth_provider.dart` is the single owner of session/token state.
-- New shared symbols are imported from the barrel directly — do **not** add shims. `shared/` owns no route table and no `go_router` dependency (`rider_app_plans/[nav]_shared_sidebar_core.md`).
+- New shared symbols are imported from the barrel directly — do **not** add shims. `shared/` owns no route table and no `go_router` dependency.
 - The ride-state machine owns the primary button; widgets never hold paging state.
 - The `/mnt/i/flutter` SDK has CRLF endings and is unusable; the working toolchain is the Linux FVM SDK at ~/fvm/default plus native Melos 8 at ~/.pub-cache/bin/melos (`export PATH=~/fvm/default/bin:$PATH` then `melos run analyze`/`melos run test`). The `make flutter-*` targets shell out to the Windows `melos.bat` and are broken from this WSL tree.
 

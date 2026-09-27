@@ -15,7 +15,7 @@ status: open
 > ⚠️ A real SOS needs the missing push-delivery/alert pipeline; per the rider app
 > rule (SAF-1) an ack-only SOS is acceptable **only** if the UI says so plainly.
 >
-> This plan only depends on the already-landed location feed (old 02) for "last
+> This plan only depends on the already-landed location feed (`lastPositionProvider`) for "last
 > known position"; both prerequisite plans are in `STATUS.md`.
 
 Close the loop on the remaining driver-facing API surface and, importantly,
@@ -69,15 +69,11 @@ everything the API `already` offers" sweep that the landed plans don't cover.
      (`lastPositionProvider` from `core/location/location_service.dart:55`) →
      SnackBar ack.
    - "Send feedback" → dialog → `POST /feedback` (type `app_issue`) → SnackBar.
-   - Entry tile from the settings screen. ⚠️ **Sequencing interlock, not a dependency** —
-     this plan stays independent (its other three work items need nothing else), but the
-     `settings_screen.dart` row is contested: `driver_app_plans/02_[nav]_driver_sidebar_adoption.md`
-     collapses that file into the shared `AppSettingsScreen`. Whichever lands first, the row
-     ends up as an `extraSections` entry — an `AppSettingsSection(title:, rows: [AppSettingsRow(…)])`
-     — never a bespoke `Card > ListTile`:
-     - nav first → add the row to `AppSettingsScreen(extraSections: …)`.
-     - safety first → a plain row is fine *only if* you also note it in that plan's Risks;
-       whoever lands the nav plan ports it into `extraSections`.
+    - Entry tile from the settings screen. The settings screen is now **already** the shared
+      `AppSettingsScreen` (landed, `[nav]`); the driver's `settings_screen.dart` is a
+      thin pass-through to it. Add the row as an `extraSections` entry — an
+      `AppSettingsSection(title:, rows: [AppSettingsRow(…)])` — never a bespoke
+      `Card > ListTile` outside the shared screen.
 3. `driver_app/lib/features/safety/data/safety_repository.dart` (new): the two
    fire-and-forget calls via `ApiClient`; errors only surface as a snackbar (never
    block).

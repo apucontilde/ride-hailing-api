@@ -96,7 +96,7 @@ unless they cross a package, in which case they are repo-relative
 - Keep the re-export-shim structure intact: never move app files into `shared/`, only ADD code there.
   New shared symbols are imported from the barrel directly — do **not** add shims for them.
 - `shared/` holds no route table and no `go_router` dependency: route strings and navigation
-  callbacks are owned by the app (see `[nav]_shared_sidebar_core.md`).
+  callbacks are owned by the app (see the `[nav]` Landed entry above).
 - Tests use `mocktail` + `http_mock_adapter`, mirroring the existing suites.
 - Never build UI around a backend STUB (see the skip list in `[safety]_sos.md`).
 - Don't remove public providers used by other screens; extend them.

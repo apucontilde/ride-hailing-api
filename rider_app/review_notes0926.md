@@ -1,6 +1,7 @@
 Multiple dropoffs feature( or multiple pickups or  multiple stops)
 
 
+rider app still renders straight line before path is computed
 
 login in from an account already logged in gives error (good impl for security, imlpement cancel session and new login)
 
@@ -18,4 +19,12 @@ rider app needs to render driver in map when approaching and ETA
 
 rider must have the option to rate the driver
 
+rider recieves driver information after accept
+
 a second trip does not show for driver 
+
+rider gets notified when driver arrives
+
+on accepted, driver renders the route to pickup (navigation coming soon)
+
+on start, driver renders route to destination (navigation coming soon)
