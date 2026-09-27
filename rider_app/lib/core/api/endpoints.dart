@@ -17,7 +17,10 @@ class ApiEndpoints {
   static String tipRide(String id) => '$prefix/rides/$id/tip';
   static String receipt(String id) => '$prefix/rides/$id/receipt';
   static String driverLocation(String id) => '$prefix/drivers/$id/location';
+  // GET, PUT and DELETE all address the same path, so one constant covers
+  // all three (mirrors the driver's `driverMe`).
   static const String riderMe = '$prefix/rider/me';
+  static const String riderMeStatus = '$prefix/rider/me/status';
   static const String paymentMethods = '$prefix/rider/payment-methods';
   static const String ridesHistory = '$prefix/rides/history';
   static const String navigationRoute = '$prefix/navigation/route';

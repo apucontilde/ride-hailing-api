@@ -45,8 +45,12 @@ class ApiClient {
         final path = error.requestOptions.path;
 
         // AC-3: transparently refresh the access token on 401 and retry once.
-        // Login/refresh endpoints are excluded to avoid refresh loops.
-        final isAuthEndpoint = path.contains('/auth/login') || path.contains('/auth/refresh');
+        // Auth endpoints are excluded to avoid refresh loops. `/auth/logout`
+        // belongs there too: a dead session answers 401, and refreshing it
+        // only burns a round trip to fail and sign out a second time.
+        final isAuthEndpoint = path.contains('/auth/login') ||
+            path.contains('/auth/refresh') ||
+            path.contains('/auth/logout');
         if (statusCode == 401 &&
             !isAuthEndpoint &&
             _refreshing == null &&

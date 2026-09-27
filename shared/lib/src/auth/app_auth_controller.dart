@@ -48,8 +48,8 @@ class AuthState {
 /// Each app subclasses this and supplies the hook points that differ:
 /// the `/me` profile endpoint and its user mapping ([fetchMe]), post-login
 /// side effects ([onAuthenticated]), whether to open the websocket for a user
-/// ([shouldConnectWebSocket]), and what a 403 from `/me` means
-/// ([onForbiddenProfile]).
+/// ([shouldConnectWebSocket]), what a 403 from `/me` means
+/// ([onForbiddenProfile]), and post-sign-out cache cleanup ([onLoggedOut]).
 abstract class AppAuthController extends StateNotifier<AuthState> {
   final AuthStorage authStorage;
   final ApiClient apiClient;
@@ -77,6 +77,11 @@ abstract class AppAuthController extends StateNotifier<AuthState> {
   /// Hook invoked after a successful login/refresh so subclasses can attach
   /// extra state (e.g. seed a driver profile). Default does nothing.
   Future<void> onAuthenticated(AuthUser user) async {}
+
+  /// Hook invoked at the very end of [logout] so subclasses can drop
+  /// app-level caches that are keyed to the session (e.g. a cached profile).
+  /// Default does nothing.
+  Future<void> onLoggedOut() async {}
 
   /// Whether the websocket should be (re)connected for an authenticated user.
   /// Rider connects always; driver only when the user already carries the
@@ -223,6 +228,7 @@ abstract class AppAuthController extends StateNotifier<AuthState> {
     apiClient.setToken(null);
     await authStorage.clearTokens();
     state = const AuthState();
+    await onLoggedOut();
   }
 
   Future<void> setRememberedEmail(String? email) async {

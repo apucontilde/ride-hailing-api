@@ -14,6 +14,7 @@ Goal: update `rider_app/` so it actually drives the current backend API (`051eca
 | `06-auth-and-profile.md` | AC-1 forgot-password + AC-2 real profile + AC-3 401 auto-refresh | none |
 | `07-sos-and-skip.md` | SAF-1 SOS + explicit skip list + backend follow-ups | 01 |
 | `08-fix-ride-creation.md` | **BUG FIX (do first on web):** ride creation end-to-end — cross-platform WS + `idempotency-key` CORS + `no_driver_available` surfacing + error/401 handling | none |
+| `13_real_profile_and_account.md` | ☑ Real rider profile (`GET`/`PUT /rider/me`) + `riderProfileProvider` + real drawer header + `onLoggedOut` cache clearing. **Supersedes the AC-2 section of `06`.** | none |
 
 Expected order: 01 → [02, 03] → [04, 05, 06] → 07, and **08 first when testing on Chrome/web** — without it the app cannot `POST /rides` (CORS) nor receive any WS state, so the create flow is broken on that target. Each plan has its own acceptance criteria; nothing below requires another plan to pass first except as noted.
 
@@ -24,8 +25,8 @@ Expected order: 01 → [02, 03] → [04, 05, 06] → 07, and **08 first when tes
 - **Already wired correctly:** `POST /auth/register|login|logout`, `params GET /rider/me` (auth check), `GET /estimates/price`, `GET /places/autocomplete`, `POST /rides`, WS `connect` (native-only).
 - **Web/CORS gotcha:** `POST /rides` sends `Idempotency-Key` — `internal/router/router.go` `AllowHeaders` must include it or browsers block the request (see `08`).
 - **Declared-but-unused** (`endpoints.dart`): `eta`, `currentRide`, `rideById`, `cancelRide`, `rateRide`, `tipRide`, `receipt`, `driverLocation`, `paymentMethods`, `ridesHistory`, `sos`.
-- **Never declared:** `PUT /geo/rider/location`, `PUT /rider/me`, `PUT /rider/me/status`.
-- **Fake UI today:** ForgotPasswordScreen (fake), HistoryScreen ("No rides yet"), PaymentScreen ("coming soon"), SecurityScreen ("coming soon"), ProfileScreen (hardcoded), `ActiveRideScreen._cancelRide` (1s mock).
+- **Never declared:** `PUT /geo/rider/location`, `PUT /rider/me/status`. (`PUT /rider/me` and `DELETE /rider/me` need no constant — `riderMe` addresses all three verbs on that path.)
+- **Fake UI today:** ForgotPasswordScreen (fake), HistoryScreen ("No rides yet"), PaymentScreen ("coming soon"), SecurityScreen ("coming soon"), `ActiveRideScreen._cancelRide` (1s mock). **No longer fake:** ProfileScreen reads `GET /rider/me` and edits through `PUT /rider/me` (`13_real_profile_and_account.md`); the home drawer header shows the signed-in rider; `AboutScreen` is gone — folded into `SettingsScreen` (app version + server + sign out), mirroring the driver app.
 - **API 204 note:** `PUT /geo/rider/location` returns **204 no body** — response-parsing must not assume JSON.
 
 ## Golden rules

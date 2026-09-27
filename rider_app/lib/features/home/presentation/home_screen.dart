@@ -3,6 +3,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
 import 'package:flutter_map/flutter_map.dart';
 import 'package:latlong2/latlong.dart';
+import '../../../core/auth/auth_provider.dart';
 import '../../../core/utils/location_helper.dart';
 import '../data/home_provider.dart';
 import '../model/place.dart';
@@ -196,35 +197,35 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
   }
 
   Widget _buildDrawer() {
+    final profile = ref.watch(riderProfileProvider);
+    final email = ref.watch(authProvider).user?.email ?? '';
+    // The rider's own name, falling back to their email. Seeded by the auth
+    // bootstrap from `GET /rider/me`; empty only before the first fetch lands.
+    final name = profile?.fullName.isNotEmpty == true
+        ? profile!.fullName
+        : email;
+
     return Drawer(
       child: ListView(
         padding: EdgeInsets.zero,
         children: [
-          InkWell(
+          // `UserAccountsDrawerHeader` only exposes `onDetailsPressed` (on the
+          // name/email), so the whole header gets a tap target too.
+          GestureDetector(
             onTap: () {
               Navigator.of(context).pop();
               context.push('/profile');
             },
-            child: DrawerHeader(
-              decoration: const BoxDecoration(
-                color: Colors.blue,
+            child: UserAccountsDrawerHeader(
+              accountName: Text(name),
+              accountEmail: Text(email),
+              currentAccountPicture: const CircleAvatar(
+                child: Icon(Icons.person),
               ),
-              child: Column(
-                mainAxisAlignment: MainAxisAlignment.center,
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  const Icon(Icons.account_circle, size: 48, color: Colors.white),
-                  const SizedBox(height: 12),
-                  Text(
-                    'Rider',
-                    style: TextStyle(
-                      color: Colors.white,
-                      fontSize: 18,
-                      fontWeight: FontWeight.w600,
-                    ),
-                  ),
-                ],
-              ),
+              onDetailsPressed: () {
+                Navigator.of(context).pop();
+                context.push('/profile');
+              },
             ),
           ),
           _buildDrawerItem(
@@ -260,11 +261,11 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
             },
           ),
           _buildDrawerItem(
-            icon: Icons.info_outline,
-            title: 'About',
+            icon: Icons.settings_outlined,
+            title: 'Settings',
             onTap: () {
               Navigator.of(context).pop();
-              context.push('/about');
+              context.push('/settings');
             },
           ),
         ],

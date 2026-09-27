@@ -14,7 +14,7 @@ import '../../features/home/presentation/profile_screen.dart';
 import '../../features/home/presentation/history_screen.dart';
 import '../../features/home/presentation/payment_screen.dart';
 import '../../features/home/presentation/security_screen.dart';
-import '../../features/home/presentation/about_screen.dart';
+import '../../features/settings/presentation/settings_screen.dart';
 
 final _shellKey = GlobalKey<NavigatorState>();
 
@@ -91,9 +91,10 @@ final routerProvider = Provider<GoRouter>((ref) {
         path: '/security',
         builder: (context, state) => const SecurityScreen(),
       ),
+      // Absorbs the old `/about` stub; see settings_screen.dart.
       GoRoute(
-        path: '/about',
-        builder: (context, state) => const AboutScreen(),
+        path: '/settings',
+        builder: (context, state) => const SettingsScreen(),
       ),
     ],
   );

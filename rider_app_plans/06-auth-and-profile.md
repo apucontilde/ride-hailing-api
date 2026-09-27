@@ -16,6 +16,12 @@ Test: `forgot_password_screen_test.dart` (mock adapter asserts POST body + succe
 
 ## AC-2 — real profile
 
+> **☑ DONE — and superseded by `13_real_profile_and_account.md`. Do not implement this
+> section.** It was written before the rider/driver endpoint shapes were audited and is
+> wrong in two places: `PUT /rider/me` answers `{rider}` only, never `{user, rider}`, and
+> `photo_url` is assigned unconditionally, so an edit form that omits it clears the stored
+> photo. Plan `13` is the one that landed, with the corrected facts.
+
 ```http
 GET /api/v1/rider/me            # → 200 {user:{email,phone,...}, rider:{first_name,last_name,photo_url,status}}
 PUT /api/v1/rider/me            # body {first_name, last_name, photo_url, phone} → 200 {user, rider}

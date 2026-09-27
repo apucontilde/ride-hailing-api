@@ -55,6 +55,13 @@ class AuthNotifier extends AppAuthController {
     }
   }
 
+  @override
+  Future<void> onLoggedOut() async {
+    // Without this the previous driver's profile (including `status: online`)
+    // survives sign-out and is still in the container for the next session.
+    _ref.read(driverProfileProvider.notifier).state = null;
+  }
+
   Future<DriverProfile> _fetchDriver() async {
     final response = await apiClient.dio.get(ApiEndpoints.driverMe);
     final data = response.data as Map<String, dynamic>;

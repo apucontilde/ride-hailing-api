@@ -8,6 +8,7 @@ import 'package:driver_app/core/api/api_client.dart';
 import 'package:driver_app/core/api/api_exceptions.dart';
 import 'package:driver_app/core/api/endpoints.dart';
 import 'package:driver_app/core/network/websocket_service.dart';
+import 'package:driver_app/features/driver/model/driver_profile.dart';
 
 class MockAuthStorage extends Mock implements AuthStorage {}
 class MockApiClient extends Mock implements ApiClient {}
@@ -277,6 +278,24 @@ void main() {
         expect(authNotifier.state.status, AuthStatus.unauthenticated);
         expect(authNotifier.state.user, isNull);
         verify(() => mockStorage.clearTokens()).called(1);
+      });
+
+      test('clears the cached driver profile', () async {
+        // Without the onLoggedOut hook the previous driver's profile survives
+        // sign-out — including `status: online`, which the home screen reads.
+        container.read(driverProfileProvider.notifier).state =
+            const DriverProfile(
+          userId: 'user-1',
+          firstName: 'Jane',
+          status: 'online',
+        );
+        when(() => mockStorage.clearTokens()).thenAnswer((_) async {});
+        when(() => mockStorage.getRefreshToken())
+            .thenAnswer((_) async => null);
+
+        await authNotifier.logout();
+
+        expect(container.read(driverProfileProvider), isNull);
       });
     });
   });

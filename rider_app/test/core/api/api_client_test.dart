@@ -146,6 +146,30 @@ void main() {
       }
     });
 
+    test('401 on the logout endpoint does not loop back into refresh', () async {
+      // A dead session answers 401 on POST /auth/logout. Refreshing it would
+      // burn a round trip only to fail and sign the user out a second time, so
+      // the logout path is excluded from the auto-refresh window.
+      var refreshed = 0;
+      apiClient.unauthorizedHandler = () async {
+        refreshed++;
+        return true;
+      };
+
+      dioAdapter.onPost(
+        '/api/v1/auth/logout',
+        (server) => server.reply(401, {'message': 'Session already gone'}),
+      );
+
+      try {
+        await apiClient.dio.post('/api/v1/auth/logout');
+        fail('Expected exception');
+      } on DioException catch (e) {
+        expect(e.error, isA<UnauthorizedException>());
+      }
+      expect(refreshed, 0);
+    });
+
     test('error interceptor maps 400 to BadRequestException', () async {
       dioAdapter.onGet(
         '/test',
