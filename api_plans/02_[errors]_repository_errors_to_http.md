@@ -1,3 +1,9 @@
+---
+tag: errors
+depends_on: ["01_[errors]_error_taxonomy_in_repositories.md"]
+status: open
+---
+
 # Stage 02 — Repository errors to an HTTP contract
 
 **Goal:** every failure answers in exactly one of two shapes — a **user-actionable** one (4xx with
@@ -11,6 +17,57 @@ outage stops masquerading as "invalid credentials".
 Depends on stage 01 (the taxonomy). Do not start without it — this stage is a lookup table over
 `repository.ErrNotFound` / `ErrConflict`, and with stage 01 absent there is nothing to look up.
 
+## Read this first — part of this stage's goal landed by accident
+
+A golangci-lint cleanup (uncommitted at time of writing) already did the *narrow* half of this
+stage, without the helper and without stage 01. Ten write-failure sites that used to answer
+`201`/`200`/`204` as if the write had succeeded now answer `500`:
+
+| site | operation |
+| --- | --- |
+| `internal/handler/driver.go:41` | `Register` — `UpdateUser` |
+| `internal/handler/driver.go:51` | `Register` — `CreateDriver` |
+| `internal/handler/driver.go:101` | `UpdateProfile` — `UpdateDriver` |
+| `internal/handler/driver.go:129` | `UpdateStatus` — `UpdateDriver` |
+| `internal/handler/rider.go:80` | `UpdateProfile` — `UpdateRider` |
+| `internal/handler/rider.go:88` | `UpdateProfile` — `UpdateUser` (phone) |
+| `internal/handler/rider.go:118` | `UpdateStatus` — `UpdateRider` |
+| `internal/handler/rider.go:136` | `DeleteAccount` — `SoftDeleteUser` |
+| `internal/handler/geo.go:104` | `UpdateDriverLocationBatch` — the per-item `UpsertDriverPosition` loop |
+| `internal/handler/geo.go:132` | `UpdateRiderLocation` — `UpsertRiderPosition` |
+
+Consequences for this stage:
+
+1. **Do not redo them, and do not undo them.** They already use the exact shape this stage
+   decides on — the hand-rolled `gin.H{"error": gin.H{"code": "INTERNAL", …}}` envelope and an
+   operation-specific sentence (`"failed to update driver profile"`). Convert the construction to
+   `fail(...)` and add the cause; that is the whole remaining job for these ten.
+2. **`geo.go:104` is a loop.** One bad item aborts the batch and returns 500 for the whole request;
+   items already written stay written. That is the right call (a silent partial 204 was the bug)
+   but say so in the `@Failure` annotation rather than leaving it implicit.
+3. **The reads in front of those writes are still unchecked** — `driver.go:38,96,126` and
+   `rider.go:75,85,115` do `user, _ := FindByID(…)` and then mutate the result. A missing row
+   nil-derefs into gin's `Recovery` and becomes an unexplained 500 instead of the 404 the endpoint
+   owes. Handle them in this stage (they are `ErrNotFound`, i.e. stage 01's taxonomy) — do not
+   leave them for a later pass.
+4. **The no-cause `INTERNAL` list in Step 2 grew from 8 to 18.** The ten new sites are the second
+   half of that list and the hardest to forget, because each is a one-line `if err != nil` that
+   looks complete.
+5. **The counts in this document predate that edit**: the five uninstrumented files went from 47
+   to 57 error sites, `geo.go` from 10 to 12, `driver.go`/`rider.go` from 3 sites each to 7 each,
+   and the whole handler package from 62 envelope sites to 71. Line numbers cited below are
+   likewise pre-edit; re-derive them from the code rather than trusting them.
+
+The same cleanup also changed two things this stage must respect rather than "fix":
+
+- `internal/service/auth.go` now **fails closed** on revocation (`:111`, `:222`, `:257`). That is
+  correct and stays. It has one bad consequence, recorded as a live regression below: `Refresh`
+  and `ResetPassword` answer `401`/`400` with `err.Error()` in the body, so a database outage
+  during revoke now masquerades as a bad token *and* leaks the wrapped driver text.
+- Audit and idempotency rows are **best-effort** (`internal/service/ride.go:63,112,156`,
+  `internal/service/dispatch.go:166`, `internal/middleware/idempotency.go:60`). They are logged,
+  never returned. Step 2's mechanical rule must skip them — see the exclusion note there.
+
 ## The rule the repo already wrote down
 
 `internal/middleware/error_logger.go:9-16`:
@@ -21,7 +78,7 @@ Depends on stage 01 (the taxonomy). Do not start without it — this stage is a 
 Registered globally at `router.go:61`. `platform.go` is the only file that follows it (17
 `c.Error` sites, each carrying request context — `[places] autocomplete query failed: %w`,
 `[navigation] route failed from=(%.5f,%.5f) …`). The other five files call `c.Error` **zero**
-times across 47 error sites. This stage makes them obey, and does it through one helper so it
+times across 57 error sites. This stage makes them obey, and does it through one helper so it
 cannot drift again.
 
 ## Step 1 — `internal/handler/respond.go` (new file)
@@ -84,7 +141,10 @@ func respondRepo(c *gin.Context, err error, notFound, conflict, internal string)
 > `"internal error"`. (a) won because it is strictly more informative at zero leakage cost — the
 > existing 8 `INTERNAL` sites already use this vocabulary (`"failed to update location"`,
 > `"failed to query drivers"`, `"failed to compute estimate"`), so choosing it *shrinks* this
-> stage's diff instead of growing it.
+> stage's diff instead of growing it. The ten write-failure sites that landed since (see "Read
+> this first") chose the same vocabulary independently (`"failed to update driver profile"`,
+> `"failed to deactivate account"`, …), so the decision now has 18 sites behind it and the stage
+> has even less to decide.
 >
 > (b) remains available and is cheap if it is ever wanted: `ErrorLogger` calls
 > `ensureRequestID(c)` before `c.Next()` (`middleware/error_logger.go:21`), so
@@ -99,14 +159,14 @@ func respondRepo(c *gin.Context, err error, notFound, conflict, internal string)
 
 **Use the existing types.** `ErrorResponse` / `ErrorDetail` at `responses.go:6-14` are currently
 dead. This is their first caller. That is deliberate: the envelope shape
-(`{"error":{"code":…,"message":…}}`) is already what all 62 sites emit by hand, what
+(`{"error":{"code":…,"message":…}}`) is already what all 71 sites emit by hand, what
 `shared/lib/src/api/api_client.dart:92` parses, and what the swagger `@Failure` annotations
 document. Only the construction becomes shared — **the wire format does not change.**
 
 **`AbortWithStatusJSON`, not `JSON`.** The existing sites use `c.JSON(...)` followed by `return`,
 which is correct but easy to get wrong when a handler grows a second exit. `Abort` also stops any
 later middleware from writing. This is a behaviour change for handlers that accidentally relied
-on continuing; there are none today (all 62 sites return immediately), so it is a no-op in
+on continuing; there are none today (all 71 sites return immediately), so it is a no-op in
 practice.
 
 **Codes are reused, never invented.** `NOT_FOUND`, `CONFLICT`, `INTERNAL` are already in the
@@ -127,13 +187,26 @@ The mechanical rule, per site:
   sentences (`"invalid lat"`, `"lat/lng out of range"`); leave their text alone, just attach the
   cause.
 - **Anything that used `err.Error()` in a body** → delete the leak. Three sites today:
-  `ride.go:83`, `ride.go:176`, `platform.go:412`.
+  `ride.go:83`, `ride.go:176`, `platform.go:412` — plus `auth.go:159` (`Refresh`) and
+  `auth.go:261` (`ResetPassword`), which are now *worse* than when this stage was written; see
+  the `auth.go` guidance below.
 - **Anything that returned a generic string with no cause** → keep the string, **add the cause**.
   `geo.go:56` ("failed to update location"), `geo.go:170` ("failed to query drivers"),
   `geo.go:214`/`263` ("failed to query places"), `platform.go:322` ("failed to compute
   estimate"), `platform.go:366` ("failed to calculate route"), `auth.go:190` ("logout failed"),
   `auth.go:221` ("failed to process request"). This is the "deletes the only trace" failure mode
-  in series invariant 5 — each of these needs a `_ = c.Error(err)` in the same edit.
+  in series invariant 5 — each of these needs a `_ = c.Error(err)` in the same edit. The ten
+  landed write-failure sites are the same failure mode with a shorter body: same treatment, via
+  `fail(c, 500, "INTERNAL", "<the sentence it already has>", err)`.
+- **Do NOT touch the best-effort rows.** These are not response sites, they are not in the
+  handler package, and converting them would be a behaviour *regression*:
+  `internal/service/ride.go:63,112,156` and `internal/service/dispatch.go:166`
+  (`CreateEvent` — the authoritative state change has already committed, so failing the request
+  would report a failure for work that succeeded), and
+  `internal/middleware/idempotency.go:47,60` (an unreadable stored response and a failed INSERT).
+  The landed behaviour — log the error, keep the status code the endpoint already returned — is
+  the correct shape. The stage's job here is only to make sure nothing logs it twice and to note
+  it in `RIDER_API_GUIDE.md` (stage 03) as deliberate rather than accidental.
 
 Per-file guidance:
 
@@ -170,6 +243,20 @@ Per-file guidance:
   this change moves no existing assertion.
 - `RefreshAccessToken` (`:148`/`:156`) — same treatment: `"invalid or expired refresh token"`
   stays the 401 sentence; a repository failure becomes a 500.
+  > **This one is now a live regression, not a hypothetical.** `AuthService.RefreshAccessToken`
+  > used to swallow a `RevokeRefreshToken` failure and mint a new pair anyway; it now returns
+  > `fmt.Errorf("failed to revoke refresh token: %w", …)` (`service/auth.go:111`). The handler
+  > (`auth.go:157-161`) answers **401 with `err.Error()` in the body**, so a database outage
+  > during revoke now presents to the client as "unauthorized" *and* leaks the wrapped
+  > `*pq.Error`. That is the exact failure mode this stage exists to delete, newly introduced.
+  > The same shape exists at `ResetPassword`: the service now aborts before changing the
+  > password when `RevokePasswordResetToken` fails (`service/auth.go:257`) — correct — and the
+  > handler answers **400 with `err.Error()`** (`auth.go:259-263`).
+  >
+  > Fix: give the service a second sentinel for "this token is not usable" (or reuse
+  > `ErrInvalidCredentials`' shape as `ErrInvalidRefreshToken` / `ErrInvalidResetToken`) and map
+  > only that to 401/400; a wrapped `*pq.Error` must fall through to `respondRepo`'s 500 branch
+  > with the operation sentence. Both fail-closed service changes stay exactly as they are.
 
 **`ride.go` (14 sites).** `CreateRide` at `:83` dumps the ride/fare/nav error into the body of a
 **rider-facing** request — the most visible remaining leak. `ListRides` at `:176` is the same
@@ -177,16 +264,24 @@ shape on a paged read. Both become `respondRepo`. A genuine nav/native-engine fa
 a 5xx, and per series invariant 2 it must stay one: the rider app draws a straight line on
 **every** error status, so turning a real routing failure into a 4xx would not surface an error —
 it would silently render a road-less line (`home_screen.dart:127`).
+`CreateRide`'s dispatch goroutine now logs a dispatch failure instead of dropping it
+(`ride.go:90`) — that is a `log.Printf`, not a response site, and it stays.
 
-**`geo.go` (10 sites).** `GetNearbyDrivers` (`:170`) and the places handlers return generic
+**`geo.go` (12 sites).** `GetNearbyDrivers` (`:170`) and the places handlers return generic
 sentences with no cause. `GetDriverLocation` already returns a clean 404 (`:190`). The batch
 endpoint's validation errors (`:88-…`) are query-param failures — stage 03 territory, keep the
-shape, attach the cause.
+shape, attach the cause. The two landed 500s (`UpdateDriverLocation` at `:57`, which predates the
+stage, and the batch loop at `:104` plus `UpdateRiderLocation` at `:132`) already have the right
+sentence; add the cause and the `geo.go` half of this stage is done.
 
-**`driver.go` / `rider.go` (3 sites each).** Both have a hand-rolled `404` with a hardcoded
+**`driver.go` / `rider.go` (7 sites each).** Both have a hand-rolled `404` with a hardcoded
 sentence (`:63`, `:45`) that ignores the error entirely. Route through `respondRepo` so the
 sentence is consistent and the cause is attached. The `ShouldBindJSON` sites (`:83`/`:109`,
-`:69`/`:102`) are stage 03.
+`:69`/`:102`) are stage 03. The remaining four sites in each file are the landed write-failure
+500s: keep the status and the sentence, attach the cause, and — the part this stage should not
+skip — **fix the discarded read** immediately in front of each of them (`driver.go:38,96,126`,
+`rider.go:75,85,115`), which today turns a missing row into a panic-recovered 500 rather than
+the 404 the endpoint documents.
 
 **`platform.go` (14 sites).** Already correct. Convert the construction to `fail(...)` for
 consistency, **keeping each `c.Error` context string** — `[places] autocomplete query failed` is
@@ -205,6 +300,10 @@ The misclassifications this fixes, all of which currently make an outage look li
 | `POST /rides` | 500 + leaked internals | 500 + operation sentence, cause logged | stops the leak without turning a routing failure into a client error |
 | `GET /driver/rides` | 500 + leaked internals | same | idem |
 | `GET /rider/me`, `GET /driver/me` | 404 always | 404 only for `ErrNotFound`, else 500 | a 500 here is a signal; a 404 is a dead end |
+| `POST /auth/refresh` | 401 + `err.Error()` for every service error | 401 only for an unusable/expired token, else 500 + operation sentence | **regression**: fail-closed revocation now returns a wrapped `*pq.Error`, which the handler answers as 401 with the driver text in the body |
+| `POST /auth/reset-password` | 400 + `err.Error()` for every service error | 400 only for an unusable/expired token, else 500 + operation sentence | **regression**, same shape: the abort-before-password-change path leaks `*pq.Error` as a 400 |
+| `PUT /driver/me/profile`, `PUT /driver/me/status`, `POST /driver/register` | 200/201 as if the write succeeded | unchanged — already 500, only the cause is missing | landed; this stage just attaches `c.Error` |
+| `PUT /rider/me`, `PUT /rider/me/status`, `DELETE /rider/me`, `PUT /geo/driver/location/batch`, `PUT /geo/rider/location` | 200/204 as if the write succeeded | unchanged — already 500, only the cause is missing | landed; ditto |
 
 **Invariant check — do not "improve" a 5xx into a 4xx.** Series invariant 2: the rider app draws
 a straight line on **every** error status (`home_screen.dart:127` is `error: (_, _)`), so a
@@ -212,7 +311,9 @@ misclassified 4xx on `/navigation/route` or `/estimates/*` does not remove a fal
 produces a *confidently wrong* one, with no error shown at all. The correct answer for an outage
 is 5xx, or the 200 + `is_estimate` that invariant 3 and `service/navigation.go:141` already
 produce via `errors.Is(rerr, repository.ErrDatasourceUnavailable)`. Leave that path alone; it is
-the best-behaved error handling in the codebase and the model for the rest of this stage.
+the best-behaved error handling in the codebase and the model for the rest of this stage. The
+same rule applies outside routing: the two `auth.go` rows above are 4xx-for-an-outage, which is
+the same defect wearing a different endpoint.
 
 ## Tests
 
@@ -239,8 +340,20 @@ Extend the existing handler tests rather than writing new files per endpoint: fo
 five files, one test that the error path returns the right status and that the body carries no
 internals.
 
+**The mocks have to grow before any of that is testable.** Today
+`MockGeoRepo.Upsert{Driver,Rider}Position`, `MockRideRepo.CreateEvent` and all three
+`MockUserRepo.Revoke*` return `nil` unconditionally (`tests/testutil/mock_repos.go:459,571,581,218,254,266`),
+while the real repositories fail them on a driver error
+(`internal/repository/user_repo.go:153,175,180`, `internal/repository/ride_repo.go:139`). So every
+branch the lint fix introduced — the ten 500s, the three fail-closed revocations, the logged
+audit rows — is currently **unreachable from `tests/`**, and no test asserts any of them. Give the
+mocks a failure knob (a `FailNext`-style field per repo, or an injected error) as part of this
+stage, and add one test per landed site: write error → 500, expected sentence, cause in
+`c.Errors`. Stage 01's "mocks move in lockstep" rule is what makes this stage's tests possible;
+it is not optional here.
+
 A **table of every `gin.H{"error"` site and its post-change form** is worth keeping in the diff
-description. 62 sites is reviewable as a table and not as 62 individual judgements.
+description. 71 sites is reviewable as a table and not as 71 individual judgements.
 
 ## Pitfalls
 
@@ -261,6 +374,14 @@ description. 62 sites is reviewable as a table and not as 62 individual judgemen
 6. **A 500 body change is visible to the Flutter apps**, because `apiErrorMessage` now shows the
    server's message. That is the point, but it means the e2e probe's expectations may move. Run
    it.
+7. **Do not "fix" the best-effort rows by failing them.** `CreateEvent` and the idempotency INSERT
+   run *after* the authoritative write has committed; routing their error into a 500 would report
+   a failed request for work that succeeded, and would make a ride un-cancellable because its
+   audit row could not be written. Log-only is the correct shape there, and it is now the
+   documented contract (api_plans/STATUS.md → Invariants).
+8. **Do not revert the fail-closed revocation.** `AuthService` aborting when it cannot revoke
+   (`service/auth.go:111,222,257`) is the fix, not the bug. The bug is the handler's status code
+   and its `err.Error()` body.
 
 ## Verification
 
@@ -273,8 +394,15 @@ go vet ./...
 Static gates (must all come back empty after the change):
 
 ```bash
-# 1. no internals in any response body
-grep -rn '"message": err.Error()' internal/handler/          # -> 0
+# 1a. no service/database internals in a 5xx or 4xx body (stage 02's own gate)
+#     today: 14 sites. The three 5xx ones (ride.go:85, ride.go:185, platform.go:412)
+#     plus auth.go:159 (Refresh) and auth.go:261 (ResetPassword) are the ones the
+#     fail-closed change made urgent; the rest are BAD_REQUEST/CONFLICT bodies
+#     carrying service text and need the same treatment.
+grep -rn '"message": err.Error()' internal/handler/ | grep -v VALIDATION_ERROR   # -> 0
+
+# 1b. the 22 validator leaks are stage 03's gate, not this stage's
+grep -rn '"message": err.Error()' internal/handler/ | grep -c VALIDATION_ERROR   # -> 22
 grep -rn 'Message: *err.Error()' internal/handler/            # -> 0
 
 # 2. no uninstrumented error site left
@@ -289,6 +417,9 @@ grep -rn 'gin.H{"error": gin.H' internal/handler/ | wc -l    # -> 0
 
 # 5. 5xx bodies stayed operation-specific: no site fell back to a shared string
 grep -rn '"INTERNAL", *"internal error"' internal/handler/   # -> 0
+
+# 6. the best-effort rows are still best-effort (regression guard for pitfall 7)
+grep -rn 'CreateEvent' internal/service/                     # -> log-only, no early return
 ```
 
 Live, with the DB up:

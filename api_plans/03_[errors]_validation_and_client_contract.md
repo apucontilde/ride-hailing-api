@@ -1,3 +1,9 @@
+---
+tag: errors
+depends_on: ["02_[errors]_repository_errors_to_http.md"]
+status: open
+---
+
 # Stage 03 — Validation text and the client contract
 
 **Goal:** a malformed request produces a sentence a person can act on ("Pickup latitude is
@@ -181,9 +187,21 @@ down:
    `UNAUTHORIZED` (401) · `NOT_FOUND` (404) · `CONFLICT` (409, e.g. email taken) ·
    `INTERNAL` (500, ours; the rider app's straight-line fallback triggers here and only here).
 4. 4xx means *the caller can fix it by changing something*; 5xx means *we are broken*. A client
-   must not retry a 4xx and must not treat a 5xx as final.
-5. Routing's 200 + `is_estimate: true` is **not** an error (api_plans/05/06). Note it here so
+   must not retry a 4xx and must not treat a 5xx as final. Spell out the corollary, because the
+   code violates it right now: **a backend failure is never a 4xx.**
+   `POST /auth/refresh` and `POST /auth/reset-password` answer 401/400 with the wrapped
+   `*pq.Error` in `message` when revocation fails (`internal/handler/auth.go:157-161`, `:259-263`;
+   service at `internal/service/auth.go:111,257`). Documenting the rule is what makes stage 02's
+   fix of those two sites a contract change rather than a preference.
+5. Routing's 200 + `is_estimate: true` is **not** an error (api_plans/STATUS.md). Note it here so
    nobody "normalises" it into one.
+6. A write that fails answers 5xx, never the endpoint's success code — including the batch
+   location endpoint, where one rejected item fails the whole request
+   (`internal/handler/geo.go:104`).
+7. Audit rows (`ride_events`) and the idempotency store are **best-effort and invisible**: they
+   are written after the authoritative row commits, a failure is logged, and the response is
+   unchanged (`internal/service/ride.go:63,112,156`, `internal/middleware/idempotency.go:47,60`).
+   A client must not treat a missing audit row as a failed operation.
 
 ## Step 4 — turn the probe into a regression check
 
@@ -241,7 +259,7 @@ genuinely good at, and `e2e/scripts/probe-rider.mjs` already fills that role.
    key, which is acceptable but visible. When adding a request struct, add its labels in the same
    edit; note it in the struct's godoc.
 7. **`RIDER_API_GUIDE.md` is also the source for the agents.** Documenting the envelope there
-   means the next agent reading the guide gets the contract instead of rediscovering that 62
+   means the next agent reading the guide gets the contract instead of rediscovering that 71
    sites hand-roll it.
 
 ## Verification

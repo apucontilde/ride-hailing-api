@@ -1,3 +1,9 @@
+---
+tag: elevation
+depends_on: ["02_[elevation]_elevation_column_and_repo_plumb.md"]
+status: open
+---
+
 # Stage 03 — DEM ingest + noise control (real elevation data)
 
 **Goal.** Put actual, trustworthy elevation onto the routing vertices, using **stdlib-only Go**
@@ -9,7 +15,7 @@ Depends on: `02_elevation_column_and_repo_plumb.md` (the `elevation_m` /
 
 ## Context
 
-> ⚠ **Two blockers found by review and fixed here (`REVIEW.md` §1.1, §1.2, §1.6, §3.4,
+> ⚠ **Two blockers found by review and fixed here (`[elevation]_review.md` §1.1, §1.2, §1.6, §3.4,
 > §4.1, §4.3).** The DEM URL in the first draft **404s** — the correct path is
 > `skadi/{N|S}{LL}/{tile}.hgt.gz`, and the payload is **gzipped**. The tile list was also wrong:
 > the bbox needs **six** candidate tiles and the one the first draft included
@@ -19,11 +25,11 @@ Depends on: `02_elevation_column_and_repo_plumb.md` (the `elevation_m` /
 
 **Read (nothing else):**
 
-- `api_plans/elevation/README.md` — the verified-facts table (edge-length distribution is the
+- `api_plans/STATUS.md` — the verified-facts table (edge-length distribution is the
   input to this stage's whole argument) and invariant 4 (degrade to flat, never to garbage).
-- `api_plans/elevation/01_directional_cost_model.md` — the `DeadbandM` / `MaxGrade` semantics.
+- `api_plans/01_[elevation]_directional_cost_model.md` — the `DeadbandM` / `MaxGrade` semantics.
   This stage does not change them; it explains why they are load-bearing.
-- `api_plans/elevation/02_elevation_column_and_repo_plumb.md` — the columns being written, and
+- `api_plans/02_[elevation]_elevation_column_and_repo_plumb.md` — the columns being written, and
   **Part 3a, the NULL-endpoint edge rule** (the tool must not create that state, but the
   backfill's unmatched rows are exactly how it arises).
 - `internal/database/migrations/015_vertex_elevation.up.sql` — the exact column names/types.
@@ -38,7 +44,7 @@ Depends on: `02_elevation_column_and_repo_plumb.md` (the `elevation_m` /
 - `cmd/elevtool/hgt_test.go` *(new)*
 - `scripts/import-elevation.sh` *(new)*
 - `Makefile` — `import-elevation` target + `.PHONY` entry.
-- `api_plans/elevation/03_dem_ingest_and_noise_control.md` — this file, updated with the
+- `api_plans/03_[elevation]_dem_ingest_and_noise_control.md` — this file, updated with the
   runbook and the measured diagnostics.
 
 **Do NOT touch:** `internal/routing/*` (stage 01 owns the noise control), `internal/config/*`
@@ -187,7 +193,7 @@ elevtool -database-url ... -bbox auto -dem-dir data/dem -source skadi [-fetch] [
    message.
 4. **Write with `COPY`, inside a transaction.** `pq.CopyIn("road_network_vertices_pgr", "id",
    "elevation_m", "elevation_source")`. Plan 03 already learned the hard way that
-   `pq.CopyIn` **must** run inside a transaction (`api_plans/03` gate notes) — reuse that.
+   `pq.CopyIn` **must** run inside a transaction (`api_plans/STATUS.md` gate notes) — reuse that.
    Only matched vertices are written, so a void or missing-tile vertex keeps its `NULL` and is
    excluded from the coverage count. `elevation_source` = `skadi:<tile>` **per vertex** — per
    tile is the honest granularity and makes a mixed-vintage import visible in one query.
@@ -213,7 +219,7 @@ Order of operations, and what each step defends against:
 | Real but absurd road grades (a 30 % driveway) | `MaxGrade` clamp | engine, stage 01 |
 | Spatially-correlated bias (systematic tilt across the region) | **Not** defended — see below | — |
 
-> **Measured on real data (`REVIEW.md` §4.1, `skadi` DEM, 183,366 sampled edges, provisional
+> **Measured on real data (`[elevation]_review.md` §4.1, `skadi` DEM, 183,366 sampled edges, provisional
 > defaults):** the deadband at 3 m touches **59.5 %** of edges and the cap touches **5.0 %** —
 > so the deadband does almost all the work, and the class it does *not* touch is the noisy one:
 > **25.1 % of edges carry 3–10 m of |Δz| with a mean of 5.43 m**, which on a 30 m edge is an

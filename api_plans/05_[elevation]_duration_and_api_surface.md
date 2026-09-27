@@ -1,3 +1,9 @@
+---
+tag: elevation
+depends_on: ["04_[elevation]_calibration_and_rollout_gate.md"]
+status: open
+---
+
 # Stage 05 — DEFERRED: duration model, response fields, and pgRouting parity
 
 **Status: OPTIONAL. Do not build until stage 04's gate passes *and* the product question in
@@ -11,8 +17,8 @@ Depends on: `04_calibration_and_rollout_gate.md`.
 
 **Read (nothing else):**
 
-- `api_plans/elevation/README.md` — invariant 1 and invariant 7.
-- `api_plans/elevation/04_calibration_and_rollout_gate.md` — the gate verdict and the open
+- `api_plans/STATUS.md` — invariant 1 and invariant 7.
+- `api_plans/04_[elevation]_calibration_and_rollout_gate.md` — the gate verdict and the open
   product question.
 - `internal/service/navigation.go` — the whole file (60 lines). `totalDistance` is
   `int(nodes[last].AggCost)` (`:41`) and `totalDuration := totalDistance / 11` (`:43`).
@@ -31,7 +37,7 @@ Depends on: `04_calibration_and_rollout_gate.md`.
   "neither app uses `json_serializable`", not "neither app has a parser". That distinction
   matters the moment either app is migrated to code generation with strict key handling, at
   which point this argument must be re-checked.
-- `api_plans/03_swap_engine_to_pgrouting.md` — for the parity work below.
+- `api_plans/STATUS.md` — for the parity work below.
 
 **Needs a DB?** Only for the parity item.
 
@@ -118,7 +124,7 @@ two answers.
 
 **Do not** fix this by writing a weighted `cost` into `road_network_edges_pgr`. That column is
 the meters contract that `total_distance_m`, the fare, and pgRouting's own `agg_cost` all
-depend on (`api_plans/03` is explicit: don't "fix" it).
+depend on (`api_plans/STATUS.md` is explicit: don't "fix" it).
 
 **The clean fix** is an extra, explicitly-named column plus a *separate* cost graph, chosen
 per engine at query time:
@@ -175,5 +181,5 @@ correct action today is the stage-02 warning, which is already written.
   decision on riders. Needs app work; out of scope here.
 - **A `/route/elevation-preview` endpoint** for a driver-side "show me the flat way" control —
   the same capability, cheaper to ship, no change to the default route.
-- **Push Item C into `api_plans/03`'s series** rather than keeping it here, if pgRouting ever
+- **Push Item C into `api_plans/STATUS.md`'s routing series** rather than keeping it here, if pgRouting ever
   returns to being a city-hop engine. It is an engine-parity concern, not an elevation one.

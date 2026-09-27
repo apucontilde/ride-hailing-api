@@ -1,4 +1,10 @@
-# Adversarial review — `api_plans/elevation/` (series v1, pre-implementation)
+---
+tag: elevation
+depends_on: []
+status: open
+---
+
+# Adversarial review — `api_plans/` elevation series (series v1, pre-implementation)
 
 **Reviewed:** 2026-09-25, before any code was written. The whole series is a **proposal**;
 nothing in stages 01–05 has been implemented.
@@ -323,7 +329,7 @@ reasonably read "-region" as available today.
   their context, the natural split is **03a** (parser + pure tile selection, no DB) and
   **03b** (ingest, diagnostics, runbook). The `tiles_test.go` / `hgt_test.go` requirements were
   deliberately written DB-free so that 03a is independently verifiable.
-- **The series README's "Authoritative sources" listed `REVIEW.md` before it existed.** Fixed —
+- **The series README's "Authoritative sources" listed `[elevation]_review.md` before it existed.** Fixed —
   the file now exists, and the README's own pre-falsification banner links into it.
 
 ---

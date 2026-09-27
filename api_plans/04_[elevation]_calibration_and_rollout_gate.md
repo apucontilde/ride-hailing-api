@@ -1,15 +1,21 @@
+---
+tag: elevation
+depends_on: ["03_[elevation]_dem_ingest_and_noise_control.md"]
+status: open
+---
+
 # Stage 04 — Calibration, acceptance suite, and the rollout gate
 
 **Goal.** Turn "elevation-aware routing is implemented" into "elevation-aware routing is
 **measured, falsifiable, and decided**". This stage finds real origin–destination pairs in the
 live data where the feature changes the answer, quantifies the change, measures the cost, and
 records an explicit **go / no-go** for flipping `ROUTING_ELEVATION` — the same discipline
-`api_plans/03` applied to its pgRouting gate.
+`api_plans/STATUS.md` applied to its pgRouting gate.
 
 Depends on: `03_dem_ingest_and_noise_control.md` (real `elevation_m` on the live vertices, and
 the grade histogram from its diagnostics).
 
-> ⚠ **This stage's original gates are pre-falsified and must be re-derived (`REVIEW.md`
+> ⚠ **This stage's original gates are pre-falsified and must be re-derived (`[elevation]_review.md`
 > §3.1–3.7, §4.2, §4.5).** Two independent problems, both measured on the real `skadi` DEM
 > over 2,000 random OD pairs:
 > 1. **The "flat control area" was not flat** — `lat 9.90–10.00, lng −84.12…−84.02` spans
@@ -27,19 +33,19 @@ the grade histogram from its diagnostics).
 
 **Read (nothing else):**
 
-- `api_plans/elevation/README.md` — invariants 1 and 3, and the verified-facts table.
-- `api_plans/elevation/01_directional_cost_model.md` — the Part 2 trade-off this stage must
+- `api_plans/STATUS.md` — invariants 1 and 3, and the verified-facts table.
+- `api_plans/01_[elevation]_directional_cost_model.md` — the Part 2 trade-off this stage must
   now *measure*: as `heuristicScale` (= `1 - DescentW·MaxGrade`) shrinks, A\* prunes less and
   the search gets slower.
-- `api_plans/elevation/02_elevation_column_and_repo_plumb.md` — the config knobs and their
+- `api_plans/02_[elevation]_elevation_column_and_repo_plumb.md` — the config knobs and their
   (deliberately provisional) defaults.
-- `api_plans/elevation/03_dem_ingest_and_noise_control.md` — the MEASURED block (grade
+- `api_plans/03_[elevation]_dem_ingest_and_noise_control.md` — the MEASURED block (grade
   histogram, `short − long` tripwire, known-flat-street `Δz` spread). **Stage 04's `DeadbandM`
   is set from the flat-street spread** (measured by the replacement estimator in *stage 03's*
   Part 4a), not from the code default. The `short − long` delta is *not* a calibration input:
   measured on real data it is 1.00×, so it carries no signal.
   *(Note: this stage has its own Part 4a, the weight sweep. The two are unrelated.)*
-- `api_plans/03_swap_engine_to_pgrouting.md:129-182` — the format of a decision gate that was
+- `api_plans/STATUS.md` — the format of a decision gate that was
   actually executed (the `GATE RESULT` block). Match its honesty: numbers, verdicts, and a
   recorded recommendation — not a plan to decide later.
 - `internal/routing/benchmark_test.go` — `BenchmarkRouteElevated` as landed by stage 01.
@@ -53,7 +59,7 @@ the grade histogram from its diagnostics).
   `Path`, incremented once per node popped. Nothing else in `internal/routing` may change in
   this stage. This is the one sanctioned cross-stage edit; if the suite seems to need more,
   that is a finding, not a licence.
-- `api_plans/elevation/04_calibration_and_rollout_gate.md` — this file, with the results and
+- `api_plans/04_[elevation]_calibration_and_rollout_gate.md` — this file, with the results and
   the gate decision.
 
 **Do NOT touch:** `internal/repository/navigation_repo.go` and `pgrouting_repo.go` (stage 02's
@@ -283,7 +289,7 @@ will fix it — that finding is what would justify the k-hop smoothing in *Decis
 
 ### Part 6 — The rollout gate
 
-Fill in a `GATE RESULT` block in this file in the style of `api_plans/03`'s, and record:
+Fill in a `GATE RESULT` block in this file in the style of `api_plans/STATUS.md`, and record:
 
 | # | Criterion | Bar | Result |
 |---|---|---|---|
@@ -440,6 +446,6 @@ curve** (Part 4a), then the **gate table** (Part 6) with the unroutable-pair cou
 - `internal/config/config.go` — **only if G6 changes a default**: update the calibrated
   `DeadbandM` (and any other weight) with the measured justification in the comment, and record
   the before/after here. A weight change with no measured reason recorded is not allowed.
-- `api_plans/elevation/04_calibration_and_rollout_gate.md` — results + verdict.
-- If the gate passes: `.env.example`, `AGENTS.md`, and `api_plans/elevation/README.md` get the
+- `api_plans/04_[elevation]_calibration_and_rollout_gate.md` — results + verdict.
+- If the gate passes: `.env.example`, `AGENTS.md`, and `api_plans/STATUS.md` get the
   flipped default, in a separate commit from the measurements.

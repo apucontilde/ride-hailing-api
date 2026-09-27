@@ -1,3 +1,9 @@
+---
+tag: elevation
+depends_on: ["01_[elevation]_directional_cost_model.md"]
+status: open
+---
+
 # Stage 02 — Elevation column (migration 015) + repository/config plumbing
 
 **Goal.** Give the routing vertex table a real elevation column, load it into the native graph,
@@ -11,7 +17,7 @@ Depends on: `01_directional_cost_model.md` (`routing.CostWeights`, `routing.Path
 
 ## Context
 
-> ⚠ **Corrected after review (`REVIEW.md` §1.5, §1.6, §2.1, §5.1, §5.3, §5.4).** Line refs
+> ⚠ **Corrected after review (`[elevation]_review.md` §1.5, §1.6, §2.1, §5.1, §5.3, §5.4).** Line refs
 > fixed; the **NULL-endpoint edge rule is now specified** (it was a real spec gap with two
 > plausible bad implementations); the import/elevation interaction is corrected — the import
 > never populates `elevation_m` *at all*, so a re-import yields a zero-coverage graph by
@@ -20,7 +26,7 @@ Depends on: `01_directional_cost_model.md` (`routing.CostWeights`, `routing.Path
 
 **Read (nothing else):**
 
-- `api_plans/elevation/README.md` — invariants 1–7 and the numbering note. Non-negotiable.
+- `api_plans/STATUS.md` — invariants 1–7 and the numbering note. Non-negotiable.
 - `internal/routing/elevation.go` + `internal/routing/routing.go` — as landed by stage 01
   (only `RouteWithWeights`, `Path`, `CostWeights`, `Validate` matter here).
 - `internal/repository/navigation_repo.go` — the whole file (148 lines).
@@ -79,12 +85,12 @@ Three specific hazards make this more than a `SELECT` and a flag:
 - `road_network_vertices_pgr(id BIGINT PK, the_geom GEOMETRY(Point,4326), lat, lng)` —
   `011_create_routing.up.sql:10-15`. **No elevation column.** 152,665 rows live.
 - `road_network_edges_pgr(id, source, target, cost)` — `011:17-22`. `cost` is meters; the plan
-  keeps it that way (series README invariant: never "fix" it into a weighted value, because
+  keeps it that way (STATUS.md invariant: never "fix" it into a weighted value, because
   pgRouting reads the same column).
-- Highest migration on disk: `012_enable_pgrouting.up.sql`; `schema_migrations` shows 001–012
-  applied. `013` is claimed by `api_plans/04`; `014` is reserved by `api_plans/07`'s archived
-  section. **This stage claims `015`.** The resulting 013/014 gap is harmless — the runner
-  sorts what it finds and applies pending versions in order.
+- Highest migration on disk: `013_region_schema.up.sql` (the region series landed); `schema_migrations`
+  shows 001–013 applied. `014` is reserved by `[routing]_intercity.md`'s archived section.
+  **This stage claims `015`.** The resulting 014 gap is harmless — the runner sorts what it
+  finds and applies pending versions in order.
 - `Add column` on this table is metadata-only in PostgreSQL ≥ 11 (no rewrite of 152k rows), so
   the migration is instant and needs no `CONCURRENTLY`, no downtime window.
 - `NativeNavigationRepo.loadNodes` (`navigation_repo.go:85-102`) selects
@@ -113,7 +119,7 @@ Three specific hazards make this more than a `SELECT` and a flag:
 
 ```sql
 -- 015_vertex_elevation.up.sql
--- Elevation for the NATIVE engine's cost model (api_plans/elevation/02).
+-- Elevation for the NATIVE engine's cost model (api_plans/02_[elevation]_elevation_column_and_repo_plumb.md).
 --
 -- - Units: METERS, orthometric height above the EGM96 geoid (what SRTM-class
 --   DEMs publish). A constant datum offset cancels in every per-edge delta
@@ -294,7 +300,7 @@ if cfg != nil && cfg.RoutingElevation.Enabled && cfg.RoutingEngine == "pgrouting
     log.Println("WARNING: ROUTING_ELEVATION=on with ROUTING_ENGINE=pgrouting has NO EFFECT " +
         "(pgr_dijkstra reads road_network_edges_pgr.cost, which is still pure meters). " +
         "Routes will differ from the native engine's. Use ROUTING_ENGINE=native, or see " +
-        "api_plans/elevation/05 for the parity follow-up.")
+        "api_plans/05_[elevation]_duration_and_api_surface.md for the parity follow-up.")
 }
 ```
 
@@ -387,9 +393,9 @@ and the before/after `total_distance_m` from verification 4, so stage 04 has a c
 
 ## Decisions Recorded
 
-- **Migration 015, not 013.** 013 belongs to `api_plans/04`, 014 is reserved by
-  `api_plans/07`'s archive. The gap is harmless; a collision is not recoverable under the
-  append-only rule.
+- **Migration 015, not 013.** 013 is on disk (the landed region series), 014 is reserved by
+  `[routing]_intercity.md`'s archive. The gap is harmless; a collision is not recoverable under
+  the append-only rule.
 - **`DOUBLE PRECISION`, not `REAL`.** `road_vertices.elevation_m` is `REAL` (008:5) and 009
   would have quantised a 1,000 m elevation to ~6 cm — enough to read as grade on short edges.
 - **Coverage gate lives in the repository, decided at graph-build time**, not in the

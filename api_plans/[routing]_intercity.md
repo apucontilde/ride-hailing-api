@@ -1,3 +1,9 @@
+---
+tag: routing
+depends_on: ["routing region resolution (STATUS.md)"]
+status: deferred
+---
+
 # Plan: Intercity future stub — DEFERRED, do not build now
 
 Intercity routing (a path BETWEEN cities) is deliberately deferred and will be revisited
@@ -7,24 +13,25 @@ must not interfere with, or block, the region abstraction / within-city routing 
 
 ## Status: DEFERRED
 
-- Trips are always WITHIN one region (plan 06). There is **no** cross-city path.
+- Trips are always WITHIN one region (STATUS.md routing, multi-city). There is **no** cross-city path.
 - **Not built, by design:** ports/overlay schema, `component` on pgr edges, any
   `IntercityRouter` interface, ancestor-chain escalation in the resolver, overlay detour
   penalties, the pgRouting↔native hybrid switch.
 - **Prep that already exists and cannot interfere** (kept because it is schema-grade and free):
-  - `routing_regions.level` (`country/state/city`) + `parent_region` FK (plan 04) — a city
+  - `routing_regions.level` (`country/state/city`) + `parent_region` FK (STATUS.md routing,
+    region schema) — a city
     knows its parent. **No active code path consumes the hierarchy**; resolution returns one
-    winning region (plan 05).
-  - Plan 05's single-best-region fallback and the no-coverage → HTTP 200 estimate — these
+    winning region (STATUS.md routing, region resolution).
+  - The resolver's single-best-region fallback and the no-coverage → HTTP 200 estimate — these
     are the intercity future's graceful-degradation boundary, and they are already tested.
-  - Plan 03's pgRouting measurements (per-call cost scales with region edges; contraction
+  - The pgRouting benchmark measurements (per-call cost scales with region edges; contraction
     blocked on pgRouting 4.0.1) — the future intercity plan's engine budget lives there.
 
 ## What the active series deliberately does NOT do
 
-- Plan 05's resolver returns the **single winning region** — no parent-chain escalation.
-- Plan 06's native graphs are per-region and never chained; no leg tracing exists.
-No behavior in 04–06 depends on this stub being implemented in any way.
+- The resolver returns the **single winning region** — no parent-chain escalation.
+- The per-region native graphs are per-region and never chained; no leg tracing exists.
+No behavior in the landed region series depends on this stub being implemented in any way.
 
 ## Deferred design register (one-liners so the idea survives)
 
@@ -34,10 +41,10 @@ No behavior in 04–06 depends on this stub being implemented in any way.
   multi-source port selection (deterministic — no pair enumeration).
 - **Fallback posture**: single-best-region then estimate; assert-then-fallback on leg seams
   (never fabricate a mid-route straight line).
-- **Engine cost model**: pgRouting fixed ~O(region edges) per call (plan 03 numbers);
+- **Engine cost model**: pgRouting fixed ~O(region edges) per call (STATUS.md routing numbers);
   contracted-core routing needs a validation gate (component count == 1, neighborhoods in,
   micro-paths out) or a pgRouting upgrade (no `pgr_contract_expand` in 4.0.1).
-- **Cross-datasource legs** (plan 06 separate-DB case): the three-phase trace needs BOTH
+- **Cross-datasource legs** (separate-datasource case): the three-phase trace needs BOTH
   layers' port rows in one query — decide a "gateway leg" only if a real intercity route
   ever spans separate datasources.
 

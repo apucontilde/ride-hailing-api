@@ -1,3 +1,9 @@
+---
+tag: errors
+depends_on: []
+status: open
+---
+
 # Stage 01 — Error taxonomy in `internal/repository`
 
 **Goal:** the repository layer stops inventing prose and starts returning *classifiable* errors,
@@ -158,7 +164,7 @@ else took it" or "no such ride", and the caller must not be able to tell. It has
 
 - `datasource.go:28,215,227,240,295,302` — the datasource family, already sentinel-driven.
 - `navigation_repo.go:257,335` — "road network not imported: run scripts/…". This is an
-  **operator** message and belongs in the log, not in a 500 body. api_plans/05/06 guarantee the
+  **operator** message and belongs in the log, not in a 500 body. api_plans/STATUS.md guarantees the
   endpoint degrades to a 200 estimate rather than erroring, so these strings should never reach
   a client. Do not reclassify them; do not delete them.
 - `navigation_repo.go:503` (`route references unknown node %d`) and `pgrouting_repo.go:180`
@@ -255,6 +261,18 @@ public sentence for a duplicate email has to be decided deliberately in stage 02
 from a test double. Decide whether to echo the address at all (it is the user's own input, so it
 is not a leak, but it does make the message long).
 
+**The mock must also be able to *fail* on demand — and today it cannot, which is now load-bearing.**
+A golangci-lint cleanup has already added error handling that no test can reach:
+`MockGeoRepo.Upsert{Driver,Rider}Position` (`mock_repos.go:571,581`),
+`MockRideRepo.CreateEvent` (`:459`) and all three `MockUserRepo.Revoke*` (`:218,254,266`) return
+`nil` unconditionally, while the real repositories return a driver error
+(`internal/repository/user_repo.go:153,175,180`, `internal/repository/ride_repo.go:139`). So the
+ten new 500s, the three fail-closed revocations in `service/auth.go:111,222,257`, and the logged
+audit rows are **all dead branches under `tests/`** today. The sentinels this stage introduces fix
+the *shape* of a mock error; they do not create one. Add a failure knob to the mocks in this stage
+too (a per-repo injected error or a `FailNext` style field), otherwise stage 02 inherits ten
+unreachable branches and calls them covered.
+
 ## Step 4 — tests
 
 New `internal/repository/errors_test.go`, table-driven, next to the code (repo convention):
@@ -292,7 +310,7 @@ so the lockstep in step 3 is enforced by the suite rather than by reviewer disci
    assume.)
 5. **The routing sentinel already exists.** Do not add a second "no route" sentinel or route
    `routing.ErrNoRoute` through `wrapDB`; `service/navigation.go:141` depends on it by identity
-   and the api_plans/05/06 estimate contract depends on that.
+   and the api_plans/STATUS.md estimate contract depends on that.
 6. **Do not reclassify the "road network not imported" strings.** They are operator hints whose
    visibility is a deployment concern; the endpoint contract (200 estimate) already prevents them
    from reaching a client.

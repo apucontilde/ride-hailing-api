@@ -1,3 +1,9 @@
+---
+tag: elevation
+depends_on: []
+status: open
+---
+
 # Stage 01 — Directional elevation cost model in `internal/routing`
 
 **Goal.** Teach the native A\* engine to minimize `meters + w·ascent` instead of `meters`,
@@ -65,7 +71,7 @@ direction of travel.
 
 ### Part 1 — The cost model (`internal/routing/elevation.go`, new)
 
-> ⚠ **Corrected after review (`REVIEW.md` §2.1, §2.2, §2.3, §3.3, §3.5, §4.1–4.3).**
+> ⚠ **Corrected after review (`[elevation]_review.md` §2.1, §2.2, §2.3, §3.3, §3.5, §4.1–4.3).**
 > `Validate` now rejects **negative** weights; the cost identity below is stated with the
 > deadband and clamp; `MaxGrade`'s claim is narrowed to what it actually does; and the default
 > weight set is explicitly **provisional — pre-falsified measurements say it is too weak to
@@ -124,7 +130,7 @@ Pareto front and no state beyond the node.
 > **The shipped model is NOT that identity.** With the deadband and the clamp active, the real
 > per-edge cost is `meters·(1 + w·g')` where `g' = clamp(deadband(Δz)/meters, ±MaxGrade)`, and
 > `g'·meters ≠ Δz`. Measured on the live SJ network with `DeadbandM = 3`, **the deadband zeroes
-> 59.5 % of edges and the clamp binds on 5.0 %** (`REVIEW.md` §4.1) — so the identity is false
+> 59.5 % of edges and the clamp binds on 5.0 %** (`[elevation]_review.md` §4.1) — so the identity is false
 > for roughly two-thirds of edges and the cost is *not* proportional to total ascent. Everything
 > downstream (stage 04's ascent-ratio thresholds in particular) must reason about
 > `AscentM_flat / AscentM_elev` as a **proxy**, not as the optimized quantity. `Path.AscentM` is
@@ -339,7 +345,7 @@ the doc comment so nobody later assumes `AscentM` is what the search minimized (
   `|z(last) - z(first)| + 2·(wiggle)`, and are raw (a 1 m delta with `DeadbandM = 3` still
   reports 1 m of ascent while costing 0).
 - `TestWeightsRejectNegative` — **one sub-case per rejected field** (added after
-  `REVIEW.md` §2.1 found this a live correctness bug): `AscentW < 0`, `DescentW < 0`,
+  `[elevation]_review.md` §2.1 found this a live correctness bug): `AscentW < 0`, `DescentW < 0`,
   `MaxGrade < 0`, and one `NaN` / `+Inf` per field. Each must produce an error from `Validate`
   **and** flat-routing behaviour from `RouteWithWeights`. The `DescentW < 0` case is the
   important one: it makes `heuristicScale() > 1`, which would let A\* return a suboptimal path
@@ -368,7 +374,7 @@ the doc comment so nobody later assumes `AscentM` is what the search minimized (
    allocated and written on *every* improving relaxation, including the zero-weight path, and
    `Path` replaces the bare `[]int64` return — so the zero-weight route is
    *behaviourally* identical (same path, same meters, per the existing tests) but not
-   *performanceally* identical. `REVIEW.md` §4.4 records the current baseline on this machine
+   *performanceally* identical. `[elevation]_review.md` §4.4 records the current baseline on this machine
    as `Route/hop 1.50 µs`, `Route/corner 326 ms`, `NearestNodeGrid 169 ns`, `NewGraph 150 ms`;
    plan 01's recorded numbers (`~1.4 µs` / `~267 ms`) were taken on different hardware and are
    **not** a valid comparison baseline. Measure before-and-after on the same machine, and if
