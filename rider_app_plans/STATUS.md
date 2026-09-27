@@ -1,7 +1,7 @@
 # rider_app — Status
 
 > Flutter rider app (`rider_app/` + the shared `shared/` package). Owner: `rider-planner`.
-> Verify: `make flutter-analyze` + `make flutter-test`.
+> Verify: `melos run analyze` + `melos run test` (Linux FVM SDK — see Verification).
 
 ## Landed
 
@@ -38,11 +38,36 @@
 - Real rider profile / account — `rider_app/lib/core/auth/auth_provider.dart:20,38-99`
   (`riderProfileProvider`, `refreshProfile`, `onLoggedOut` cache clearing);
   `features/profile/providers/profile_notifier.dart`; `features/home/presentation/profile_screen.dart`;
-  drawer header `features/home/presentation/home_screen.dart:199-230`; shared `AuthUser` fields
+  drawer header `features/home/presentation/home_screen.dart:96`; shared `AuthUser` fields
   `shared/lib/src/models/auth_user.dart:12-14,62` and the logout hook
   `shared/lib/src/auth/app_auth_controller.dart:84,231`. Tests present.
 
+### [nav]
+- Shared sidebar / settings / profile core + theme tokens — the first UI in `shared/` (17 files under
+  `shared/lib/src/{navigation,settings,profile}/`): `AppSidebar` + `closeSidebar`
+  `shared/lib/src/navigation/app_sidebar.dart:22,102`, `AppNavDestination`
+  `shared/lib/src/navigation/app_nav_destination.dart:17`, `AppNavSection`
+  `shared/lib/src/navigation/app_nav_section.dart:7`, `AppSidebarFooter`
+  `shared/lib/src/navigation/app_sidebar_footer.dart:14`, `AppNavLinkCard`
+  `shared/lib/src/navigation/app_nav_link_card.dart:22`, `AppSettingsScreen`
+  `shared/lib/src/settings/app_settings_screen.dart:20`, `AppProfileHeader`
+  `shared/lib/src/profile/app_profile_header.dart:25`, `AppProfileForm`
+  `shared/lib/src/profile/app_profile_form.dart:30`; barrel exports
+  `shared/lib/ride_hailing_shared.dart`; spacing/radius/type tokens
+  `shared/lib/src/theme/app_theme.dart`. Widget suites `shared/test/{navigation,settings,profile}/`.
+- Rider adoption: drawer → `AppSidebar` `features/home/presentation/home_screen.dart:96`; app-owned list
+  `features/navigation/rider_nav_items.dart:20`; shared toggle (double inset removed)
+  `features/home/presentation/home_screen.dart:215`; settings → `AppSettingsScreen`
+  `features/settings/presentation/settings_screen.dart:25`; profile →
+  `AppProfileHeader`/`AppProfileForm`/`AppNavLinkCard`
+  `features/home/presentation/profile_screen.dart:81,99,110`. Tests `test/features/navigation/`.
+
 ## Known bugs & issues
+
+Source citations in this file are **relative to the app root** (`features/.../screen.dart:N`)
+unless they cross a package, in which case they are repo-relative
+(`rider_app/lib/...`, `shared/lib/...`, `internal/...`). Never cite a bare
+`home_screen.dart` — both `rider_app` and `driver_app` have one.
 
 | # | Issue | Evidence | Severity | Owner |
 | --- | --- | --- | --- | --- |
@@ -54,6 +79,7 @@
 | 6 | `nearbyDriversProvider` declared but never consumed | `features/home/data/home_provider.dart:12` (sole reference) | low | [geo] |
 | 7 | No code calls `PUT /geo/rider/location` — rider location never streamed | `features/home/presentation/active_ride_screen.dart:29-42` (only local-position listener, no API call) | medium | [geo] |
 | 8 | `current_ride_provider` poll only self-stops on `no_driver_available`; cancel/complete stop relies on screen navigation | `features/home/data/current_ride_provider.dart:102` | low | [tracking] |
+| 9 | Sidebar exists only on `/home`, so switching sections costs a back-press; `AppSidebar.selectedRoute` is wired but no section-level sidebar consumes it (needs a `ShellRoute`/app-wide `drawer:` + a back-hamburger decision) | `features/home/presentation/home_screen.dart:96` | low | [nav] |
 
 ## Open plans
 
@@ -68,6 +94,9 @@
 ## Invariants
 
 - Keep the re-export-shim structure intact: never move app files into `shared/`, only ADD code there.
+  New shared symbols are imported from the barrel directly — do **not** add shims for them.
+- `shared/` holds no route table and no `go_router` dependency: route strings and navigation
+  callbacks are owned by the app (see `[nav]_shared_sidebar_core.md`).
 - Tests use `mocktail` + `http_mock_adapter`, mirroring the existing suites.
 - Never build UI around a backend STUB (see the skip list in `[safety]_sos.md`).
 - Don't remove public providers used by other screens; extend them.
@@ -77,8 +106,11 @@
 ## Verification
 
 ```bash
-make flutter-analyze
-make flutter-test
+export PATH=~/fvm/default/bin:$PATH   # Linux FVM SDK (the /mnt/i/flutter SDK has CRLF endings)
+melos run analyze
+melos run test
 ```
 
-(Flutter/Dart CLI is broken in the WSL harness — run the Windows-interop Make targets above.)
+(`make flutter-analyze`/`make flutter-test` are broken from this WSL tree — they shell out to the
+Windows `melos.bat` through `cmd.exe`, which cannot `cd` into the UNC path. Native Melos 8 is at
+`~/.pub-cache/bin/melos`.)

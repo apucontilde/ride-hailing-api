@@ -5,9 +5,9 @@ Operating rules for agents working in this repo. Read before changing anything.
 ## Repo layout
 
 - **Go API** at repo root: `cmd/server` (entry), `internal/{config,middleware,handler,repository,service,router,routing,websocket,model,database}`.
-- **Flutter monorepo (Melos 8 pub workspace)** at repo root: `pubspec.yaml` (workspace) + three packages — `rider_app/` (Riverpod + flutter_map 7 + Dio + go_router), `driver_app/` (same stack), and `shared/` (`ride_hailing_shared`) holding code shared by both apps (AuthUser/Ride models, ApiClient, AuthStorage, AppAuthController, WebSocketService, AppTheme, Validators, LocationHelper).
-- **Core-file re-export convention**: both apps keep their historical import paths (`lib/core/api/api_client.dart`, `lib/core/auth/auth_provider.dart`, `lib/features/auth/model/auth_user.dart`, ...) as thin shims. The shims either re-export from `shared/` (`export 'package:ride_hailing_shared/ride_hailing_shared.dart' show <Symbol>;`) or define the app-local provider that wires shared classes to `ApiConfig.baseUrl` (`apiClientProvider`, `webSocketServiceProvider`, `authProvider`, `driverProfileProvider`). Do **not** move files out of the apps; keep the shims.
-- **Plans**: three domains — `api_plans/`, `rider_app_plans/`, `driver_app_plans/`. Each has a single **`STATUS.md`** (the current-state file: landed capabilities with `file:line` evidence, known bugs, open-plan index, invariants, verification). **Read the domain's `STATUS.md` before implementing or debugging a behavior.** Landed plans are condensed into it and their files deleted; git history is the archive. Open plan files are tagged, with a number prefix **only** for a dependency chain: `[<tag>]_<slug>.md` (independent) or `<NN>_[<tag>]_<slug>.md` (stage `NN` of a chain) — e.g. `api_plans/01_[errors]_error_taxonomy_in_repositories.md`. Full convention: `.opencode/skills/plan-management/SKILL.md`. Domains are owned by the `api-planner` / `rider-planner` / `driver-planner` agents; every landing claim is adversarially verified by `antagonistic-reviewer` before it is recorded.
+- **Flutter monorepo (Melos 8 pub workspace)** at repo root: `pubspec.yaml` (workspace) + three packages — `rider_app/` (Riverpod + flutter_map 7 + Dio + go_router), `driver_app/` (same stack), and `shared/` (`ride_hailing_shared`) holding code shared by both apps (AuthUser/Ride models, ApiClient, AuthStorage, AppAuthController, WebSocketService, AppTheme, Validators, LocationHelper, and the shared UI core introduced by the `[nav]` chain — `AppSidebar`/`AppSidebarHeader`/`AppSidebarFooter`/`AppSidebarToggleButton`, `AppNavItem`/`AppNavDestination`/`AppNavSection`/`AppNavLinkCard`, `AppSettingsScreen`/`AppSettingsSection`/`AppSettingsRow`, `AppProfileHeader`/`AppProfileForm`, `performAppSignOut`).
+- **Core-file re-export convention**: both apps keep their historical import paths (`lib/core/api/api_client.dart`, `lib/core/auth/auth_provider.dart`, `lib/features/auth/model/auth_user.dart`, ...) as thin shims. The shims either re-export from `shared/` (`export 'package:ride_hailing_shared/ride_hailing_shared.dart' show <Symbol>;`) or define the app-local provider that wires shared classes to `ApiConfig.baseUrl` (`apiClientProvider`, `webSocketServiceProvider`, `authProvider`, `driverProfileProvider`). Do **not** move files out of the apps; keep the shims. Shims are for **historical** paths only — a *new* shared symbol is imported straight from `package:ride_hailing_shared/ride_hailing_shared.dart` (the barrel is unfiltered, so no *app-side* shim or export edit is needed — but the barrel itself still grows one `export` line per new shared file, see `rider_app_plans/[nav]_shared_sidebar_core.md`); do not mint a shim for a new symbol.
+- **Plans**: three domains — `api_plans/`, `rider_app_plans/`, `driver_app_plans/`. Each has a single **`STATUS.md`** (the current-state file: landed capabilities with `file:line` evidence, known bugs, open-plan index, invariants, verification). **Read the domain's `STATUS.md` before implementing or debugging a behavior.** Landed plans are condensed into it and their files deleted; git history is the archive. Open plan files are tagged, with a number prefix **only** for a stage whose `depends_on` names another *open* plan: `[<tag>]_<slug>.md` (independent — this includes a chain's **head**, whose `depends_on` is empty, and a plan that depends only on already-landed capability) or `<NN>_[<tag>]_<slug>.md` (stage `NN` of a chain). So a chain reads head → `01_` → `02_` → …, e.g. the errors chain is `api_plans/[errors]_error_taxonomy_in_repositories.md` (head) → `api_plans/01_[errors]_repository_errors_to_http.md` → `api_plans/02_[errors]_validation_and_client_contract.md`. Full convention: `.opencode/skills/plan-management/SKILL.md`. Domains are owned by the `api-planner` / `rider-planner` / `driver-planner` agents; every landing claim is adversarially verified by `antagonistic-reviewer` before it is recorded.
 - **Docs**: `RIDER_API_GUIDE.md`, `RIDER_APP_API_PLAN.md`, `DRIVER_APP_PLAN.md`, `USER_STORIES.md`, `data-population-plan.md`.
 
 ## Quick commands
@@ -23,9 +23,9 @@ Operating rules for agents working in this repo. Read before changing anything.
 | Re-seed places | `make seed` |
 | Import road network | `make import-osm` (or `make import-osm-force`) |
 | Download/extract SJ OSM | `make download-osm` |
-| Flutter bootstrap (workspace) | `make flutter-bootstrap` |
-| Analyze all Dart packages | `make flutter-analyze` |
-| Test all Dart packages | `make flutter-test` |
+| Flutter bootstrap (workspace) | `melos bootstrap` (see fact 1) |
+| Analyze all Dart packages | `melos run analyze` (see fact 1) |
+| Test all Dart packages | `melos run test` (see fact 1) |
 
 Server config is env-driven (`internal/config/config.go`): `SERVER_PORT` (default 8080),
 `DB_HOST/DB_PORT/DB_USER/DB_PASSWORD/DB_NAME` (defaults `ridehail`/`ridehail_pass`/`ridehailing`
@@ -41,16 +41,27 @@ Containers: `ride-hailing-db` (postgis/postgis:16-3.4-alpine), `ride-hailing-red
 
 ## Environment facts agents MUST know
 
-1. **Flutter/Dart CLI is BROKEN in this WSL harness.** Every `flutter`/`dart` command fails with
-   `/mnt/i/flutter/bin/internal/shared.sh: line 5: $'\r': command not found` (CRLF line endings
-   in the SDK shell scripts). Do **not** run `flutter analyze`, `dart format`, `flutter test`,
-   etc., and do **not** try to fix the SDK. For Dart changes rely on careful manual review,
-   matching existing style, and cross-checking against the plan docs.
-1b. **Run Flutter/Melos through the Windows interop.** Flutter lives at `I:\flutter`; Dart at
-   `I:\flutter\bin\dart.bat`. Working equivalents: `export FLUTTER_ROOT='I:\flutter'; cmd.exe /c "I:\flutter\bin\flutter.bat <args>" | tr -d '\r'`, or `make flutter-analyze` / `make flutter-test`
-   (these run Melos 8, activated globally at `C:\Users\Ricardo\AppData\Local\Pub\Cache\bin\melos.bat`,
-   which invokes `flutter test`/`flutter analyze` per package under `cmd.exe`). Merge the tree by
-   keep `pubspec.lock` at repo root only; per-app lockfiles are managed by Melos bootstrap.
+1. **Flutter/Dart CLI is BROKEN in this WSL harness — but a working Linux toolchain exists.** Any
+   `flutter`/`dart` invocation that resolves to the Windows-mounted SDK fails with
+   `/mnt/i/flutter/bin/internal/shared.sh: line 5: $'\r': command not found` (CRLF endings); do
+   **not** use or try to fix that SDK. The working toolchain is the **Linux FVM SDK** at
+   `~/fvm/default` (Flutter 3.47.3 / Dart 3.13.3) **plus native Melos 8** at
+   `~/.pub-cache/bin/melos`. Verify Dart changes with:
+   `export PATH=~/fvm/default/bin:$PATH` then `melos bootstrap` / `melos run analyze` /
+   `melos run test` (a single command analyses/tests all three workspace packages). (This SDK is
+   newer than `I:\flutter`, so it enables one stricter lint, `unawaited_return_in_try_block` —
+   a false positive it raised on `rider_app/lib/core/auth/auth_provider.dart` was fixed, so the
+   tree is clean under it.)
+1b. **The `make` Flutter targets (`make flutter-analyze` / `make flutter-test`) are broken from
+   this WSL tree** — they shell out to the Windows `melos.bat` through `cmd.exe`, and `cmd.exe`
+   cannot `cd` into the UNC path (`\\wsl.localhost\...`), so Melos runs in `C:\Windows` and
+   reports "not within a Melos workspace". Use native `melos run ...` (fact 1) instead. The
+   Windows SDK (`I:\flutter`) is only needed to launch a GUI target — `flutter run -d windows`
+   / `-d chrome`, or `flutter devices` — and for that you must map the UNC path to a drive
+   letter first:
+   `cmd.exe /c "pushd \\wsl.localhost\Ubuntu-22.04\home\ricardo\repos\ride-hailing-api && <cmd>"`.
+   Flutter lives at `I:\flutter`; Dart at `I:\flutter\bin\dart.bat`. Keep `pubspec.lock` at repo
+   root only; per-app lockfiles are managed by Melos bootstrap.
 2. **`golangci-lint` IS available** — v2.14.0 at `~/go/bin/golangci-lint`, so `make lint`
    works. (It is on PATH only because `~/.bashrc` sets `GOPATH=$(go env GOPATH)`; if you ever
    see "command not found", re-source `~/.bashrc` or call the binary by full path.)
@@ -143,7 +154,10 @@ Same-DB regions (`datasource` NULL) behave exactly as stage 05.
   (propagate it, or log it when the write is best-effort/audit-only) instead.
 - Dart: keep the re-export-shim structure in both apps intact (never move app files into
   `shared/`; only ever ADD code there). Shared package owns the pure core (models, client,
-  storage, auth controller, ws service, theme, validators). Shared classes are parametrized
+  storage, auth controller, ws service, theme, validators) and, since the `[nav]` chain, the
+  shared sidebar/settings/profile UI. `shared/test/` now has widget suites (not just pure
+  functions) and `shared/pubspec.yaml` declares `uses-material-design: true` (it used to claim
+  `false` while rendering Icons). Shared classes are parametrized
   (`ApiClient(baseUrl:)`, `WebSocketService(baseUrl:, wsPath:)`, `AppAuthController` takes
   endpoints + subclass hooks) so each app wires its own `ApiConfig`. `melos run analyze` and
   `melos run test` must stay green (via the Makefile targets above).

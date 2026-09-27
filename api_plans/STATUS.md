@@ -79,7 +79,7 @@ of these sites. The stages' remaining work is unchanged except where noted below
 | 1 | `ROUTING_ENGINE` default stays `native` (performance gate not met) | `internal/config/config.go:145`, `internal/repository/pgrouting_repo.go:112` | medium | [routing] |
 | 2 | Estimate fallback dead by default (`ROUTING_SNAP_RADIUS_M=0` = always snap) | `internal/config/config.go:101`, `internal/service/navigation.go:280` | medium | [routing] |
 | 3 | Rider app draws a straight line on **every** error status, so a misclassified 4xx silently renders a wrong route. API must answer an outage as 5xx or 200+`is_estimate`, never 4xx | `rider_app/lib/features/home/presentation/home_screen.dart:128` | high | [errors] |
-| 4 | Migration numbering: max on disk is 013; elevation reserves 015 (absent); the retired `elevation/README.md` claimed max 012 | `internal/database/migrations/013_region_schema.up.sql`; `02_[elevation]_elevation_column_and_repo_plumb.md:90` | low | [elevation] |
+| 4 | Migration numbering: max on disk is 013; elevation reserves 015 (absent); the retired `elevation/README.md` claimed max 012 | `internal/database/migrations/013_region_schema.up.sql`; `01_[elevation]_elevation_column_and_repo_plumb.md:90` | low | [elevation] |
 | 5 | The new fail-closed revocation errors are surfaced as **4xx with the raw wrapped error in the body**: `Refresh` answers 401 + `err.Error()`, `ResetPassword` answers 400 + `err.Error()`. A DB outage during revoke now masquerades as "bad token" *and* leaks driver text — violates bug 3 / the never-4xx invariant. Regression introduced by the fail-closed change | `internal/handler/auth.go:157-161`, `:259-263`; service at `internal/service/auth.go:111,257` | high | [errors] |
 | 6 | The 10 new write-failure 500s drop the cause entirely — no `c.Error`, no `log`, so `ErrorLogger` has nothing to print and the 500 is undiagnosable from the server side | `internal/handler/driver.go:41`, `internal/handler/rider.go:80`, `internal/handler/geo.go:104`; logger at `internal/router/router.go:61` | medium | [errors] |
 | 7 | The `FindByID`/`FindDriverByID`/`FindRiderByID` **reads** immediately before each guarded write still discard their error, so a missing row nil-derefs and is swallowed by gin's `Recovery` (`gin.Default()`, `internal/router/router.go:48`) as an unexplained 500 — never the 404 the endpoint owes | `internal/handler/driver.go:38,96,126`; `internal/handler/rider.go:75,85,115` | medium | [errors] |
@@ -90,15 +90,15 @@ of these sites. The stages' remaining work is unchanged except where noted below
 
 | File | Tag | Depends on | What remains |
 | --- | --- | --- | --- |
-| `01_[elevation]_directional_cost_model.md` | elevation | — | engine minimizes `meters + w·ascent`; pure Go, no schema |
-| `02_[elevation]_elevation_column_and_repo_plumb.md` | elevation | `01_[elevation]_…` | `elevation_m` column (migration 015) + repo/config plumbing, default off |
-| `03_[elevation]_dem_ingest_and_noise_control.md` | elevation | `02_[elevation]_…` | DEM ingest (`cmd/elevtool`) + noise-control rationale |
-| `04_[elevation]_calibration_and_rollout_gate.md` | elevation | `03_[elevation]_…` | sweep-first calibration, acceptance suite, go/no-go gate |
-| `05_[elevation]_duration_and_api_surface.md` | elevation | `04_[elevation]_…` | deferred: grade-aware duration + additive response fields + pgr parity |
-| `01_[errors]_error_taxonomy_in_repositories.md` | errors | — | `ErrNotFound`/`ErrConflict` + `wrapDB`; mocks in lockstep |
-| `02_[errors]_repository_errors_to_http.md` | errors | `01_[errors]_…` | one `respond`/`respondRepo`, `c.Error` instrumentation, stop `err.Error()` leaks; must **not** re-do the landed 500s, and must fix bug 5 |
-| `03_[errors]_validation_and_client_contract.md` | errors | `02_[errors]_…` | clean validator text from the 22 `ShouldBindJSON` sites; document envelope |
-| `[elevation]_review.md` | elevation | — | pre-implementation review of stages 01–05; keep dispositioned as the stages move |
+| `[elevation]_directional_cost_model.md` | elevation | — | engine minimizes `meters + w·ascent`; pure Go, no schema |
+| `01_[elevation]_elevation_column_and_repo_plumb.md` | elevation | `[elevation]_directional_cost_model.md` (unnumbered head) | `elevation_m` column (migration 015) + repo/config plumbing, default off |
+| `02_[elevation]_dem_ingest_and_noise_control.md` | elevation | `01_[elevation]_…` | DEM ingest (`cmd/elevtool`) + noise-control rationale |
+| `03_[elevation]_calibration_and_rollout_gate.md` | elevation | `02_[elevation]_…` | sweep-first calibration, acceptance suite, go/no-go gate |
+| `04_[elevation]_duration_and_api_surface.md` | elevation | `03_[elevation]_…` | deferred: grade-aware duration + additive response fields + pgr parity |
+| `[errors]_error_taxonomy_in_repositories.md` | errors | — | `ErrNotFound`/`ErrConflict` + `wrapDB`; mocks in lockstep |
+| `01_[errors]_repository_errors_to_http.md` | errors | `[errors]_error_taxonomy_in_repositories.md` (unnumbered head) | one `respond`/`respondRepo`, `c.Error` instrumentation, stop `err.Error()` leaks; must **not** re-do the landed 500s, and must fix bug 5 |
+| `02_[errors]_validation_and_client_contract.md` | errors | `01_[errors]_…` | clean validator text from the 22 `ShouldBindJSON` sites; document envelope |
+| `[elevation]_review.md` | elevation | — | pre-implementation review of the whole elevation chain (the unnumbered head plus stages 01–04); keep dispositioned as the stages move. ⚠️ Its prose still uses the **pre-renumbering** stage numbers — see the mapping note at the top of that file |
 | `[routing]_intercity.md` | routing | routing region resolution (STATUS.md) | **deferred**; holds the archived overlay-ports/planner design |
 
 ## Decisions already taken — [errors] (do not re-litigate)

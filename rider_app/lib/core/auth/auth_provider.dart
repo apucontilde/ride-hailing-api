@@ -71,15 +71,17 @@ class AuthNotifier extends AppAuthController {
   /// Returns the fresh profile, or `null` when the read failed — the caller
   /// keeps whatever it already had.
   Future<RiderProfile?> refreshProfile() async {
+    RiderProfile? profile;
     try {
       final response = await apiClient.dio.get(ApiEndpoints.riderMe);
       final data = response.data as Map<String, dynamic>;
       state = state.copyWith(user: _parseProfile(data));
-      return _ref.read(riderProfileProvider);
+      profile = _ref.read(riderProfileProvider);
     } catch (_) {
       // Non-fatal — keep current session state.
       return null;
     }
+    return profile;
   }
 
   /// `GET /rider/me` answers `{user, rider}`. The name and photo live on the

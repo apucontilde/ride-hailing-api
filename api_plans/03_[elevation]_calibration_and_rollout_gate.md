@@ -1,10 +1,18 @@
 ---
 tag: elevation
-depends_on: ["03_[elevation]_dem_ingest_and_noise_control.md"]
+depends_on: ["02_[elevation]_dem_ingest_and_noise_control.md"]
 status: open
 ---
 
-# Stage 04 — Calibration, acceptance suite, and the rollout gate
+# Stage 03 — Calibration, acceptance suite, and the rollout gate
+
+> **Numbering note.** This chain was renumbered so that its head is unnumbered — a `NN_`
+> prefix is earned only by a `depends_on` that names an *open* plan
+> (`.opencode/skills/plan-management/SKILL.md`). **Filenames and `depends_on` are
+> authoritative.** Body prose below may still say "stage N" in the
+> pre-renumbering scheme, where old stage 01 = the unnumbered head `[elevation]_directional_cost_model.md`, old 02 = `01_[elevation]_elevation_column_and_repo_plumb.md`, old 03 = `02_[elevation]_dem_ingest_and_noise_control.md`, old 04 = `03_[elevation]_calibration_and_rollout_gate.md`, old 05 = `04_[elevation]_duration_and_api_surface.md`.
+> Translating that prose is a tracked follow-up; do not renumber it piecemeal.
+
 
 **Goal.** Turn "elevation-aware routing is implemented" into "elevation-aware routing is
 **measured, falsifiable, and decided**". This stage finds real origin–destination pairs in the
@@ -34,12 +42,12 @@ the grade histogram from its diagnostics).
 **Read (nothing else):**
 
 - `api_plans/STATUS.md` — invariants 1 and 3, and the verified-facts table.
-- `api_plans/01_[elevation]_directional_cost_model.md` — the Part 2 trade-off this stage must
+- `api_plans/[elevation]_directional_cost_model.md` — the Part 2 trade-off this stage must
   now *measure*: as `heuristicScale` (= `1 - DescentW·MaxGrade`) shrinks, A\* prunes less and
   the search gets slower.
-- `api_plans/02_[elevation]_elevation_column_and_repo_plumb.md` — the config knobs and their
+- `api_plans/01_[elevation]_elevation_column_and_repo_plumb.md` — the config knobs and their
   (deliberately provisional) defaults.
-- `api_plans/03_[elevation]_dem_ingest_and_noise_control.md` — the MEASURED block (grade
+- `api_plans/02_[elevation]_dem_ingest_and_noise_control.md` — the MEASURED block (grade
   histogram, `short − long` tripwire, known-flat-street `Δz` spread). **Stage 04's `DeadbandM`
   is set from the flat-street spread** (measured by the replacement estimator in *stage 03's*
   Part 4a), not from the code default. The `short − long` delta is *not* a calibration input:
@@ -59,7 +67,7 @@ the grade histogram from its diagnostics).
   `Path`, incremented once per node popped. Nothing else in `internal/routing` may change in
   this stage. This is the one sanctioned cross-stage edit; if the suite seems to need more,
   that is a finding, not a licence.
-- `api_plans/04_[elevation]_calibration_and_rollout_gate.md` — this file, with the results and
+- `api_plans/03_[elevation]_calibration_and_rollout_gate.md` — this file, with the results and
   the gate decision.
 
 **Do NOT touch:** `internal/repository/navigation_repo.go` and `pgrouting_repo.go` (stage 02's
@@ -446,6 +454,6 @@ curve** (Part 4a), then the **gate table** (Part 6) with the unroutable-pair cou
 - `internal/config/config.go` — **only if G6 changes a default**: update the calibrated
   `DeadbandM` (and any other weight) with the measured justification in the comment, and record
   the before/after here. A weight change with no measured reason recorded is not allowed.
-- `api_plans/04_[elevation]_calibration_and_rollout_gate.md` — results + verdict.
+- `api_plans/03_[elevation]_calibration_and_rollout_gate.md` — results + verdict.
 - If the gate passes: `.env.example`, `AGENTS.md`, and `api_plans/STATUS.md` get the
   flipped default, in a separate commit from the measurements.

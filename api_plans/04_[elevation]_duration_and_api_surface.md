@@ -1,10 +1,18 @@
 ---
 tag: elevation
-depends_on: ["04_[elevation]_calibration_and_rollout_gate.md"]
+depends_on: ["03_[elevation]_calibration_and_rollout_gate.md"]
 status: open
 ---
 
-# Stage 05 — DEFERRED: duration model, response fields, and pgRouting parity
+# Stage 04 — DEFERRED: duration model, response fields, and pgRouting parity
+
+> **Numbering note.** This chain was renumbered so that its head is unnumbered — a `NN_`
+> prefix is earned only by a `depends_on` that names an *open* plan
+> (`.opencode/skills/plan-management/SKILL.md`). **Filenames and `depends_on` are
+> authoritative.** Body prose below may still say "stage N" in the
+> pre-renumbering scheme, where old stage 01 = the unnumbered head `[elevation]_directional_cost_model.md`, old 02 = `01_[elevation]_elevation_column_and_repo_plumb.md`, old 03 = `02_[elevation]_dem_ingest_and_noise_control.md`, old 04 = `03_[elevation]_calibration_and_rollout_gate.md`, old 05 = `04_[elevation]_duration_and_api_surface.md`.
+> Translating that prose is a tracked follow-up; do not renumber it piecemeal.
+
 
 **Status: OPTIONAL. Do not build until stage 04's gate passes *and* the product question in
 stage 04 is answered.** Nothing in the route-picking objective needs this file. It is collected
@@ -18,7 +26,7 @@ Depends on: `04_calibration_and_rollout_gate.md`.
 **Read (nothing else):**
 
 - `api_plans/STATUS.md` — invariant 1 and invariant 7.
-- `api_plans/04_[elevation]_calibration_and_rollout_gate.md` — the gate verdict and the open
+- `api_plans/03_[elevation]_calibration_and_rollout_gate.md` — the gate verdict and the open
   product question.
 - `internal/service/navigation.go` — the whole file (60 lines). `totalDistance` is
   `int(nodes[last].AggCost)` (`:41`) and `totalDuration := totalDistance / 11` (`:43`).

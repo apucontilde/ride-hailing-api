@@ -4,7 +4,15 @@ depends_on: []
 status: open
 ---
 
-# Stage 01 — Directional elevation cost model in `internal/routing`
+# Elevation chain head (unnumbered) — Directional elevation cost model in `internal/routing`
+
+> **Numbering note.** This chain was renumbered so that its head is unnumbered — a `NN_`
+> prefix is earned only by a `depends_on` that names an *open* plan
+> (`.opencode/skills/plan-management/SKILL.md`). **Filenames and `depends_on` are
+> authoritative.** Body prose below may still say "stage N" in the
+> pre-renumbering scheme, where old stage 01 = the unnumbered head `[elevation]_directional_cost_model.md`, old 02 = `01_[elevation]_elevation_column_and_repo_plumb.md`, old 03 = `02_[elevation]_dem_ingest_and_noise_control.md`, old 04 = `03_[elevation]_calibration_and_rollout_gate.md`, old 05 = `04_[elevation]_duration_and_api_surface.md`.
+> Translating that prose is a tracked follow-up; do not renumber it piecemeal.
+
 
 **Goal.** Teach the native A\* engine to minimize `meters + w·ascent` instead of `meters`,
 with synthetic elevations supplied by hand. No schema, no repository, no config, no DEM — pure

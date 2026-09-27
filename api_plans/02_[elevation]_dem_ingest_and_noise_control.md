@@ -1,16 +1,24 @@
 ---
 tag: elevation
-depends_on: ["02_[elevation]_elevation_column_and_repo_plumb.md"]
+depends_on: ["01_[elevation]_elevation_column_and_repo_plumb.md"]
 status: open
 ---
 
-# Stage 03 — DEM ingest + noise control (real elevation data)
+# Stage 02 — DEM ingest + noise control (real elevation data)
+
+> **Numbering note.** This chain was renumbered so that its head is unnumbered — a `NN_`
+> prefix is earned only by a `depends_on` that names an *open* plan
+> (`.opencode/skills/plan-management/SKILL.md`). **Filenames and `depends_on` are
+> authoritative.** Body prose below may still say "stage N" in the
+> pre-renumbering scheme, where old stage 01 = the unnumbered head `[elevation]_directional_cost_model.md`, old 02 = `01_[elevation]_elevation_column_and_repo_plumb.md`, old 03 = `02_[elevation]_dem_ingest_and_noise_control.md`, old 04 = `03_[elevation]_calibration_and_rollout_gate.md`, old 05 = `04_[elevation]_duration_and_api_surface.md`.
+> Translating that prose is a tracked follow-up; do not renumber it piecemeal.
+
 
 **Goal.** Put actual, trustworthy elevation onto the routing vertices, using **stdlib-only Go**
 and an open DEM, and — just as importantly — justify why the noise control lives in the cost
 model rather than in a smoothing pass.
 
-Depends on: `02_elevation_column_and_repo_plumb.md` (the `elevation_m` /
+Depends on: `01_[elevation]_elevation_column_and_repo_plumb.md` (the `elevation_m` /
 `elevation_source` columns and the coverage gate).
 
 ## Context
@@ -27,9 +35,9 @@ Depends on: `02_elevation_column_and_repo_plumb.md` (the `elevation_m` /
 
 - `api_plans/STATUS.md` — the verified-facts table (edge-length distribution is the
   input to this stage's whole argument) and invariant 4 (degrade to flat, never to garbage).
-- `api_plans/01_[elevation]_directional_cost_model.md` — the `DeadbandM` / `MaxGrade` semantics.
+- `api_plans/[elevation]_directional_cost_model.md` — the `DeadbandM` / `MaxGrade` semantics.
   This stage does not change them; it explains why they are load-bearing.
-- `api_plans/02_[elevation]_elevation_column_and_repo_plumb.md` — the columns being written, and
+- `api_plans/01_[elevation]_elevation_column_and_repo_plumb.md` — the columns being written, and
   **Part 3a, the NULL-endpoint edge rule** (the tool must not create that state, but the
   backfill's unmatched rows are exactly how it arises).
 - `internal/database/migrations/015_vertex_elevation.up.sql` — the exact column names/types.
@@ -44,7 +52,7 @@ Depends on: `02_elevation_column_and_repo_plumb.md` (the `elevation_m` /
 - `cmd/elevtool/hgt_test.go` *(new)*
 - `scripts/import-elevation.sh` *(new)*
 - `Makefile` — `import-elevation` target + `.PHONY` entry.
-- `api_plans/03_[elevation]_dem_ingest_and_noise_control.md` — this file, updated with the
+- `api_plans/02_[elevation]_dem_ingest_and_noise_control.md` — this file, updated with the
   runbook and the measured diagnostics.
 
 **Do NOT touch:** `internal/routing/*` (stage 01 owns the noise control), `internal/config/*`

@@ -3,8 +3,9 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
 import 'package:flutter_map/flutter_map.dart';
 import 'package:latlong2/latlong.dart';
+import 'package:ride_hailing_shared/ride_hailing_shared.dart';
 import '../../../core/auth/auth_provider.dart';
-import '../../../core/utils/location_helper.dart';
+import '../../navigation/rider_nav_items.dart';
 import '../data/home_provider.dart';
 import '../model/place.dart';
 import 'ride_estimate_sheet.dart';
@@ -18,7 +19,6 @@ class HomeScreen extends ConsumerStatefulWidget {
 
 class _HomeScreenState extends ConsumerState<HomeScreen> {
   final MapController _mapController = MapController();
-  final GlobalKey<ScaffoldState> _scaffoldKey = GlobalKey<ScaffoldState>();
   LatLng? _currentPosition;
   Place? _pickupLocation;
   Place? _destination;
@@ -68,6 +68,12 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
 
   @override
   Widget build(BuildContext context) {
+    final profile = ref.watch(riderProfileProvider);
+    final email = ref.watch(authProvider).user?.email ?? '';
+    // The rider's own name, falling back to their email. Seeded by the auth
+    // bootstrap from `GET /rider/me`; empty only before the first fetch lands.
+    final name = profile?.fullName.isNotEmpty == true ? profile!.fullName : email;
+
     final pickup = _pickupLocation != null
         ? LatLng(_pickupLocation!.lat, _pickupLocation!.lng)
         : _currentPosition;
@@ -82,13 +88,36 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
     final routeAsync = routeArgs != null ? ref.watch(navigationRouteProvider(routeArgs)) : null;
 
     return Scaffold(
-      key: _scaffoldKey,
       floatingActionButton: FloatingActionButton(
         onPressed: _initLocation,
         backgroundColor: Colors.white,
         child: const Icon(Icons.my_location, color: Colors.blue),
       ),
-      drawer: _buildDrawer(),
+      drawer: AppSidebar(
+        items: buildRiderNavItems(),
+        // The rider shows no status dot and no rating, so `statusLabel` and
+        // `ratingLabel` stay null and the header renders the email line.
+        // `photoUrl` is passed raw: `RiderProfile` already normalises `'' → null`
+        // and the shared header treats null and blank identically anyway.
+        account: AppSidebarAccount(
+          displayName: name,
+          secondaryLine: email.isEmpty ? null : email,
+          photoUrl: profile?.photoUrl,
+        ),
+        onAccountPressed: () {
+          closeSidebar(context);
+          context.push('/profile');
+        },
+        onItemSelected: (item) {
+          closeSidebar(context);
+          context.push(item.route);
+        },
+        footer: AppSidebarFooter(
+          message: 'You will need to log in again to request rides.',
+          onSignOut: () => ref.read(authProvider.notifier).logout(),
+          onSignOutCompleted: () => context.go('/login'),
+        ),
+      ),
       body: Stack(
         children: [
           FlutterMap(
@@ -176,13 +205,14 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
                 ),
             ],
           ),
+          // The inset is owned by the `SafeArea` alone: the old `Positioned`
+          // added `MediaQuery.padding.top` *and* the `SafeArea` added it again,
+          // so the button sat one status-bar height too low.
           Positioned(
-            top: MediaQuery.of(context).padding.top + 8,
+            top: 8,
             left: 16,
             child: SafeArea(
-              child: IconButton(
-                icon: const Icon(Icons.menu),
-                onPressed: () => _scaffoldKey.currentState?.openDrawer(),
+              child: AppSidebarToggleButton(
                 style: IconButton.styleFrom(
                   backgroundColor: Colors.white,
                   elevation: 2,
@@ -193,95 +223,6 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
           _buildBottomSheet(routeAsync),
         ],
       ),
-    );
-  }
-
-  Widget _buildDrawer() {
-    final profile = ref.watch(riderProfileProvider);
-    final email = ref.watch(authProvider).user?.email ?? '';
-    // The rider's own name, falling back to their email. Seeded by the auth
-    // bootstrap from `GET /rider/me`; empty only before the first fetch lands.
-    final name = profile?.fullName.isNotEmpty == true
-        ? profile!.fullName
-        : email;
-
-    return Drawer(
-      child: ListView(
-        padding: EdgeInsets.zero,
-        children: [
-          // `UserAccountsDrawerHeader` only exposes `onDetailsPressed` (on the
-          // name/email), so the whole header gets a tap target too.
-          GestureDetector(
-            onTap: () {
-              Navigator.of(context).pop();
-              context.push('/profile');
-            },
-            child: UserAccountsDrawerHeader(
-              accountName: Text(name),
-              accountEmail: Text(email),
-              currentAccountPicture: const CircleAvatar(
-                child: Icon(Icons.person),
-              ),
-              onDetailsPressed: () {
-                Navigator.of(context).pop();
-                context.push('/profile');
-              },
-            ),
-          ),
-          _buildDrawerItem(
-            icon: Icons.person_outline,
-            title: 'Profile',
-            onTap: () {
-              Navigator.of(context).pop();
-              context.push('/profile');
-            },
-          ),
-          _buildDrawerItem(
-            icon: Icons.history,
-            title: 'History',
-            onTap: () {
-              Navigator.of(context).pop();
-              context.push('/history');
-            },
-          ),
-          _buildDrawerItem(
-            icon: Icons.payment,
-            title: 'Payment',
-            onTap: () {
-              Navigator.of(context).pop();
-              context.push('/payment');
-            },
-          ),
-          _buildDrawerItem(
-            icon: Icons.shield_outlined,
-            title: 'Security',
-            onTap: () {
-              Navigator.of(context).pop();
-              context.push('/security');
-            },
-          ),
-          _buildDrawerItem(
-            icon: Icons.settings_outlined,
-            title: 'Settings',
-            onTap: () {
-              Navigator.of(context).pop();
-              context.push('/settings');
-            },
-          ),
-        ],
-      ),
-    );
-  }
-
-  Widget _buildDrawerItem({
-    required IconData icon,
-    required String title,
-    required VoidCallback onTap,
-  }) {
-    return ListTile(
-      leading: Icon(icon, size: 22),
-      title: Text(title),
-      onTap: onTap,
     );
   }
 

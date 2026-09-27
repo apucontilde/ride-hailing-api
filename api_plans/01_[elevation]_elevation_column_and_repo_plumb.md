@@ -1,10 +1,18 @@
 ---
 tag: elevation
-depends_on: ["01_[elevation]_directional_cost_model.md"]
+depends_on: ["[elevation]_directional_cost_model.md"]
 status: open
 ---
 
-# Stage 02 — Elevation column (migration 015) + repository/config plumbing
+# Stage 01 — Elevation column (migration 015) + repository/config plumbing
+
+> **Numbering note.** This chain was renumbered so that its head is unnumbered — a `NN_`
+> prefix is earned only by a `depends_on` that names an *open* plan
+> (`.opencode/skills/plan-management/SKILL.md`). **Filenames and `depends_on` are
+> authoritative.** Body prose below may still say "stage N" in the
+> pre-renumbering scheme, where old stage 01 = the unnumbered head `[elevation]_directional_cost_model.md`, old 02 = `01_[elevation]_elevation_column_and_repo_plumb.md`, old 03 = `02_[elevation]_dem_ingest_and_noise_control.md`, old 04 = `03_[elevation]_calibration_and_rollout_gate.md`, old 05 = `04_[elevation]_duration_and_api_surface.md`.
+> Translating that prose is a tracked follow-up; do not renumber it piecemeal.
+
 
 **Goal.** Give the routing vertex table a real elevation column, load it into the native graph,
 and expose the whole feature behind configuration that **defaults to off**. When this stage
@@ -119,7 +127,7 @@ Three specific hazards make this more than a `SELECT` and a flag:
 
 ```sql
 -- 015_vertex_elevation.up.sql
--- Elevation for the NATIVE engine's cost model (api_plans/02_[elevation]_elevation_column_and_repo_plumb.md).
+-- Elevation for the NATIVE engine's cost model (api_plans/01_[elevation]_elevation_column_and_repo_plumb.md).
 --
 -- - Units: METERS, orthometric height above the EGM96 geoid (what SRTM-class
 --   DEMs publish). A constant datum offset cancels in every per-edge delta
@@ -300,7 +308,7 @@ if cfg != nil && cfg.RoutingElevation.Enabled && cfg.RoutingEngine == "pgrouting
     log.Println("WARNING: ROUTING_ELEVATION=on with ROUTING_ENGINE=pgrouting has NO EFFECT " +
         "(pgr_dijkstra reads road_network_edges_pgr.cost, which is still pure meters). " +
         "Routes will differ from the native engine's. Use ROUTING_ENGINE=native, or see " +
-        "api_plans/05_[elevation]_duration_and_api_surface.md for the parity follow-up.")
+        "api_plans/04_[elevation]_duration_and_api_surface.md for the parity follow-up.")
 }
 ```
 

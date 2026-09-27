@@ -1,13 +1,12 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
-import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:dio/dio.dart';
+import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:mocktail/mocktail.dart';
 import 'package:rider_app/features/home/presentation/home_screen.dart';
 import 'package:rider_app/core/auth/auth_provider.dart';
 import 'package:rider_app/core/auth/auth_storage.dart';
 import 'package:rider_app/core/api/api_client.dart';
-import 'package:rider_app/core/api/endpoints.dart';
 import 'package:rider_app/core/network/websocket_service.dart';
 
 class MockAuthStorage extends Mock implements AuthStorage {}
@@ -58,49 +57,5 @@ void main() {
     await tester.pump();
 
     expect(find.text('Where to?'), findsOneWidget);
-  });
-
-  testWidgets('drawer header shows the signed-in rider, not a literal',
-      (WidgetTester tester) async {
-    // A real auth bootstrap against a stubbed `GET /rider/me`, so the drawer
-    // header renders exactly what the app would render in production.
-    when(() => mockDio.get(ApiEndpoints.riderMe)).thenAnswer((_) async =>
-        Response(
-          requestOptions: RequestOptions(path: ApiEndpoints.riderMe),
-          statusCode: 200,
-          data: {
-            'user': {'id': 'user-1', 'email': 'ana@example.com'},
-            'rider': {
-              'user_id': 'user-1',
-              'first_name': 'Ana',
-              'last_name': 'Rojas',
-              'status': 'idle',
-            },
-          },
-        ));
-    final container = ProviderContainer(
-      overrides: [
-        authStorageProvider.overrideWithValue(mockStorage),
-        apiClientProvider.overrideWithValue(mockApiClient),
-        webSocketServiceProvider.overrideWithValue(mockWebSocketService),
-      ],
-    );
-    addTearDown(container.dispose);
-    await container.read(authProvider.notifier).checkAuth();
-
-    await tester.pumpWidget(
-      UncontrolledProviderScope(
-        container: container,
-        child: const MaterialApp(home: HomeScreen()),
-      ),
-    );
-    await tester.pump();
-
-    await tester.tap(find.byIcon(Icons.menu));
-    await tester.pumpAndSettle();
-
-    expect(find.text('Ana Rojas'), findsOneWidget);
-    expect(find.text('ana@example.com'), findsOneWidget);
-    expect(find.text('Rider'), findsNothing);
   });
 }

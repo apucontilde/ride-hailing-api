@@ -4,7 +4,15 @@ depends_on: []
 status: open
 ---
 
-# Stage 01 — Error taxonomy in `internal/repository`
+# Errors chain head (unnumbered) — Error taxonomy in `internal/repository`
+
+> **Numbering note.** This chain was renumbered so that its head is unnumbered — a `NN_`
+> prefix is earned only by a `depends_on` that names an *open* plan
+> (`.opencode/skills/plan-management/SKILL.md`). **Filenames and `depends_on` are
+> authoritative.** Body prose below may still say "stage N" in the
+> pre-renumbering scheme, where old stage 01 = the unnumbered head `[errors]_error_taxonomy_in_repositories.md`, old 02 = `01_[errors]_repository_errors_to_http.md`, old 03 = `02_[errors]_validation_and_client_contract.md`.
+> Translating that prose is a tracked follow-up; do not renumber it piecemeal.
+
 
 **Goal:** the repository layer stops inventing prose and starts returning *classifiable* errors,
 so that stage 02 can decide 404-vs-500 without string matching, and so that a missing row is

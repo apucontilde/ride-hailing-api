@@ -1,9 +1,12 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
+import 'package:ride_hailing_shared/ride_hailing_shared.dart';
 import '../../../core/auth/auth_provider.dart';
 import '../../../core/ride/ride_state_notifier.dart';
 import '../../../core/location/location_service.dart';
+import '../../navigation/driver_nav_items.dart';
+import '../../profile/providers/profile_notifier.dart';
 import '../providers/availability_notifier.dart';
 import '../../rides/data/rides_repository.dart';
 import '../../rides/presentation/offer_sheet.dart';
@@ -75,6 +78,10 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
     final name = driver?.fullName.isNotEmpty == true
         ? driver!.fullName
         : 'Driver';
+    // The sidebar header shows the same rating the profile screen does, so this
+    // read moved out of `profile_screen.dart` rather than being duplicated.
+    final ratingLabel =
+        ref.read(profileNotifierProvider.notifier).ratingSummaryLabel;
     final availability = ref.watch(availabilityProvider);
     final rideState = ref.watch(rideStateProvider);
     final offerId = rideState.offeredRideId;
@@ -117,6 +124,9 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
 
     return Scaffold(
       appBar: AppBar(
+        // The same button widget the rider uses, instead of Flutter's implicit
+        // hamburger, so both apps open the sidebar identically.
+        leading: const AppSidebarToggleButton(),
         title: Row(
           children: [
             const CircleAvatar(
@@ -153,42 +163,36 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
           ],
         ),
       ),
-      drawer: Drawer(
-        child: ListView(
-          padding: EdgeInsets.zero,
-          children: [
-            UserAccountsDrawerHeader(
-              accountName: Text(name),
-              accountEmail: Text('Status: ${driver?.status ?? 'unknown'}'),
-              currentAccountPicture: const CircleAvatar(
-                child: Icon(Icons.person),
-              ),
-            ),
-            ListTile(
-              leading: const Icon(Icons.person_outline),
-              title: const Text('Profile'),
-              onTap: () {
-                Navigator.of(context).pop();
-                context.push('/profile');
-              },
-            ),
-            ListTile(
-              leading: const Icon(Icons.receipt_long_outlined),
-              title: const Text('Ride history & earnings'),
-              onTap: () {
-                Navigator.of(context).pop();
-                context.push('/rides-history');
-              },
-            ),
-            ListTile(
-              leading: const Icon(Icons.settings_outlined),
-              title: const Text('Settings'),
-              onTap: () {
-                Navigator.of(context).pop();
-                context.push('/settings');
-              },
-            ),
-          ],
+      drawer: AppSidebar(
+        items: buildDriverNavItems(),
+        account: AppSidebarAccount(
+          displayName: name,
+          // The status gets a real row instead of being smuggled into the old
+          // header's email slot as the literal `'Status: online'`. No
+          // `secondaryLine`: that is the rider's email line, and passing both
+          // would render the status twice.
+          statusLabel: driver?.status,
+          statusColor: driver?.isOnline == true ? Colors.green : Colors.grey,
+          // Raw on purpose: `DriverProfile.photoUrl` passes JSON straight through
+          // and is `''` for every driver without a photo, and the shared header
+          // treats null and blank identically.
+          photoUrl: driver?.photoUrl,
+          ratingLabel: ratingLabel,
+        ),
+        // The header was inert before — no details affordance, no wrapping tap
+        // target — so this is new behaviour, and it pops before pushing.
+        onAccountPressed: () {
+          closeSidebar(context);
+          context.push('/profile');
+        },
+        onItemSelected: (item) {
+          closeSidebar(context);
+          context.push(item.route);
+        },
+        footer: AppSidebarFooter(
+          message: 'You will need to log in again to accept ride requests.',
+          onSignOut: () => ref.read(authProvider.notifier).logout(),
+          onSignOutCompleted: () => context.go('/login'),
         ),
       ),
       body: Column(
