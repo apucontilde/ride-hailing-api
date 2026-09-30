@@ -62,12 +62,14 @@ class TripState {
   final TripStage stage;
   final Ride? currentRide;
   final String? cancelledBy;
+  final String? routeError;
   final RouteCache? route;
 
   const TripState({
     this.stage = TripStage.pre,
     this.currentRide,
     this.cancelledBy,
+    this.routeError,
     this.route,
   });
 
@@ -87,12 +89,15 @@ class TripState {
     Ride? currentRide,
     bool clearRide = false,
     String? cancelledBy,
+    bool clearRouteError = false,
+    String? routeError,
     RouteCache? route,
   }) {
     return TripState(
       stage: stage ?? this.stage,
       currentRide: clearRide ? null : currentRide ?? this.currentRide,
       cancelledBy: cancelledBy ?? this.cancelledBy,
+      routeError: clearRouteError ? null : routeError ?? this.routeError,
       route: route ?? this.route,
     );
   }
@@ -260,9 +265,10 @@ class TripNotifier extends StateNotifier<TripState> {
         fetchedAt: DateTime.now(),
       );
       _routeCache[key] = route;
-      state = state.copyWith(route: route);
+      state = state.copyWith(route: route, clearRouteError: true);
       return route;
-    } catch (_) {
+    } catch (e) {
+      state = state.copyWith(routeError: apiErrorMessage(e, 'Route unavailable'));
       return null;
     } finally {
       _routeInFlight = false;

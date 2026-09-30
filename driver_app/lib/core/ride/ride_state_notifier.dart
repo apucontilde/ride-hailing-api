@@ -14,13 +14,11 @@ class RideState {
   final Ride? currentRide;
   final String? offeredRideId;
   final DateTime? offerExpiresAt;
-  final Map<String, dynamic>? lastLocation;
 
   const RideState({
     this.currentRide,
     this.offeredRideId,
     this.offerExpiresAt,
-    this.lastLocation,
   });
 
   RideState copyWith({
@@ -29,14 +27,11 @@ class RideState {
     String? offeredRideId,
     DateTime? offerExpiresAt,
     bool clearOffer = false,
-    Map<String, dynamic>? lastLocation,
-    bool clearLocation = false,
   }) {
     return RideState(
       currentRide: clearRide ? null : currentRide ?? this.currentRide,
       offeredRideId: clearOffer ? null : offeredRideId ?? this.offeredRideId,
       offerExpiresAt: clearOffer ? null : offerExpiresAt ?? this.offerExpiresAt,
-      lastLocation: clearLocation ? null : lastLocation ?? this.lastLocation,
     );
   }
 }
@@ -73,7 +68,7 @@ class RideStateNotifier extends StateNotifier<RideState> {
       case WsEventType.updated:
         _onRideUpdated(event.data);
       case WsEventType.location:
-        state = state.copyWith(lastLocation: event.data);
+        break;
       case WsEventType.other:
         break;
     }
@@ -87,11 +82,20 @@ class RideStateNotifier extends StateNotifier<RideState> {
     final update = RideUpdate.fromJson(data);
     if (update.rideId.isEmpty || update.status.isEmpty) return;
     final held = state.currentRide;
-    // Ignore traffic for a ride this driver is not holding, so a late event
-    // for a previous ride cannot swap the trip out from under the screen.
-    if (held != null && held.id.isNotEmpty && held.id != update.rideId) return;
+    // When the held ride is terminal (completed / cancelled), adopt the
+    // update as a fresh ride — a new ride's broadcast must not be dropped.
+    // For a non-terminal in-progress ride, ignore a patch for a different
+    // ride so a stale previous-ride event cannot swap out the trip.
+    if (held != null && held.id.isNotEmpty) {
+      if (!held.isTerminal && held.id != update.rideId) return;
+    }
+    final base = (held != null && held.id == update.rideId)
+        ? held
+        : (held != null && held.isTerminal)
+            ? null
+            : held;
     state = state.copyWith(
-      currentRide: update.applyTo(held),
+      currentRide: update.applyTo(base),
       clearOffer: update.status != 'pending',
     );
   }
@@ -160,7 +164,7 @@ class RideStateNotifier extends StateNotifier<RideState> {
   /// Resets the held ride + location after completion/cancellation
   /// acknowledgement.
   void clearRide() {
-    state = state.copyWith(clearRide: true, clearLocation: true);
+    state = state.copyWith(clearRide: true);
   }
 }
 

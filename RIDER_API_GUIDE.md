@@ -29,7 +29,9 @@ Every non-2xx response body is the same envelope:
   - `UNAUTHORIZED` (401) — credentials are missing, invalid, or expired.
   - `NOT_FOUND` (404) — the requested resource does not exist.
   - `CONFLICT` (409) — the request conflicts with existing state (e.g. email already taken).
-  - `INTERNAL` (500) — our failure. The rider app's straight-line fallback triggers here and only here.
+  - `INTERNAL` (500) — our failure. The rider app's straight-line fallback triggers on
+    **any** error status, not only here — which is exactly why an outage must never be
+    classified as a 4xx.
 - 4xx means **the caller can fix it by changing something**; 5xx means **we are broken**. A
   client must not retry a 4xx and must not treat a 5xx as final. A backend failure is **never**
   a 4xx.
@@ -266,8 +268,27 @@ Response shape:
 
 `is_estimate` is `true` when the pickup/dropoff fall outside every imported routing region
 (`ROUTING_SNAP_RADIUS_M` gate); the polyline is then the straight line between the pins and
-the distance is the haversine of it. The Dart apps keep their own straight-line fallback for
-the 500 case regardless.
+the distance is the haversine of it.
+
+**A route failure is always a `5xx`, never a `4xx`.** Two different situations are
+deliberately kept apart: a gap in the imported road data — no imported region covers the
+pins, or they are further than `ROUTING_SNAP_RADIUS_M` from any road — answers `200`
+with `is_estimate: true` and a straight polyline, while a failure of the routing layer
+itself (no road network imported, datasource or database unreachable) answers
+`500 INTERNAL` with `"failed to calculate route"`. ⚠️ Only the 5xx half of that split is
+pinned by a regression test today (`TestRouteCalculationFailureIs500Not4xx`,
+`tests/error_contract_test.go:171`); the `is_estimate` half has a known defect under
+repair, so an uncovered pin can currently surface as a `5xx` instead of an estimate. A
+client must therefore treat `is_estimate` as a per-response flag it checks, not as a
+promise the API makes for every out-of-coverage pin — and must still handle a `5xx` as
+"no road route available".
+
+The reason for the 5xx-not-4xx rule is the clients: both apps react to *any* error status
+by drawing a straight pickup→dropoff line, so a route outage misreported as a `4xx` would
+render a confident, road-less route instead of anything visible to the rider. The driver
+app now draws that line dashed (`driver_app/lib/features/trip/presentation/trip_screen.dart:285-294`,
+for both a failed request and an `is_estimate` answer); the rider app is still tracked by
+`rider_app_plans/01_[map]_route_fallback_honesty.md`.
 
 ## Platform and Utility
 

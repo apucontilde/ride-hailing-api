@@ -728,6 +728,56 @@ func (m *MockGeoRepo) MarkStaleDriversOffline() error {
 	return nil
 }
 
+// TouchDriverPresence mirrors the real repo: it re-arms the liveness window on
+// an EXISTING row and never invents a position. A driver with no row at all is
+// ErrNotFound, exactly as the production UPDATE ... WHERE driver_id = $1 does
+// when it affects zero rows.
+func (m *MockGeoRepo) TouchDriverPresence(driverID, status string) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if err := failNext(&m.FailNext); err != nil {
+		return err
+	}
+	d, ok := m.drivers[driverID]
+	if !ok {
+		return fmt.Errorf("driver %s has no recorded position: %w", driverID, repository.ErrNotFound)
+	}
+	d.status = status
+	d.updatedAt = time.Now()
+	return nil
+}
+
+// AgeDriverPresence backdates a driver's position row by age, simulating a
+// driver who published a fix once and then went quiet for longer than the
+// liveness window — the exact state in which a stationary driver silently
+// vanishes from dispatch (api_plans [dispatch]).
+//
+// It fails the test-free way: a missing driver returns false, since there is no
+// row to age.
+func (m *MockGeoRepo) AgeDriverPresence(driverID string, age time.Duration) bool {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	d, ok := m.drivers[driverID]
+	if !ok {
+		return false
+	}
+	d.updatedAt = time.Now().Add(-age)
+	return true
+}
+
+// DriverPresenceAge reports how long ago a driver's position row was refreshed,
+// and whether the driver has a row at all. A test can assert that a presence
+// refresh actually moved updated_at forward.
+func (m *MockGeoRepo) DriverPresenceAge(driverID string) (time.Duration, bool) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	d, ok := m.drivers[driverID]
+	if !ok {
+		return 0, false
+	}
+	return time.Since(d.updatedAt), true
+}
+
 func haversine(lat1, lng1, lat2, lng2 float64) float64 {
 	const R = 6371
 	dLat := (lat2 - lat1) * math.Pi / 180

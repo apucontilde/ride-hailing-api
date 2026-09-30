@@ -101,6 +101,12 @@ func NewNavigationService(navRepo repository.NavigationRepository) *NavigationSe
 // With api_plans/06 the region also names a datasource (its own city database),
 // and a datasource that is down degrades this ONE trip to an estimate instead of
 // failing the request (see ErrDatasourceUnavailable).
+//
+// Every coverage answer ends in an estimate, never in an error: an uncovered pin
+// is decided here, by the resolver, and a coverage decision a repository makes
+// later (an unscoped path, or a pin the radius gate measures differently) is a
+// DATA gap too — see routingDataGap. That is what pins the guarantee "a pin this
+// method accepted through Snap can never 500".
 func (s *NavigationService) GetRoute(fromLat, fromLng, toLat, toLng float64) (*RouteInfo, error) {
 	if _, ok := s.navRepo.(RegionSource); !ok {
 		return s.legacyRoute(fromLat, fromLng, toLat, toLng)
@@ -151,9 +157,27 @@ func (s *NavigationService) GetRoute(fromLat, fromLng, toLat, toLng float64) (*R
 			log.Printf("[navigation] routing datasource unavailable for region %q, serving an estimate: %v", fromRegion.RegionID, rerr)
 			return estimateRoute(fromLat, fromLng, toLat, toLng), nil
 		}
+		// The resolver covered both pins through Snap, so a coverage error
+		// from here is the ~0.5% disagreement between PostGIS geography and
+		// the engine's own haversine near the radius boundary. The resolver's
+		// answer stands; this one must not become a 500.
+		if errors.Is(rerr, repository.ErrPinUncovered) {
+			log.Printf("[navigation] pin beyond the snap radius in region %q, serving an estimate: %v", fromRegion.RegionID, rerr)
+			return estimateRoute(fromLat, fromLng, toLat, toLng), nil
+		}
 		return nil, rerr
 	}
 	return routeInfo(fromLat, fromLng, toLat, toLng, nodes)
+}
+
+// routingDataGap reports whether a routing error is a DATA gap — the pins or
+// the city database are simply not covered — rather than a routing failure. A
+// data gap degrades to the straight-line estimate (HTTP 200 + is_estimate);
+// everything else stays an error, so a covered-but-unroutable pair (no path in
+// the graph, an internal engine fault) is never silently flattened into a
+// straight line that the rider app would draw as a real road route.
+func routingDataGap(err error) bool {
+	return errors.Is(err, repository.ErrPinUncovered) || errors.Is(err, repository.ErrDatasourceUnavailable)
 }
 
 // ResolveRegion returns the single region that serves a pin plus the vertex it
@@ -247,11 +271,19 @@ func bboxCenterDistance(ref model.RegionRef, lat, lng float64) float64 {
 	return routing.HaversineMeters(centerLat, centerLng, lat, lng)
 }
 
-// legacyRoute is the pre-region path, kept verbatim: a repo that cannot
-// resolve regions routes exactly the way it did before api_plans/05.
+// legacyRoute is the pre-region path: a repo that cannot resolve regions routes
+// the way it did before api_plans/05, which is what keeps mocks and pre-region
+// deployments byte-for-byte compatible. It has no resolver to decide coverage,
+// so the repository's own snap-radius gate is the authority here — and its
+// answer is a data gap, not a failure, so an uncovered pin is an estimate
+// rather than the 500 that made the rider app draw a road-less route.
 func (s *NavigationService) legacyRoute(fromLat, fromLng, toLat, toLng float64) (*RouteInfo, error) {
 	nodes, err := s.navRepo.GetShortestPath(fromLat, fromLng, toLat, toLng)
 	if err != nil {
+		if routingDataGap(err) {
+			log.Printf("[navigation] unscoped routing data gap, serving an estimate: %v", err)
+			return estimateRoute(fromLat, fromLng, toLat, toLng), nil
+		}
 		return nil, err
 	}
 	return routeInfo(fromLat, fromLng, toLat, toLng, nodes)

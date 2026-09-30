@@ -1,6 +1,7 @@
 package tests
 
 import (
+	"encoding/json"
 	"errors"
 	"net/http"
 	"strings"
@@ -156,5 +157,64 @@ func TestRegisterDuplicateEmailBodyIsStable(t *testing.T) {
 	}
 	if strings.Contains(string(resp.Body), "pq:") || strings.Contains(string(resp.Body), "users_email_key") {
 		t.Fatalf("body leaks schema detail: %s", resp.Body)
+	}
+}
+
+// TestRouteCalculationFailureIs500Not4xx pins the API half of the
+// "confident road-less route" hazard (api_plans/[errors]_route_outage_contract_test.md,
+// the chain head the rider/driver route-fallback plans depend on).
+//
+// Both Flutter apps draw a straight-line fallback on EVERY error status
+// (rider_app .../home_screen.dart:157), so a route outage classified as 4xx
+// renders a plausible-looking, road-less route. A failed calculation must
+// therefore be 5xx — never 4xx — and must carry the house envelope.
+func TestRouteCalculationFailureIs500Not4xx(t *testing.T) {
+	navOutage := testutil.NewTestServerWithNav(t,
+		testutil.NewFailingNavigationRepo(errors.New("pq: could not connect to road_network_edges_pgr")))
+	defer navOutage.Close()
+
+	for _, tc := range []struct {
+		name string
+		path string
+	}{
+		{"navigation route", "/api/v1/navigation/route?from_lat=9.9333&from_lng=-84.0833&to_lat=9.9433&to_lng=-84.0733"},
+		{"geo eta", "/api/v1/geo/eta?from_lat=9.9333&from_lng=-84.0833&to_lat=9.9433&to_lng=-84.0733"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			// The rider registers through this server (its own mock user repo).
+			navOutage.DoRequest("POST", "/api/v1/auth/register", "", map[string]string{
+				"email":    "route.outage@test.com",
+				"phone":    "+1717171718",
+				"password": "SecurePass1",
+			})
+			navOutage.LoginAsRider("route.outage@test.com", "SecurePass1")
+
+			resp := navOutage.Get(tc.path)
+
+			// The whole point: a genuine outage is never the client's fault.
+			if resp.StatusCode >= 400 && resp.StatusCode < 500 {
+				t.Fatalf("route outage answered %d; a 4xx makes the apps draw a straight-line route as if it were real", resp.StatusCode)
+			}
+			resp.AssertStatus(t, http.StatusInternalServerError)
+
+			var envelope struct {
+				Error struct {
+					Code    string `json:"code"`
+					Message string `json:"message"`
+				} `json:"error"`
+			}
+			if err := json.Unmarshal(resp.Body, &envelope); err != nil {
+				t.Fatalf("decoding error envelope: %v (body=%s)", err, resp.Body)
+			}
+			if envelope.Error.Code != "INTERNAL" {
+				t.Errorf("code = %q, want INTERNAL", envelope.Error.Code)
+			}
+			if envelope.Error.Message != "failed to calculate route" {
+				t.Errorf("message = %q, want 'failed to calculate route'", envelope.Error.Message)
+			}
+			if strings.Contains(string(resp.Body), "pq:") || strings.Contains(string(resp.Body), "road_network_edges_pgr") {
+				t.Errorf("body leaks the driver error: %s", resp.Body)
+			}
+		})
 	}
 }

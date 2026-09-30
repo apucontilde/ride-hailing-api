@@ -80,7 +80,7 @@ func SetupWithRepos(cfg *config.Config, userRepo repository.UserRepository, ride
 	healthHandler := handler.NewHealthHandler(db)
 	authHandler := handler.NewAuthHandler(authService)
 	riderHandler := handler.NewRiderHandler(riderService, userRepo)
-	driverHandler := handler.NewDriverHandler(userRepo)
+	driverHandler := handler.NewDriverHandlerWithGeo(userRepo, geoRepo)
 	geoHandler := handler.NewGeoHandler(geoRepo, rideRepo, wsHub)
 	rideHandler := handler.NewRideHandler(rideService, dispatchService, rideRepo)
 	platformHandler := handler.NewPlatformHandler(navService, fareService, placesRepo, cfg.PlacesMaxRadiusM, cfg.PlacesDefaultLimit)

@@ -138,6 +138,96 @@ func loadRegisteredRegions(db *sqlx.DB) ([]model.RegionRef, error) {
 	return regions, nil
 }
 
+// WithinSnapRadius is the single definition of "this pin counts as covered":
+// the snap distance to the nearest road vertex must be within radiusM.
+//
+// radiusM <= 0 disables the check (always snap) — the documented opt-in that
+// restores the pre-[routing]_estimate_fallback_default behavior. A positive
+// radiusM is what makes the honest no-coverage answer reachable: a pin beyond
+// it is NOT covered, the region resolver skips that region, and the route
+// endpoints answer 200 + is_estimate instead of snapping to a road tens of km
+// away (config.defaultRoutingSnapRadiusM = 50 km is the shipped default).
+//
+// It is exported, and used, by all four call sites that decide coverage: the
+// SQL snap paths of both engines (snapInRegion, PGRoutingRepo.snap), the native
+// engine's search-path gate (coverPin), and the service-layer fakes that stand
+// in for a repository. It used to be duplicated inline in the two SQL snap
+// paths, where the copies could drift.
+func WithinSnapRadius(distanceM, radiusM float64) bool {
+	if radiusM <= 0 {
+		return true
+	}
+	return distanceM <= radiusM
+}
+
+// coverageAuthority says WHO answers "is this pin covered?" for one routing
+// call, because the two available answers are two different MEASUREMENTS of
+// the same fact and they do not agree:
+//
+//   - the region resolver's Snap: PostGIS ST_Distance over ::geography
+//     (spheroidal), and
+//   - the native engine's own NearestNode: routing.HaversineMeters, a
+//     great-circle formula on a 6371 km sphere.
+//
+// Measured on the live cr-sj import, the Go formula reads ~0.53% LONGER for a
+// north-south separation at 10 deg N (1111.9 m vs PostGIS's 1106.1 m), so under
+// the shipped 50000 m radius there is a ~265 m band of pins the resolver calls
+// covered and a Go gate calls uncovered. That band used to be an outage: the
+// resolver accepted the pin, the gate then rejected it, and the error reached
+// the handler as a 500. So the gate is only allowed to answer on the path where
+// nothing else has.
+type coverageAuthority int
+
+const (
+	// gateIsAuthority: nothing has checked these pins yet (the unscoped path),
+	// so the graph's own snap gate decides and an uncovered pin is
+	// ErrPinUncovered.
+	gateIsAuthority coverageAuthority = iota
+
+	// resolverIsAuthority: the region resolver already snapped BOTH pins
+	// through the SAME table, with the SAME region filter and the SAME radius,
+	// and only then called the router. It has already acted on that answer
+	// (an uncovered pin is an estimate), so re-measuring the same pins in Go
+	// could only contradict it. The search runs on the graph the resolver
+	// picked; coverage is not re-decided here.
+	resolverIsAuthority
+)
+
+// pinSnapDistance is what the native engine's own snap measures: the haversine
+// distance from a pin to the graph's nearest vertex. ok=false means the graph
+// holds no vertex to snap to at all.
+//
+// This is NOT the same number snapInRegion reports (see coverageAuthority): it
+// is a second measurement of the same fact, not a second opinion to average.
+func pinSnapDistance(g *routing.Graph, lat, lng float64) (float64, bool) {
+	n, ok := g.NearestNode(lat, lng)
+	if !ok {
+		return 0, false
+	}
+	return routing.HaversineMeters(lat, lng, n.Lat, n.Lng), true
+}
+
+// coverPin is WithinSnapRadius applied to the NATIVE engine's own snap, and the
+// single place a routing call reports an uncovered pin: it returns
+// ErrPinUncovered, carrying the two numbers support needs — the distance the
+// engine measured and the radius it was measured against. The numbers are for
+// the log line, never for a client message.
+//
+// An empty graph is NOT that: with no vertex there is nothing to measure a pin
+// against, which is an import/ops fault rather than a statement about this pin,
+// so it keeps returning routing.ErrNoRoute exactly as the A* search would.
+func coverPin(g *routing.Graph, which string, lat, lng, radiusM float64) error {
+	d, ok := pinSnapDistance(g, lat, lng)
+	if !ok {
+		return fmt.Errorf("%w: %s: the road network has no vertex to snap to", routing.ErrNoRoute, which)
+	}
+	if !WithinSnapRadius(d, radiusM) {
+		return fmt.Errorf("%w: %s is %.0f m from the nearest road vertex, beyond the %.0f m snap radius",
+			ErrPinUncovered, which, d, radiusM)
+	}
+	return nil
+}
+
 // snapInRegion is the shared region-scoped snap, run against the pool that
 // owns the region (api_plans/06 selects it from the region's datasource).
 // ok=false means "not covered": no vertex in that region, the nearest one is
@@ -151,7 +241,7 @@ func snapInRegion(db *sqlx.DB, lat, lng float64, regionID string, radiusM float6
 	if err := db.Get(&row, snapRegionSQL, lat, lng, regionID); err != nil {
 		return model.SnapResult{}, false
 	}
-	if radiusM > 0 && row.DistanceM > radiusM {
+	if !WithinSnapRadius(row.DistanceM, radiusM) {
 		return model.SnapResult{}, false
 	}
 	return model.SnapResult{
@@ -201,9 +291,10 @@ type NativeNavigationRepo struct {
 	// which is what a single-city deployment gets.
 	pools *DatasourcePools
 
-	// snapRadiusM is ROUTING_SNAP_RADIUS_M for the region-scoped snap
-	// (api_plans/05). 0 means always snap, the same semantics the pgRouting
-	// repo has always used.
+	// snapRadiusM is ROUTING_SNAP_RADIUS_M and gates BOTH snap paths: the
+	// region-scoped SQL snap the region resolver uses (api_plans/05) and the
+	// in-process search this engine runs. 0 means always snap, the same
+	// semantics the pgRouting repo has always used.
 	snapRadiusM float64
 
 	// maxRegions is ROUTING_MAX_REGIONS_IN_MEMORY: how many per-region graphs to
@@ -253,8 +344,13 @@ func NewNavigationRepo(db *sqlx.DB, snapRadiusM ...float64) *NativeNavigationRep
 // NewNavigationRepoWithDatasources builds the native repo for the multi-city
 // shape: pools resolves every region's datasource, maxRegions caps the cached
 // per-region graphs (0 = unlimited). maxRegions <= 0 is treated as unlimited.
+// snapRadiusM is ROUTING_SNAP_RADIUS_M and gates every snap this repo answers —
+// the same semantics as NewNavigationRepo, because this is the constructor the
+// engine factory (the only production wiring) uses.
 func NewNavigationRepoWithDatasources(db *sqlx.DB, pools *DatasourcePools, snapRadiusM float64, maxRegions int) *NativeNavigationRepo {
-	return newNativeRepo(db, pools, maxRegions)
+	r := newNativeRepo(db, pools, maxRegions)
+	r.snapRadiusM = snapRadiusM
+	return r
 }
 
 func newNativeRepo(db *sqlx.DB, pools *DatasourcePools, maxRegions int) *NativeNavigationRepo {
@@ -601,26 +697,37 @@ func (r *NativeNavigationRepo) Snap(lat, lng float64, datasource, regionID strin
 	return snapInRegion(poolFor(r.db, r.pools, datasource), lat, lng, regionID, r.snapRadiusM)
 }
 
-// GetShortestPath is the frozen pre-region contract: it routes against the
-// WHOLE network, unscoped, exactly as it did before api_plans/05.
+// GetShortestPath keeps the frozen pre-region SIGNATURE and the same unscoped
+// whole-network search it has always done, but not the frozen pre-region
+// BEHAVIOUR: the snap-radius coverage rule applies to every snap path this repo
+// answers, this one included. That is why the graph's own gate is the coverage
+// authority here — nothing resolved these pins first, so without it a radius
+// would be unenforceable on the unscoped path — and an uncovered pin comes back
+// as ErrPinUncovered for the service to degrade to an estimate.
 func (r *NativeNavigationRepo) GetShortestPath(fromLat, fromLng, toLat, toLng float64) ([]RouteResult, error) {
 	g, err := r.roadGraph()
 	if err != nil {
 		return nil, err
 	}
-	return routeResults(g, r.legacyWeights, fromLat, fromLng, toLat, toLng)
+	return routeResults(g, r.legacyWeights, r.snapRadiusM, gateIsAuthority, fromLat, fromLng, toLat, toLng)
 }
 
 // RouteInRegion routes against one region's subgraph only, loaded from that
 // region's own datasource pool. A datasource that cannot be reached returns an
 // ErrDatasourceUnavailable-wrapped error, which the service degrades to an
 // estimate rather than a 500.
+//
+// Coverage is NOT re-decided here: the service resolved both pins through Snap
+// (the same table, the same region filter, the same radius) before it called
+// this, and it already degraded an uncovered pin to an estimate on that answer.
+// Re-measuring the same pins with a different formula could only contradict a
+// decision already acted on — see coverageAuthority.
 func (r *NativeNavigationRepo) RouteInRegion(regionID, datasource string, fromLat, fromLng, toLat, toLng float64) ([]RouteResult, error) {
 	g, weights, err := r.regionGraph(regionID, datasource)
 	if err != nil {
 		return nil, err
 	}
-	return routeResults(g, weights, fromLat, fromLng, toLat, toLng)
+	return routeResults(g, weights, r.snapRadiusM, resolverIsAuthority, fromLat, fromLng, toLat, toLng)
 }
 
 // routeResults runs A* on a graph and shapes the node list the service
@@ -629,7 +736,26 @@ func (r *NativeNavigationRepo) RouteInRegion(regionID, datasource string, fromLa
 // cost (STATUS.md invariant: fare, duration and total_distance_m all derive
 // from Meters). weights is the elevation model the graph was built with (zero =
 // flat).
-func routeResults(g *routing.Graph, weights routing.CostWeights, fromLat, fromLng, toLat, toLng float64) ([]RouteResult, error) {
+//
+// radiusM is ROUTING_SNAP_RADIUS_M and authority says who owns the coverage
+// decision for this call (see coverageAuthority). When this call IS the
+// authority, the radius is applied to the engine's own NearestNode before the
+// search: a pin whose nearest vertex is beyond the radius is not covered, no
+// route is invented from it, and the call reports ErrPinUncovered with the
+// measured distance so the service can answer an estimate. radiusM <= 0 keeps
+// the documented always-snap behavior on that path. When the authority is the
+// resolver, the gate is skipped entirely and an A* that genuinely finds no path
+// between two covered pins still returns routing.ErrNoRoute unchanged.
+func routeResults(g *routing.Graph, weights routing.CostWeights, radiusM float64, authority coverageAuthority, fromLat, fromLng, toLat, toLng float64) ([]RouteResult, error) {
+	if authority == gateIsAuthority {
+		if err := coverPin(g, "pickup", fromLat, fromLng, radiusM); err != nil {
+			return nil, err
+		}
+		if err := coverPin(g, "dropoff", toLat, toLng, radiusM); err != nil {
+			return nil, err
+		}
+	}
+
 	p, err := g.RouteWithWeights(fromLat, fromLng, toLat, toLng, weights)
 	if err != nil {
 		return nil, err

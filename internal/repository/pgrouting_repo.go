@@ -1,6 +1,8 @@
 package repository
 
 import (
+	"database/sql"
+	"errors"
 	"fmt"
 	"log"
 
@@ -71,6 +73,16 @@ type snapRow struct {
 // pgr_dijkstra function. It issues fresh queries per call — no in-process
 // graph and no cache — scoped to the region the resolver picked and run against
 // THAT region's datasource pool (api_plans/04/05/06).
+//
+// This engine is OPT-IN, not provisional. `native` is the intentional permanent
+// production default (config.RoutingEngine; the benchmark evidence is recorded
+// in api_plans/STATUS.md under [routing] decisions): the in-process A* engine
+// answers the shared benchmark workset's one-hop case in ~1.4 us against
+// pgr_dijkstra's ~224 ms, and matches it on the long path while also
+// supporting the elevation cost model (pgr_dijkstra reads
+// road_network_edges_pgr.cost, which stays pure meters). What this repo is
+// still FOR: engine-parity and validation work, and being the engine a
+// deployment falls back to when the extension is missing.
 type PGRoutingRepo struct {
 	db          *sqlx.DB
 	pools       *DatasourcePools
@@ -91,10 +103,12 @@ func NewPGRoutingRepoWithDatasources(db *sqlx.DB, pools *DatasourcePools, snapRa
 	return &PGRoutingRepo{db: db, pools: pools, snapRadiusM: snapRadiusM}
 }
 
-// NewRoutingRepository is the engine factory: ROUTING_ENGINE=pgrouting returns
-// the pgRouting repo when the extension is actually installed, otherwise it
-// logs the degraded fallback and never crashes boot. It builds its own datasource
-// pool registry over db; internal/router passes its own via
+// NewRoutingRepository is the engine factory. The production default is the
+// native A* engine and that is DECIDED, not pending (see the PGRoutingRepo doc
+// comment and config.RoutingEngine). `ROUTING_ENGINE=pgrouting` opts into the
+// pgRouting repo, and only when the extension is actually installed — otherwise
+// it logs the degraded fallback and never crashes boot. It builds its own
+// datasource pool registry over db; internal/router passes its own via
 // NewRoutingRepositoryWithPools when it wants to share one.
 func NewRoutingRepository(db *sqlx.DB, cfg *config.Config) NavigationRepository {
 	return NewRoutingRepositoryWithPools(db, NewDatasourcePoolsFromConfig(db, cfg), cfg)
@@ -164,14 +178,21 @@ func (r *PGRoutingRepo) GetShortestPath(fromLat, fromLng, toLat, toLng float64) 
 }
 
 // snap returns the nearest road vertex and its geodesic distance in meters.
-// A snap farther than snapRadiusM (when configured) is "not covered".
+// A pin farther than snapRadiusM (when configured) is "not covered" and reports
+// ErrPinUncovered, so the service can answer an estimate instead of a 500.
+// Having no vertex at all is the same coverage answer; any other failure (a
+// dropped connection, bad SQL) is an internal error.
 func (r *PGRoutingRepo) snap(lat, lng float64) (snapRow, error) {
 	var row snapRow
 	if err := r.db.Get(&row, snapSQL, lat, lng); err != nil {
-		return snapRow{}, routing.ErrNoRoute
+		if errors.Is(err, sql.ErrNoRows) {
+			return snapRow{}, fmt.Errorf("%w: the road network has no vertex to snap to", ErrPinUncovered)
+		}
+		return snapRow{}, wrapDB("snap to the nearest road vertex", err)
 	}
-	if r.snapRadiusM > 0 && row.DistanceM > r.snapRadiusM {
-		return snapRow{}, routing.ErrNoRoute
+	if !WithinSnapRadius(row.DistanceM, r.snapRadiusM) {
+		return snapRow{}, fmt.Errorf("%w: pin is %.0f m from the nearest road vertex, beyond the %.0f m snap radius",
+			ErrPinUncovered, row.DistanceM, r.snapRadiusM)
 	}
 	return row, nil
 }
@@ -203,11 +224,13 @@ func (r *PGRoutingRepo) RouteInRegion(regionID, datasource string, fromLat, from
 
 	start, ok := snapInRegion(db, fromLat, fromLng, regionID, r.snapRadiusM)
 	if !ok {
-		return nil, routing.ErrNoRoute
+		return nil, fmt.Errorf("%w: pickup is not within %.0f m of a road in region %q",
+			ErrPinUncovered, r.snapRadiusM, regionID)
 	}
 	goal, ok := snapInRegion(db, toLat, toLng, regionID, r.snapRadiusM)
 	if !ok {
-		return nil, routing.ErrNoRoute
+		return nil, fmt.Errorf("%w: dropoff is not within %.0f m of a road in region %q",
+			ErrPinUncovered, r.snapRadiusM, regionID)
 	}
 
 	if start.VertexID == goal.VertexID {

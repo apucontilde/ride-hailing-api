@@ -29,6 +29,32 @@ class MockApiClient extends Mock implements ApiClient {}
 
 class MockDio extends Mock implements Dio {}
 
+class _FakePermissionLocationService extends LocationService {
+  _FakePermissionLocationService({
+    required super.apiClient,
+    required super.availabilityNotifier,
+    required List<({bool granted, bool deniedPermanently})> permissionResults,
+    required ({bool granted, bool deniedPermanently}) mockResult,
+  })  : _permissionResults = permissionResults,
+        _mockResult = mockResult,
+        super(
+          positionStreamProvider: () => const Stream<Position>.empty(),
+        );
+
+  final List<({bool granted, bool deniedPermanently})> _permissionResults;
+  final ({bool granted, bool deniedPermanently}) _mockResult;
+
+  @override
+  Future<bool> requestPermission() async {
+    onPermission?.call(
+      granted: _mockResult.granted,
+      deniedPermanently: _mockResult.deniedPermanently,
+    );
+    _permissionResults.add(_mockResult);
+    return _mockResult.granted;
+  }
+}
+
 void main() {
   late MockApiClient mockApiClient;
   late MockDio mockDio;
@@ -343,6 +369,23 @@ void main() {
       expect(service.active, isTrue);
       service.dispose();
       expect(service.active, isFalse);
+    });
+
+    test('requestPermission calls onPermission with granted when OS grants',
+        () async {
+      final permissionResults = <({bool granted, bool deniedPermanently})>[];
+      // A subclass that fakes the helper/geolocator seam.
+      final fakeService = _FakePermissionLocationService(
+        apiClient: mockApiClient,
+        availabilityNotifier: availability,
+        permissionResults: permissionResults,
+        mockResult: (granted: true, deniedPermanently: false),
+      );
+      final granted = await fakeService.requestPermission();
+      expect(granted, isTrue);
+      expect(permissionResults.length, 1);
+      expect(permissionResults.single.granted, isTrue);
+      expect(permissionResults.single.deniedPermanently, isFalse);
     });
   });
 }

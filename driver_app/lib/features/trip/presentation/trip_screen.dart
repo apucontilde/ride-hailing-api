@@ -220,6 +220,7 @@ class _TripScreenState extends ConsumerState<TripScreen> {
                   ride: ride,
                   route: trip.route,
                   cancelledBy: trip.cancelledBy,
+                  routeError: trip.routeError,
                   canCancel: trip.canCancel,
                   onAdvance: () =>
                       ref.read(tripNotifierProvider.notifier).advance(),
@@ -352,6 +353,7 @@ class _StageControls extends StatelessWidget {
   final Ride? ride;
   final RouteCache? route;
   final String? cancelledBy;
+  final String? routeError;
   final bool canCancel;
   final VoidCallback onAdvance;
   final VoidCallback onCancel;
@@ -367,6 +369,7 @@ class _StageControls extends StatelessWidget {
     required this.ride,
     required this.route,
     required this.cancelledBy,
+    required this.routeError,
     required this.canCancel,
     required this.onAdvance,
     required this.onCancel,
@@ -504,6 +507,29 @@ class _StageControls extends StatelessWidget {
                   Text(
                     _legSummary(route!),
                     style: Theme.of(context).textTheme.bodySmall,
+                  ),
+                ],
+                if (routeError != null && routeError!.isNotEmpty) ...[
+                  const SizedBox(height: 4),
+                  Row(
+                    crossAxisAlignment: CrossAxisAlignment.center,
+                    children: [
+                      Icon(Icons.error_outline,
+                          size: 16,
+                          color: Theme.of(context).colorScheme.error),
+                      const SizedBox(width: 4),
+                      Expanded(
+                        child: Text(
+                          routeError!,
+                          style: Theme.of(context)
+                              .textTheme
+                              .bodySmall
+                              ?.copyWith(
+                                color: Theme.of(context).colorScheme.error,
+                              ),
+                        ),
+                      ),
+                    ],
                   ),
                 ],
               ],

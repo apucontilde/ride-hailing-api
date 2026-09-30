@@ -50,6 +50,8 @@ class Ride {
     this.cancelledBy,
   });
 
+  bool get isTerminal => status == 'completed' || status == 'cancelled';
+
   factory Ride.fromJson(Map<String, dynamic> json) {
     double? asDouble(Object? value) {
       if (value is num) return value.toDouble();

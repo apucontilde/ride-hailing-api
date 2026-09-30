@@ -48,10 +48,8 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
       // Start location stream if profile is online (crash recovery).
       final service = ref.read(locationServiceProvider);
       final permission = ref.read(appPermissionProvider);
-      if (profile?.isOnline == true && permission.granted) {
-        service.start();
-      } else {
-        service.start();
+      service.start();
+      if (!permission.granted && !permission.deniedPermanently) {
         service.requestPermission();
       }
       _restoreActiveTrip();

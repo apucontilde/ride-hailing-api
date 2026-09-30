@@ -78,11 +78,13 @@ class NavigationRoute {
   final List<LatLng> polyline;
   final double totalDistanceM;
   final double totalDurationS;
+  final bool isEstimate;
 
   NavigationRoute({
     required this.polyline,
     required this.totalDistanceM,
     required this.totalDurationS,
+    this.isEstimate = false,
   });
 
   factory NavigationRoute.fromJson(Map<String, dynamic> json) {
@@ -93,6 +95,7 @@ class NavigationRoute {
           .toList(),
       totalDistanceM: (json['total_distance_m'] as num).toDouble(),
       totalDurationS: (json['total_duration_s'] as num).toDouble(),
+      isEstimate: json['is_estimate'] == true,
     );
   }
 }

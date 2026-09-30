@@ -5,6 +5,7 @@ import (
 	"log"
 	"strconv"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"ride-hailing-api/internal/model"
@@ -12,18 +13,41 @@ import (
 	"ride-hailing-api/internal/websocket"
 )
 
+// DriverHub is the slice of *websocket.Hub that the offer path needs: push a
+// message to one user, and ask whether they have a live socket.
+//
+// It is an interface rather than the concrete hub so the dispatch reliability
+// tests can drive the exact timing the bug depends on — a socket that appears
+// mid-reconnect-backoff, or never at all. Those states are the difference
+// between "a driver was online" and "no drivers were nearby", and they cannot
+// be reproduced reliably through a real WebSocket handshake.
+//
+// *websocket.Hub satisfies it, so production wiring is unchanged.
+type DriverHub interface {
+	IsConnected(userID string) bool
+	SendToUser(userID string, msg interface{})
+}
+
+var _ DriverHub = (*websocket.Hub)(nil)
+
 type DispatchService struct {
 	rideRepo        repository.RideRepository
 	geoRepo         repository.GeoRepository
 	userRepo        repository.UserRepository
 	navSvc          *NavigationService
-	hub             *websocket.Hub
+	hub             DriverHub
 	offerChannels   map[string]chan bool
 	offerChannelsMu sync.Mutex
+	// traces records why every candidate was or was not offered the ride, so
+	// "genuinely no drivers" is distinguishable from "drivers existed and were
+	// skipped" (api_plans [dispatch]). See dispatch_observability.go. It is an
+	// atomic pointer because observeDispatchTraces may swap it while a Dispatch
+	// goroutine is reading it.
+	traces atomic.Pointer[dispatchTraceRecorder]
 }
 
-func NewDispatchService(rideRepo repository.RideRepository, geoRepo repository.GeoRepository, userRepo repository.UserRepository, hub *websocket.Hub, navSvc *NavigationService) *DispatchService {
-	return &DispatchService{
+func NewDispatchService(rideRepo repository.RideRepository, geoRepo repository.GeoRepository, userRepo repository.UserRepository, hub DriverHub, navSvc *NavigationService) *DispatchService {
+	s := &DispatchService{
 		rideRepo:      rideRepo,
 		geoRepo:       geoRepo,
 		userRepo:      userRepo,
@@ -31,6 +55,22 @@ func NewDispatchService(rideRepo repository.RideRepository, geoRepo repository.G
 		hub:           hub,
 		offerChannels: make(map[string]chan bool),
 	}
+	s.traces.Store(newDispatchTraceRecorder(logDispatchTrace))
+	return s
+}
+
+// traceRecorder returns the attempt recorder. Every method on it tolerates a nil
+// receiver, so a service built without one still dispatches.
+func (s *DispatchService) traceRecorder() *dispatchTraceRecorder {
+	return s.traces.Load()
+}
+
+// observeDispatchTraces replaces the terminal-line observer. It is a TEST-ONLY
+// hook, called before Dispatch: swapping the recorder while an attempt is in
+// flight abandons that attempt's evidence, because the new recorder has never
+// seen its begin(). Production leaves the logging observer in place.
+func (s *DispatchService) observeDispatchTraces(observer func(dispatchTrace)) {
+	s.traces.Store(newDispatchTraceRecorder(observer))
 }
 
 type RideRequest struct {
@@ -44,24 +84,57 @@ func (s *DispatchService) Dispatch(ride *model.Ride) error {
 	searchRadii := []float64{500, 1000, 2000, 5000, 10000}
 	const maxLimit = 5
 
-	for _, radius := range searchRadii {
+	for i, radius := range searchRadii {
 		drivers, err := s.geoRepo.FindNearbyDrivers(ride.PickupLat, ride.PickupLng, radius, maxLimit)
 		if err != nil {
+			// A search failure is NOT "no drivers": reporting it as such would
+			// tell support the service area was empty when the database was
+			// unreachable. Record it as its own outcome and still let the
+			// handler answer 5xx, which the ride service turns into a failed
+			// create rather than a ride nobody will ever serve.
+			s.traceRecorder().begin(ride.ID, 0)
+			s.traceRecorder().noteSearchError(ride.ID, err)
+			s.traceRecorder().end(ride.ID)
 			return err
 		}
 
 		if len(drivers) > 0 {
+			logSearchRounds(ride.ID, searchRadii[:i+1], len(drivers))
+			s.traceRecorder().begin(ride.ID, len(drivers))
 			go s.sendRequestsSequentially(ride, drivers)
 			return nil
 		}
 	}
 
-	if err := s.rideRepo.UpdateRideStatus(ride.ID, "no_driver_available", nil); err != nil {
-		log.Printf("ride %s: failed to persist no_driver_available: %v", ride.ID, err)
-	}
-	log.Printf("ride %s: no drivers found in service area", ride.ID)
-	s.pushNoDriverAvailable(ride)
+	// Genuinely nobody: no online, fresh, in-radius driver at any radius.
+	logSearchRounds(ride.ID, searchRadii, 0)
+	s.traceRecorder().begin(ride.ID, 0)
+	s.finishWithoutDriver(ride)
 	return nil
+}
+
+// finishWithoutDriver closes out a ride that found nobody.
+//
+// The terminal trace is published from a defer, so it is emitted on EVERY path
+// — including one where the status write fails — but only AFTER the write has
+// settled, so a support query never sees a completed trace for an outcome that
+// is still being decided.
+//
+// A failed write ABORTS here: the ride is still pending in the database, so
+// pushing no_driver_available would tell the rider their ride is dead while the
+// stored state says otherwise. Leaving it pending is what lets the ride service
+// retry or expire it later.
+func (s *DispatchService) finishWithoutDriver(ride *model.Ride) {
+	defer func() {
+		s.traceRecorder().end(ride.ID)
+	}()
+
+	if err := s.rideRepo.UpdateRideStatus(ride.ID, "no_driver_available", nil); err != nil {
+		log.Printf("ride %s: failed to persist no_driver_available: %v "+
+			"(not pushing the rider a status the database does not hold)", ride.ID, err)
+		return
+	}
+	s.pushNoDriverAvailable(ride)
 }
 
 func (s *DispatchService) pushNoDriverAvailable(ride *model.Ride) {
@@ -76,31 +149,48 @@ func (s *DispatchService) pushNoDriverAvailable(ride *model.Ride) {
 }
 
 func (s *DispatchService) sendRequestsSequentially(ride *model.Ride, drivers []model.NearbyDriverResult) {
-	for _, d := range drivers {
-		ok := s.offerRideToDriver(ride.ID, d.DriverID)
+	for i, d := range drivers {
+		ok := s.offerRideToDriver(ride.ID, d.DriverID, i+1, len(drivers))
 		if ok {
 			if err := s.AcceptRide(ride.ID, d.DriverID); err != nil {
+				// Accepting is a WRITE; a failure must not be reported as a
+				// plain decline, and it must not leave the trace claiming the
+				// driver was never offered.
+				detail := "accept failed"
+				if errIsConflict(err) {
+					detail = "another driver already took the ride"
+				}
+				s.recordSkip(ride.ID, d.DriverID, i+1, len(drivers), skipAcceptFailed, detail)
 				log.Printf("failed to accept ride %s for driver %s: %v", ride.ID, d.DriverID, err)
 				continue
 			}
+			// Someone took the ride. The trace closes HERE with its own
+			// outcome; the skips it still carries are the evidence for "the
+			// first N candidates were dropped and the N+1th answered".
+			s.traceRecorder().noteAccepted(ride.ID)
+			s.traceRecorder().end(ride.ID)
 			return
 		}
 	}
 
 	current, err := s.rideRepo.FindByID(ride.ID)
 	if err == nil && current.Status == "pending" {
-		if err := s.rideRepo.UpdateRideStatus(ride.ID, "no_driver_available", nil); err != nil {
-			log.Printf("ride %s: failed to persist no_driver_available: %v", ride.ID, err)
-			return
-		}
-		log.Printf("ride %s: all drivers declined", ride.ID)
-		s.pushNoDriverAvailable(ride)
+		s.finishWithoutDriver(ride)
+		return
 	}
+	// The ride is no longer pending (accepted elsewhere, cancelled): nobody to
+	// tell, but the trace still has to be closed so a support query does not
+	// wait forever on an open attempt.
+	s.traceRecorder().noteNotPending(ride.ID)
+	s.traceRecorder().end(ride.ID)
 }
 
-func (s *DispatchService) offerRideToDriver(rideID, driverID string) bool {
-	if !s.hub.IsConnected(driverID) {
-		time.Sleep(100 * time.Millisecond)
+func (s *DispatchService) offerRideToDriver(rideID, driverID string, attempt, total int) bool {
+	// A DB-fresh driver whose socket is not in the hub yet is RETRIED, not
+	// skipped: the hub registers a client a moment after the /ws handshake, and
+	// a reconnect re-enters that window. The hard skip is what made the search
+	// and the offer loop disagree.
+	if !s.waitForSocket(rideID, driverID, attempt, total) {
 		return false
 	}
 
@@ -123,8 +213,14 @@ func (s *DispatchService) offerRideToDriver(rideID, driverID string) bool {
 
 	select {
 	case result := <-ch:
-		return result
-	case <-time.After(30 * time.Second):
+		if !result {
+			s.recordSkip(rideID, driverID, attempt, total, skipDriverDeclined, "driver declined")
+			return false
+		}
+		return true
+	case <-time.After(offerTimeout):
+		s.recordSkip(rideID, driverID, attempt, total, skipOfferTimeout,
+			fmt.Sprintf("no answer within %s", offerTimeout))
 		return false
 	}
 }

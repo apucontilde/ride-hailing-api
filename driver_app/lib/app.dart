@@ -12,14 +12,10 @@ class DriverApp extends ConsumerWidget {
   Widget build(BuildContext context, WidgetRef ref) {
     // Lifecycle: manage location stream based on auth/profile state.
     final authState = ref.watch(authProvider);
-    final profile = ref.watch(driverProfileProvider);
     final service = ref.read(locationServiceProvider);
 
-    if (authState.isAuthenticated && profile?.isOnline == true) {
+    if (authState.isAuthenticated) {
       // Crash-while-online recovery: re-arm stream without flipping switch.
-      service.start();
-    } else if (authState.isAuthenticated) {
-      // Authenticated but offline: stream can start but only pushes when online.
       service.start();
     } else {
       // Not authenticated: stop everything on logout.

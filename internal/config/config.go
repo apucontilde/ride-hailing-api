@@ -37,13 +37,20 @@ type Config struct {
 	PlacesMaxRadiusM   float64
 	PlacesDefaultLimit int
 
-	// RoutingEngine selects the shortest-path implementation: "native" (in-process
-	// A*, default) or "pgrouting" (pgRouting via the pgr_dijkstra functions).
-	// Whitelisted at load; anything else falls back to "native".
+	// RoutingEngine selects the shortest-path implementation: "native" (the
+	// in-process A* engine) or "pgrouting" (pgRouting via pgr_dijkstra).
+	// Whitelisted at load; anything else falls back to "native", the
+	// INTENDED PERMANENT default — the plan-03 benchmark gate is closed, not
+	// pending, and a typo therefore degrades to the FASTER engine. Numbers:
+	// api_plans/STATUS.md ([routing] decisions). `pgrouting` stays supported
+	// for engine-parity/validation work and as the fallback target the factory
+	// falls back TO when the extension is missing.
 	RoutingEngine string
 	// RoutingSnapRadiusM is the max distance (meters) a pin may snap to a road
-	// vertex to count as covered. <= 0 disables the check (always snap, matching
-	// the native engine's behavior).
+	// vertex to count as covered; beyond it the route endpoints answer 200 +
+	// is_estimate instead of snapping to a road tens of km away. A non-positive
+	// value is the documented "always snap" opt-in. Default and rationale:
+	// defaultRoutingSnapRadiusM below.
 	RoutingSnapRadiusM float64
 	// RoutingDefaultRegion names the routing_regions row the resolver falls
 	// back to when no candidate region covers a pin. "" (default) relies on the
@@ -69,6 +76,21 @@ type Config struct {
 	// reproduces the pre-elevation engine exactly.
 	RoutingElevation RoutingElevation
 }
+
+// defaultRoutingSnapRadiusM is ROUTING_SNAP_RADIUS_M's shipped default: 50 km
+// (meters), the same scale as PLACES_MAX_RADIUS_M, and the single place the
+// rationale lives (the RoutingSnapRadiusM field points here).
+//
+// It is far larger than any realistic urban pickup-to-road distance (meters to
+// a few km) so ordinary pins are unaffected, while still being smaller than the
+// default region's own width (~110 km, scripts/import-road-network.sh) so a pin
+// in unserved country degrades to a labelled estimate instead of snapping to a
+// vertex tens of kilometers away. api_plans
+// [routing]_estimate_fallback_default closed bug #2 by making the is_estimate
+// path reachable in the DEFAULT configuration: with the previous default of 0
+// the coverage check never ran, so every pin however remote resolved to the
+// nearest road.
+const defaultRoutingSnapRadiusM = 50000
 
 // RoutingElevation configures the native engine's elevation cost model
 // (api_plans/[elevation]). Off by default: the zero configuration reproduces
@@ -116,7 +138,7 @@ func Load() *Config {
 		PlacesDefaultLimit: getInt("PLACES_DEFAULT_LIMIT", 10),
 
 		RoutingEngine:             routingEngineFromEnv(),
-		RoutingSnapRadiusM:        getFloat("ROUTING_SNAP_RADIUS_M", 0),
+		RoutingSnapRadiusM:        getFloat("ROUTING_SNAP_RADIUS_M", defaultRoutingSnapRadiusM),
 		RoutingDefaultRegion:      getEnv("ROUTING_DEFAULT_REGION", ""),
 		RoutingMaxRegionsInMemory: getInt("ROUTING_MAX_REGIONS_IN_MEMORY", 0),
 		// A city database may live on another host with different TLS
@@ -167,7 +189,10 @@ func getDuration(key string, fallback time.Duration) time.Duration {
 }
 
 // routingEngineFromEnv whitelists ROUTING_ENGINE to native|pgrouting; any other
-// value (including unset) means the native in-process A* engine.
+// value (including unset) means the native in-process A* engine, which is the
+// intentional permanent default (see the RoutingEngine field comment and
+// api_plans/STATUS.md's [routing] decisions for the benchmark evidence). A
+// typo therefore degrades to the FASTER engine, never to the slower one.
 func routingEngineFromEnv() string {
 	switch getEnv("ROUTING_ENGINE", "native") {
 	case "native", "pgrouting":

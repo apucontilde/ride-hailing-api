@@ -16,6 +16,7 @@ import 'package:driver_app/core/network/websocket_service.dart';
 import 'package:driver_app/core/network/ws_event.dart';
 import 'package:driver_app/core/ride/ride_state_notifier.dart';
 import 'package:driver_app/features/rides/presentation/rate_sheet.dart';
+import 'package:driver_app/features/trip/providers/trip_notifier.dart';
 import 'package:driver_app/features/trip/presentation/trip_screen.dart';
 
 class MockApiClient extends Mock implements ApiClient {}
@@ -440,6 +441,28 @@ void main() {
       expect(lines.length, 1);
       expect(lines.first.pattern.segments, isNotNull);
       expect(find.textContaining('Estimated 2.9 km'), findsOneWidget);
+    });
+  });
+
+  group('route error surfacing', () {
+    testWidgets('renders the backend error message when routeError is set',
+        (tester) async {
+      await pumpTrip(tester);
+      broadcast();
+      await tester.pump();
+      await tester.pump();
+
+      container.read(tripNotifierProvider.notifier).state =
+          container.read(tripNotifierProvider).copyWith(
+                routeError: 'failed to calculate route',
+              );
+      await tester.pump();
+
+      expect(
+        find.textContaining('failed to calculate route'),
+        findsOneWidget,
+      );
+      expect(find.byIcon(Icons.error_outline), findsOneWidget);
     });
   });
 }

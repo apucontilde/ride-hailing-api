@@ -140,28 +140,60 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
                 PolylineLayer(
                   polylines: [
                     if (routeAsync != null)
-                      routeAsync.when(
-                        data: (route) => Polyline(
-                          points: route.polyline,
-                          color: Colors.blue,
-                          strokeWidth: 4.0,
-                        ),
-                        loading: () => Polyline(
-                          points: [
+                      ...routeAsync.when(
+                        data: (route) {
+                          final straight = <LatLng>[
                             ?pickup,
                             LatLng(_destination!.lat, _destination!.lng),
-                          ],
-                          color: Colors.grey,
-                          strokeWidth: 2.0,
-                        ),
-                        error: (_, _) => Polyline(
-                          points: [
+                          ];
+                          final useFallback =
+                              route.polyline.length < 2 || route.isEstimate;
+                          return [
+                            if (straight.length == 2)
+                              Polyline(
+                                points: straight,
+                                strokeWidth: 2,
+                                color: Colors.grey,
+                                pattern: StrokePattern.dashed(segments: const [12, 8]),
+                              ),
+                            if (!useFallback)
+                              Polyline(
+                                points: route.polyline,
+                                strokeWidth: 4,
+                                color: Colors.blue,
+                              ),
+                          ];
+                        },
+                        loading: () {
+                          final straight = <LatLng>[
                             ?pickup,
                             LatLng(_destination!.lat, _destination!.lng),
-                          ],
-                          color: Colors.blue,
-                          strokeWidth: 4.0,
-                        ),
+                          ];
+                          return [
+                            if (straight.length == 2)
+                              Polyline(
+                                points: straight,
+                                strokeWidth: 2,
+                                color: Colors.grey,
+                                pattern: StrokePattern.dashed(segments: const [12, 8]),
+                              ),
+                          ];
+                        },
+                        error: (_, _) {
+                          final straight = <LatLng>[
+                            ?pickup,
+                            LatLng(_destination!.lat, _destination!.lng),
+                          ];
+                          return [
+                            if (straight.length == 2)
+                              Polyline(
+                                points: straight,
+                                strokeWidth: 2,
+                                color: Colors.grey,
+                                pattern: StrokePattern.dashed(segments: const [12, 8]),
+                              ),
+                          ];
+                        },
                       ),
                   ],
                 ),
@@ -376,17 +408,55 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
 
   Widget _buildRouteInfo(AsyncValue<NavigationRoute>? routeAsync) {
     final route = routeAsync?.valueOrNull;
+
+    // Error surface: only when there is no stale successful route.
+    if (routeAsync != null && routeAsync.hasError && route == null) {
+      return Row(
+        children: [
+          const Icon(Icons.error_outline, size: 16, color: Colors.red),
+          const SizedBox(width: 8),
+          Expanded(
+            child: Text(
+              apiErrorMessage(routeAsync.error!, 'Route unavailable'),
+              style: const TextStyle(
+                color: Colors.red,
+                fontSize: 14,
+              ),
+            ),
+          ),
+          TextButton(
+            onPressed: () {
+              final pickup = _pickupLocation != null
+                  ? LatLng(_pickupLocation!.lat, _pickupLocation!.lng)
+                  : _currentPosition;
+              if (pickup != null && _destination != null) {
+                final args = RouteArgs(
+                  fromLat: pickup.latitude,
+                  fromLng: pickup.longitude,
+                  toLat: _destination!.lat,
+                  toLng: _destination!.lng,
+                );
+                ref.invalidate(navigationRouteProvider(args));
+              }
+            },
+            child: const Text('Retry'),
+          ),
+        ],
+      );
+    }
+
     if (route == null) return const SizedBox.shrink();
 
     final distanceKm = route.totalDistanceM / 1000;
     final minutes = (route.totalDurationS / 60).round();
+    final prefix = route.isEstimate ? 'Estimated ' : '';
 
     return Row(
       children: [
         Icon(Icons.route, size: 16, color: Colors.grey[600]),
         const SizedBox(width: 8),
         Text(
-          '${distanceKm.toStringAsFixed(1)} km  •  ~$minutes min',
+          '$prefix${distanceKm.toStringAsFixed(1)} km  •  ~$minutes min',
           style: TextStyle(
             color: Colors.grey[700],
             fontSize: 14,

@@ -532,6 +532,36 @@ void main() {
 
       expect(route, isNull);
       expect(notifier.state.route, isNull);
+      expect(notifier.state.routeError, isNotNull);
+      expect(notifier.state.routeError, contains('Route unavailable'));
+    });
+
+    test('success clears a previous route error', () async {
+      when(() => mockDio.get(
+        ApiEndpoints.navigationRoute,
+        queryParameters: any(named: 'queryParameters'),
+      )).thenThrow(DioException(requestOptions: RequestOptions(path: '/')));
+      await notifier.fetchRoute(
+        fromLat: pickupLat,
+        fromLng: pickupLng,
+        toLat: dropoffLat,
+        toLng: dropoffLng,
+        currentLat: pickupLat,
+        currentLng: pickupLng,
+      );
+      expect(notifier.state.routeError, isNotNull);
+
+      stubRouteGet();
+      await notifier.fetchRoute(
+        fromLat: pickupLat,
+        fromLng: pickupLng,
+        toLat: dropoffLat,
+        toLng: dropoffLng,
+        currentLat: pickupLat,
+        currentLng: pickupLng,
+      );
+      expect(notifier.state.routeError, isNull);
+      expect(notifier.state.route, isNotNull);
     });
 
     test('tolerates integer coordinates in the polyline', () async {

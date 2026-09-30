@@ -6,6 +6,7 @@ import (
 	"math"
 	"testing"
 
+	"ride-hailing-api/internal/config"
 	"ride-hailing-api/internal/model"
 	"ride-hailing-api/internal/repository"
 	"ride-hailing-api/internal/routing"
@@ -614,6 +615,215 @@ func TestGetRouteUncoveredDropoffIsEstimate(t *testing.T) {
 	}
 	if !got.IsEstimate {
 		t.Error("a pickup in a region and a dropoff outside every region must be an estimate")
+	}
+}
+
+// ---- finite snap radius (api_plans [routing]_estimate_fallback_default) ---
+//
+// radiusRepoFake is a regionRepoFake whose Snap answers with the REAL coverage
+// rule (repository.WithinSnapRadius) against a per-pin snap distance, so these
+// tests exercise the production predicate rather than a test-local copy of it.
+// It stands in for a region whose nearest road vertex is snapDistM from the
+// pin — the exact situation the finite ROUTING_SNAP_RADIUS_M default exists to
+// catch.
+//
+// The radius is read from a *config.Config, never from a literal in the fake:
+// the value under test is the one an operator's environment produces, and the
+// repository-side tests (internal/repository/snap_radius_test.go) pin that the
+// production constructor and engine factory store this very value on the real
+// repos. Between the two, config -> ctor -> Snap is covered end to end.
+type radiusRepoFake struct {
+	*regionRouterFake
+	radiusM   float64
+	snapDistM map[pinKey]float64 // pin -> distance to that region's nearest road
+}
+
+func newRadiusRepo(regions []model.RegionRef, cfg *config.Config, snapDistM map[pinKey]float64) *radiusRepoFake {
+	// The embedded coverage table is never consulted (Snap below answers from
+	// snapDistM), so it stays empty: this fake's coverage IS the radius rule.
+	return &radiusRepoFake{
+		regionRouterFake: newRouterRepo(regions, coverage{}),
+		radiusM:          cfg.RoutingSnapRadiusM,
+		snapDistM:        snapDistM,
+	}
+}
+
+func (f *radiusRepoFake) Snap(lat, lng float64, datasource, regionID string) (model.SnapResult, bool) {
+	pin := pinKey{lat, lng}
+	f.snapCalls = append(f.snapCalls, snapCall{Lat: lat, Lng: lng, Datasource: datasource, RegionID: regionID})
+	dist, hasVertex := f.snapDistM[pin]
+	if !hasVertex {
+		// No road vertex at all in range for this pin (a region that simply
+		// does not cover it).
+		return model.SnapResult{}, false
+	}
+	if !repository.WithinSnapRadius(dist, f.radiusM) {
+		// The real repo's rule: beyond the radius is "not covered".
+		return model.SnapResult{}, false
+	}
+	return model.SnapResult{VertexID: 1, DistanceM: dist, Lat: lat, Lng: lng}, true
+}
+
+// routesInEveryRegion lets a test assert on the ROUTE without pinning which
+// region the proximity-ordered resolver happens to pick first for its pin
+// (that ordering is its own test above).
+func routesInEveryRegion(regions []model.RegionRef, nodes []repository.RouteResult) map[string][]repository.RouteResult {
+	routes := make(map[string][]repository.RouteResult, len(regions))
+	for _, ref := range regions {
+		routes[ref.RegionID] = nodes
+	}
+	return routes
+}
+
+// The bug (#2) end to end at the service layer: with the SHIPPED default radius,
+// a pin tens of km from any road resolves to no region, so GetRoute degrades to
+// the straight-line estimate — a 200 with is_estimate, never a bogus snapped
+// route. This is the path that was dead while the default was 0.
+func TestGetRouteBeyondSnapRadiusIsEstimateWithTheDefaultRadius(t *testing.T) {
+	// The REAL shipped default, not a restated 50000: this test is the
+	// end-to-end proof that a configuration change re-opens or closes the bug.
+	t.Setenv("ROUTING_SNAP_RADIUS_M", "")
+	cfg := config.Load()
+	defaultRadius := cfg.RoutingSnapRadiusM
+	if defaultRadius <= 0 {
+		t.Fatalf("the shipped default radius is %v; the estimate path would be unreachable", defaultRadius)
+	}
+
+	repo := newRadiusRepo(registry(), cfg, map[pinKey]float64{
+		pinKey(sjPin):     300,  // an urban pickup: meters from a road
+		pinKey(sjDropPin): 1200, // also served
+	})
+	// A second trip whose pickup is in unserved country.
+	remotePin := [2]float64{5.00, -90.00}
+	remoteDrop := [2]float64{5.01, -90.01}
+	repo.snapDistM[pinKey(remotePin)] = 60000 // 60 km from the nearest road
+
+	// The default radius is finite, so the remote pickup has no coverage at
+	// all: every candidate is tried and every one is rejected as too far.
+	if ref, _, _ := (&NavigationService{navRepo: repo}).resolveRegion(remotePin[0], remotePin[1]); ref != nil {
+		t.Fatalf("a 60000 m pin must be uncovered under the %v m default, got %+v", defaultRadius, ref)
+	}
+
+	svc := NewNavigationService(repo)
+	got, err := svc.GetRoute(remotePin[0], remotePin[1], remoteDrop[0], remoteDrop[1])
+	if err != nil {
+		t.Fatalf("no coverage must not be an error: %v", err)
+	}
+	if !got.IsEstimate {
+		t.Error("a beyond-radius pin must answer is_estimate, not a snapped route")
+	}
+	wantDist := int(math.Round(routing.HaversineMeters(remotePin[0], remotePin[1], remoteDrop[0], remoteDrop[1])))
+	if got.DistanceMeters != wantDist {
+		t.Errorf("distance = %d m, want the straight line %d m", got.DistanceMeters, wantDist)
+	}
+	if wantDur := wantDist / 11; got.DurationSecs != wantDur {
+		t.Errorf("duration = %d s, want %d s", got.DurationSecs, wantDur)
+	}
+	if len(got.Polyline) != 2 ||
+		got.Polyline[0] != (model.LatLng{Lat: remotePin[0], Lng: remotePin[1]}) ||
+		got.Polyline[1] != (model.LatLng{Lat: remoteDrop[0], Lng: remoteDrop[1]}) {
+		t.Errorf("estimate polyline = %+v, want exactly the two pinned points", got.Polyline)
+	}
+	if len(repo.routeIDs) != 0 {
+		t.Errorf("an uncovered pin must never reach the router, got %+v", repo.routeIDs)
+	}
+
+	// The same repository keeps routing ordinary urban trips: the finite
+	// default must not turn a covered pin into an estimate.
+	repo.routes = routesInEveryRegion(registry(), []repository.RouteResult{
+		{NodeID: 1, NodeSeq: 0, Lat: 9.9350, Lng: -84.0800},
+		{NodeID: 2, NodeSeq: 1, Lat: 9.9433, Lng: -84.0733, AggCost: 2094},
+	})
+	urban, err := svc.GetRoute(sjPin[0], sjPin[1], sjDropPin[0], sjDropPin[1])
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if urban.IsEstimate {
+		t.Error("pins well within the default radius must still route")
+	}
+	if urban.DistanceMeters != 2094 {
+		t.Errorf("distance = %d m, want the routed 2094 m", urban.DistanceMeters)
+	}
+	if len(repo.routeIDs) != 1 || repo.routeIDs[0].RegionID != "cr-sj" {
+		t.Errorf("RouteInRegion calls = %+v, want exactly one in cr-sj", repo.routeIDs)
+	}
+}
+
+// The documented opt-in: an explicit ROUTING_SNAP_RADIUS_M=0 keeps snapping
+// unconditionally, so the very same 60 km pin routes again and the honest
+// estimate is NOT what an operator who asked for always-snap gets.
+func TestGetRouteRadiusZeroOptInStillSnapsUnconditionally(t *testing.T) {
+	remotePin := [2]float64{5.00, -90.00}
+	remoteDrop := [2]float64{5.01, -90.01}
+
+	// The opt-in is the ENVIRONMENT value, so this also fails if a "0" typo
+	// ever degrades to the 50 km default (the direction bug #2 came from).
+	t.Setenv("ROUTING_SNAP_RADIUS_M", "0")
+	cfg := config.Load()
+	if cfg.RoutingSnapRadiusM != 0 {
+		t.Fatalf("ROUTING_SNAP_RADIUS_M=0 loaded as %v, want 0", cfg.RoutingSnapRadiusM)
+	}
+
+	repo := newRadiusRepo(registry(), cfg, map[pinKey]float64{
+		pinKey(remotePin):  60000,
+		pinKey(remoteDrop): 70000,
+	})
+	repo.routes = routesInEveryRegion(registry(), []repository.RouteResult{
+		{NodeID: 1, NodeSeq: 0, Lat: 5.00, Lng: -90.00},
+		{NodeID: 2, NodeSeq: 1, Lat: 5.01, Lng: -90.01, AggCost: 83000},
+	})
+	svc := NewNavigationService(repo)
+
+	got, err := svc.GetRoute(remotePin[0], remotePin[1], remoteDrop[0], remoteDrop[1])
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if got.IsEstimate {
+		t.Error("with radius 0 (always-snap opt-in) a far pin must still route, not degrade")
+	}
+	if got.DistanceMeters != 83000 {
+		t.Errorf("distance = %d m, want the routed 83000 m", got.DistanceMeters)
+	}
+	if len(repo.routeIDs) != 1 {
+		t.Errorf("RouteInRegion calls = %+v, want exactly one", repo.routeIDs)
+	}
+}
+
+// A tighter operator-chosen radius turns a moderately-far pin into an estimate
+// while a nearby one keeps routing: the knob is real, not just a default value.
+func TestGetRouteTighterRadiusOnlyDegradesFarPins(t *testing.T) {
+	farPin := [2]float64{9.00, -84.20}  // 4 km from the nearest road
+	farDrop := [2]float64{9.01, -84.20} // likewise uncovered
+	nearPin := [2]float64{9.93, -84.08}
+	nearDrop := [2]float64{9.940, -84.070}
+
+	t.Setenv("ROUTING_SNAP_RADIUS_M", "1000")
+	repo := newRadiusRepo(registry(), config.Load(), map[pinKey]float64{
+		pinKey(farPin):   4000,
+		pinKey(farDrop):  4200,
+		pinKey(nearPin):  120,
+		pinKey(nearDrop): 180,
+	})
+	repo.routes = routesInEveryRegion(registry(), []repository.RouteResult{
+		{NodeID: 1, NodeSeq: 0, Lat: 9.93, Lng: -84.08},
+		{NodeID: 2, NodeSeq: 1, Lat: 9.940, Lng: -84.070, AggCost: 1500},
+	})
+	svc := NewNavigationService(repo)
+
+	far, err := svc.GetRoute(farPin[0], farPin[1], farDrop[0], farDrop[1])
+	if err != nil {
+		t.Fatalf("no coverage must not be an error: %v", err)
+	}
+	if !far.IsEstimate {
+		t.Errorf("a pin 4000 m out under a 1000 m radius must be an estimate, got %+v", far)
+	}
+
+	near, err := svc.GetRoute(nearPin[0], nearPin[1], nearDrop[0], nearDrop[1])
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if near.IsEstimate || near.DistanceMeters != 1500 {
+		t.Errorf("got %+v, want a real 1500 m route for the in-radius pin", near)
 	}
 }
 

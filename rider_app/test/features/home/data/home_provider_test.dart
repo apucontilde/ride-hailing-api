@@ -223,4 +223,26 @@ void main() {
       expect(notifier.state.rideId, isNull);
     });
   });
+
+  group('NavigationRoute.fromJson', () {
+    test('parses is_estimate false', () {
+      final route = NavigationRoute.fromJson({
+        'polyline': [{'lat': 9.9, 'lng': -84.1}],
+        'total_distance_m': 1000,
+        'total_duration_s': 90,
+        'is_estimate': false,
+      });
+      expect(route.isEstimate, isFalse);
+    });
+
+    test('parses is_estimate true', () {
+      final route = NavigationRoute.fromJson({
+        'polyline': [{'lat': 9.9, 'lng': -84.1}],
+        'total_distance_m': 500,
+        'total_duration_s': 60,
+        'is_estimate': true,
+      });
+      expect(route.isEstimate, isTrue);
+    });
+  });
 }

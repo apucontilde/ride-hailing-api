@@ -262,4 +262,50 @@ void main() {
     rideState.declineOffer();
     await tester.pumpAndSettle();
   });
+
+  testWidgets('the denial banner renders when permission is permanently denied',
+      (tester) async {
+    // Override the provider to simulate a permanent denial.
+    final deniedContainer = ProviderContainer(
+      overrides: [
+        apiClientProvider.overrideWithValue(mockApiClient),
+        rideStateProvider.overrideWith((ref) => rideState),
+        driverProfileProvider.overrideWith((ref) => profile),
+        appPermissionProvider.overrideWith(
+          (ref) => const AppPermissionState(
+            granted: false,
+            deniedPermanently: true,
+          ),
+        ),
+        tripMapTileProvider.overrideWith((ref) => null),
+        locationServiceProvider.overrideWith(
+          (ref) => FakeLocationService(
+            apiClient: mockApiClient,
+            availabilityNotifier: ref.read(availabilityProvider.notifier),
+          ),
+        ),
+      ],
+    );
+    addTearDown(deniedContainer.dispose);
+
+    final router = GoRouter(
+      initialLocation: '/home',
+      routes: [
+        GoRoute(path: '/home', builder: (_, _) => const HomeScreen()),
+        GoRoute(path: '/trip', builder: (_, _) => const TripScreen()),
+      ],
+    );
+    addTearDown(router.dispose);
+
+    await tester.pumpWidget(
+      UncontrolledProviderScope(
+        container: deniedContainer,
+        child: MaterialApp.router(routerConfig: router),
+      ),
+    );
+    await tester.pump();
+    await tester.pump();
+
+    expect(find.text('Location access denied. Turn it on in settings to receive ride offers.'), findsOneWidget);
+  });
 }

@@ -99,6 +99,108 @@ func TestRoutingDatasourceConfigFromEnv(t *testing.T) {
 	}
 }
 
+// ROUTING_SNAP_RADIUS_M (api_plans [routing]_estimate_fallback_default, bug #2):
+// the default must be FINITE, or the no-coverage check never runs and every pin
+// however remote snaps to the nearest road — which is what made the honest
+// is_estimate answer unreachable in the shipped configuration. 0 remains a
+// supported always-snap opt-in, and an unparseable value falls back to the
+// default (never to 0, which would silently re-open the bug).
+func TestRoutingSnapRadiusConfigFromEnv(t *testing.T) {
+	cases := []struct {
+		name string
+		env  map[string]string
+		want float64
+	}{
+		{
+			name: "default_is_finite",
+			want: 50000,
+		},
+		{
+			name: "explicit_zero_is_always_snap_opt_in",
+			env:  map[string]string{"ROUTING_SNAP_RADIUS_M": "0"},
+			want: 0,
+		},
+		{
+			name: "explicit_radius",
+			env:  map[string]string{"ROUTING_SNAP_RADIUS_M": "250"},
+			want: 250,
+		},
+		{
+			// A typo must NOT degrade to "always snap", which is the exact
+			// behavior bug #2 removed.
+			name: "garbage_falls_back_to_default_not_zero",
+			env:  map[string]string{"ROUTING_SNAP_RADIUS_M": "far"},
+			want: 50000,
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Setenv("ROUTING_SNAP_RADIUS_M", "")
+			for k, v := range tc.env {
+				t.Setenv(k, v)
+			}
+
+			if got := Load().RoutingSnapRadiusM; got != tc.want {
+				t.Errorf("RoutingSnapRadiusM = %v, want %v", got, tc.want)
+			}
+		})
+	}
+}
+
+// ROUTING_ENGINE (api_plans [routing]_native_engine_default, bug #1): `native`
+// is the intentional PERMANENT default — the benchmark gate that once left the
+// choice "pending" is closed. This test pins it so a future edit cannot quietly
+// reopen the decision by flipping the default, and so the whitelist's failure
+// direction stays pinned too: a typo must degrade to the FASTER engine.
+func TestRoutingEngineDefaultIsNative(t *testing.T) {
+	cases := []struct {
+		name string
+		env  map[string]string
+		want string
+	}{
+		{
+			name: "unset_defaults_to_native",
+			want: "native",
+		},
+		{
+			name: "explicit_native",
+			env:  map[string]string{"ROUTING_ENGINE": "native"},
+			want: "native",
+		},
+		{
+			// The opt-in stays supported, for parity/validation work.
+			name: "explicit_pgrouting",
+			env:  map[string]string{"ROUTING_ENGINE": "pgrouting"},
+			want: "pgrouting",
+		},
+		{
+			// A typo must not select an engine nobody asked for.
+			name: "typo_falls_back_to_native",
+			env:  map[string]string{"ROUTING_ENGINE": "pgroutng"},
+			want: "native",
+		},
+		{
+			name: "case_mismatch_falls_back_to_native",
+			env:  map[string]string{"ROUTING_ENGINE": "Native"},
+			want: "native",
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Setenv("ROUTING_ENGINE", "")
+			for k, v := range tc.env {
+				t.Setenv(k, v)
+			}
+
+			if got := Load().RoutingEngine; got != tc.want {
+				t.Errorf("RoutingEngine = %q, want %q", got, tc.want)
+			}
+		})
+	}
+}
+
 // Elevation knobs (api_plans/[elevation]): off by default; the numeric default
 // weights are proposals, and the bool whitelist fails CLOSED (a typo means off,
 // never on).

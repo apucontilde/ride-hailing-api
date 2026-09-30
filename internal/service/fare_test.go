@@ -22,6 +22,9 @@ func (m *mockGeoRepo) GetDriverLocation(driverID string) (*model.NearbyDriverRes
 	return nil, nil
 }
 func (m *mockGeoRepo) MarkStaleDriversOffline() error { return nil }
+func (m *mockGeoRepo) TouchDriverPresence(driverID, status string) error {
+	return nil
+}
 func (m *mockGeoRepo) CountNearbyDrivers(lat, lng float64, radiusM float64) (int, error) {
 	return m.countFunc(lat, lng, radiusM)
 }

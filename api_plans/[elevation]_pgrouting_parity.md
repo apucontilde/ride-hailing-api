@@ -58,7 +58,7 @@ not inline in the importer, and not a weighted `cost`.
 
 ## Why deferred
 
-Plan 03's benchmark gate kept `native` (~28,000× slower on the `hop` workset) and STATUS.md
+Plan 03's benchmark gate kept `native` (~163,000× slower on the `hop` workset) and STATUS.md
 records native as the permanent default. Parity is therefore a documentation problem now and a
 migration problem only if pgRouting ever returns to being a city-hop engine. Until then the
 factory warning is the whole deliverable.

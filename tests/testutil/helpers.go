@@ -42,30 +42,27 @@ type TestResponse struct {
 // dispatch/offer suites: with the lenient repo a ride is always dispatched to
 // an invented driver, so "the driver never received the offer" cannot fail.
 func NewStrictTestServerE() (*TestServer, error) {
-	cfg := config.Load()
+	return newTestServerE(NewStrictMockGeoRepo(), NewMockNavigationRepo())
+}
 
-	cfg.RateLimitRegister = 9999
-	cfg.RateLimitLogin = 9999
-	cfg.RateLimitGeneral = 9999
-	cfg.RateLimitRide = 9999
+// NewTestServerWithNavE builds a server with a caller-supplied navigation
+// repository so route-failure paths are reachable without a live road network
+// (api_plans/[errors]_route_outage_contract_test.md). The geo repo is strict, so
+// this server keeps the dispatch suites' "no invented driver" guarantee.
+func NewTestServerWithNavE(navRepo *MockNavigationRepo) (*TestServer, error) {
+	return newTestServerE(NewStrictMockGeoRepo(), navRepo)
+}
 
-	userRepo := NewMockUserRepo()
-	rideRepo := NewMockRideRepo()
-	geoRepo := NewStrictMockGeoRepo()
-	navRepo := NewMockNavigationRepo()
-	placesRepo := NewMockPlacesRepo()
-
-	r := router.SetupWithRepos(cfg, userRepo, rideRepo, geoRepo, navRepo, placesRepo, nil)
-
-	return &TestServer{
-		Server:     httptest.NewServer(r),
-		Config:     cfg,
-		AuthTokens: make(map[string]string),
-		UserRepo:   userRepo,
-		RideRepo:   rideRepo,
-		GeoRepo:    geoRepo,
-		PlacesRepo: placesRepo,
-	}, nil
+// NewTestServerWithNav is NewTestServerWithNavE with t.Skip semantics, matching
+// NewTestServer.
+func NewTestServerWithNav(t *testing.T, navRepo *MockNavigationRepo) *TestServer {
+	t.Helper()
+	ts, err := NewTestServerWithNavE(navRepo)
+	if err != nil {
+		t.Skipf("skipping: %v", err)
+		return nil
+	}
+	return ts
 }
 
 // NewStrictTestServer is NewStrictTestServerE with t.Skip semantics, matching
@@ -81,6 +78,12 @@ func NewStrictTestServer(t *testing.T) *TestServer {
 }
 
 func NewTestServerE() (*TestServer, error) {
+	return newTestServerE(NewMockGeoRepo(), NewMockNavigationRepo())
+}
+
+// newTestServerE is the single body behind every constructor above: the public
+// ones differ only in which geo/navigation repository they inject.
+func newTestServerE(geoRepo *MockGeoRepo, navRepo *MockNavigationRepo) (*TestServer, error) {
 	cfg := config.Load()
 
 	// Disable rate limiting for tests
@@ -91,13 +94,11 @@ func NewTestServerE() (*TestServer, error) {
 
 	userRepo := NewMockUserRepo()
 	rideRepo := NewMockRideRepo()
-	geoRepo := NewMockGeoRepo()
-	navRepo := NewMockNavigationRepo()
 	placesRepo := NewMockPlacesRepo()
 
 	r := router.SetupWithRepos(cfg, userRepo, rideRepo, geoRepo, navRepo, placesRepo, nil)
 
-	ts := &TestServer{
+	return &TestServer{
 		Server:     httptest.NewServer(r),
 		Config:     cfg,
 		AuthTokens: make(map[string]string),
@@ -105,9 +106,7 @@ func NewTestServerE() (*TestServer, error) {
 		RideRepo:   rideRepo,
 		GeoRepo:    geoRepo,
 		PlacesRepo: placesRepo,
-	}
-
-	return ts, nil
+	}, nil
 }
 
 func NewTestServer(t *testing.T) *TestServer {

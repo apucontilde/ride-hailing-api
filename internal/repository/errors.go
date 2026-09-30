@@ -23,6 +23,18 @@ var (
 	ErrConflict = errors.New("conflict")
 )
 
+// ErrPinUncovered is a routing DATA gap: this pin's nearest road vertex is
+// farther than ROUTING_SNAP_RADIUS_M, so no region covers it. It is not part of
+// the taxonomy above because no handler maps it to a status — the service
+// catches it and degrades the trip to the straight-line estimate (HTTP 200 +
+// is_estimate). Letting it propagate is what turned a data gap into a 500
+// INTERNAL, which the rider app then draws as a confident road-less route.
+//
+// It is deliberately NOT routing.ErrNoRoute, which keeps its honest meaning:
+// the graph WAS searched and has no path between two COVERED pins. That is a
+// routing failure and stays an error.
+var ErrPinUncovered = errors.New("pin not covered by the snap radius")
+
 // Postgres SQLSTATEs worth telling apart. Anything else is internal: a
 // connection failure must never be reported to a user as a conflict.
 const (

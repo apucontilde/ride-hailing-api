@@ -62,6 +62,11 @@ class LocationService {
   final Stream<Position> Function() positionStreamProvider;
   final Duration throttle;
 
+  /// Called with the detailed permission result when
+  /// [requestPermission] resolves. Wired to
+  /// [appPermissionProvider] so the denial banner can fire.
+  final void Function({bool granted, bool deniedPermanently})? onPermission;
+
   /// Called with every fix, before any online/throttle gate. Wired to
   /// [lastPositionProvider] so the trip map and route fetch have an origin.
   final void Function(Position position)? onPosition;
@@ -77,6 +82,7 @@ class LocationService {
     required this.availabilityNotifier,
     Stream<Position> Function()? positionStreamProvider,
     this.throttle = const Duration(seconds: 5),
+    this.onPermission,
     this.onPosition,
   }) : positionStreamProvider =
             positionStreamProvider ?? LocationHelper.getPositionStream;
@@ -104,7 +110,12 @@ class LocationService {
   }
 
   Future<bool> requestPermission() async {
-    return await LocationHelper.requestPermission();
+    final result = await LocationHelper.requestPermissionDetailed();
+    onPermission?.call(
+      granted: result.granted,
+      deniedPermanently: result.deniedPermanently,
+    );
+    return result.granted;
   }
 
   void _onPosition(Position position) {
@@ -213,6 +224,12 @@ final locationServiceProvider = Provider<LocationService>((ref) {
   return LocationService(
     apiClient: ref.read(apiClientProvider),
     availabilityNotifier: ref.read(availabilityProvider.notifier),
+    onPermission: ({bool granted = false, bool deniedPermanently = false}) {
+      ref.read(appPermissionProvider.notifier).state = AppPermissionState(
+        granted: granted,
+        deniedPermanently: deniedPermanently,
+      );
+    },
     onPosition: (position) {
       ref.read(lastPositionProvider.notifier).state =
           GeoPoint(position.latitude, position.longitude);

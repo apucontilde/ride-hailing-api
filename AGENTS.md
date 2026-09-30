@@ -49,8 +49,10 @@ Operating rules for agents working in this repo. Read before changing anything.
 Server config is env-driven (`internal/config/config.go`): `SERVER_PORT` (8080),
 `DB_HOST/DB_PORT/DB_USER/DB_PASSWORD/DB_NAME` (`ridehail`/`ridehail_pass`/`ridehailing` @
 localhost:5432), `REDIS_HOST/REDIS_PORT` (localhost:6379), `DEBUG_LOGGING`.
-Routing/region: `ROUTING_ENGINE` (`native`), `ROUTING_SNAP_RADIUS_M` (0 = always snap; >0 enables
-no-coverage estimates), `ROUTING_DEFAULT_REGION` (defaults to the `default_region=TRUE` row),
+Routing/region: `ROUTING_ENGINE` (`native` — the intentional permanent default, see fact 3),
+`ROUTING_SNAP_RADIUS_M` (**50000** m default: a pin farther than that from any road is not covered
+and gets a 200 `is_estimate`; `0` is the documented always-snap opt-in),
+`ROUTING_DEFAULT_REGION` (defaults to the `default_region=TRUE` row),
 `ROUTING_MAX_REGIONS_IN_MEMORY` (0 = keep all). Per-datasource pools read `routing_datasources` rows
 and take each city DB's password from `DATASOURCE_<ID>_PASSWORD` (id uppercased, `-`→`_`) or
 `~/.pgpass` — never the row; `ROUTING_DATASOURCE_SSLMODE`/`ROUTING_DATASOURCE_MAX_CONNS` tune them.
@@ -81,10 +83,15 @@ Containers: `ride-hailing-db` (`pgrouting/pgrouting:16-3.5-4.0`), `ride-hailing-
    `TestNoOfferWhenDriverNeverPushedLocation` fail under `-race`; `make test` does not use `-race`.
 3. **pgRouting IS available** (api_plans `[routing]`): DB image `pgrouting/pgrouting:16-3.5-4.0`
    (PostGIS 3.5.2 + pgRouting 4.0.1); migration 012 converges old volumes. Routing still runs on the
-   Go engine by default (`internal/routing`, A* over an in-memory graph) — the benchmark gate kept
-   `native` (pgRouting ~28,000× slower on `hop`). The `pgr_dijkstra` path **is** wired
-   (`internal/repository/pgrouting_repo.go`; factory at `internal/router/router.go:32`) and enabled
-   with `ROUTING_ENGINE=pgrouting`; its 8-col output shape matters when tuning. The old
+   Go engine by default (`internal/routing`, A* over an in-memory graph). **`native` is the
+   intentional PERMANENT default — this is decided, not pending a gate** (bug #1 closed;
+   `api_plans/STATUS.md` → `[routing]` decisions holds the numbers). Re-measured 2026-09-29 on
+   the shared 400×400 lattice workset: `hop` native **1,375 ns/op** vs pgRouting
+   **224,359,399 ns/op** (~163,000× faster); `corner` native 244 ms vs pgRouting 264 ms — i.e.
+   pgRouting is not even faster on the long path. The `pgr_dijkstra` path **is** wired
+   (`internal/repository/pgrouting_repo.go`; factory at `internal/router/router.go:32`) and is
+   opt-in with `ROUTING_ENGINE=pgrouting` for parity/validation work and as the fallback target
+   when the extension is absent; its 8-col output shape matters when tuning. The old
    `postgis/postgis:16-3.4-alpine` image has NO pgRouting — what migration 012 fixes.
 4. **Migrations** (`internal/database/migrate.go`): only `migrations/*.up.sql` are embedded and
    executed (alphabetical; version = numeric prefix before the first `_`); `.down.sql` is
@@ -129,8 +136,9 @@ Since `[routing]` stages 05–06, routing is **region-scoped** and **multi-city*
 the SAME `routing_regions` row (snap-first over candidates ordered by bbox-center distance, defaulting
 to `ROUTING_DEFAULT_REGION` or the `default_region=TRUE` row). Pins outside every region → 200 with
 `"is_estimate": true`, the straight haversine polyline, and its `total_distance_m`/`total_duration_s`
-(= /11) (coverage gated by `ROUTING_SNAP_RADIUS_M`; default 0 = always snap, so any pin resolves into
-the nearest imported region). Cross-region trips are also estimates (intercity deferred). Each region
+(= /11) (coverage gated by `ROUTING_SNAP_RADIUS_M`; default 50000 m, so a pin >50 km from any road
+answers an estimate; `0` restores always-snap, where any pin resolves into the nearest imported
+region). Cross-region trips are also estimates (intercity deferred). Each region
 may name a `datasource` (own Postgres); one pool per datasource and one lazily built, evictable native
 graph per region, so a down datasource degrades only its own regions — never a 500 for other cities.
 Same-DB regions (`datasource` NULL) behave as stage 05.
