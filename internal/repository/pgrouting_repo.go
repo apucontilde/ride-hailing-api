@@ -107,11 +107,28 @@ func NewRoutingRepositoryWithPools(db *sqlx.DB, pools *DatasourcePools, cfg *con
 	if cfg != nil && cfg.RoutingEngine == "pgrouting" {
 		var present bool
 		if err := db.Get(&present, "SELECT EXISTS(SELECT 1 FROM pg_extension WHERE extname = 'pgrouting')"); err == nil && present {
+			if cfg.RoutingElevation.Enabled {
+				log.Println("WARNING: ROUTING_ELEVATION=on with ROUTING_ENGINE=pgrouting has NO EFFECT " +
+					"(pgr_dijkstra reads road_network_edges_pgr.cost, which is still pure meters). " +
+					"Routes will differ from the native engine's. Use ROUTING_ENGINE=native, or see " +
+					"api_plans/[elevation] for the parity follow-up.")
+			}
 			return NewPGRoutingRepoWithDatasources(db, pools, cfg.RoutingSnapRadiusM)
 		}
 		log.Println("ROUTING_ENGINE=pgrouting but pgRouting is unavailable; falling back to native A* engine")
 	}
-	return NewNavigationRepoWithDatasources(db, pools, cfg.RoutingSnapRadiusM, cfg.RoutingMaxRegionsInMemory)
+
+	native := NewNavigationRepoWithDatasources(db, pools, cfg.RoutingSnapRadiusM, cfg.RoutingMaxRegionsInMemory)
+	if cfg != nil {
+		e := cfg.RoutingElevation
+		native = native.configureElevation(routing.CostWeights{
+			AscentW:   e.AscentWeight,
+			DescentW:  e.DescentWeight,
+			MaxGrade:  e.MaxGrade,
+			DeadbandM: e.DeadbandM,
+		}, e.Enabled, e.MinCoverage)
+	}
+	return native
 }
 
 func (r *PGRoutingRepo) GetShortestPath(fromLat, fromLng, toLat, toLng float64) ([]RouteResult, error) {
@@ -135,7 +152,7 @@ func (r *PGRoutingRepo) GetShortestPath(fromLat, fromLng, toLat, toLng float64) 
 
 	var rows []RouteResult
 	if err := r.db.Select(&rows, routeSQL, edgesSQL, start.ID, goal.ID); err != nil {
-		return nil, err
+		return nil, wrapDB("route via pgrouting", err)
 	}
 	if len(rows) == 0 {
 		return nil, routing.ErrNoRoute

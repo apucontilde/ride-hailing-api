@@ -2,6 +2,7 @@ package repository
 
 import (
 	"database/sql"
+	"errors"
 	"fmt"
 	"strings"
 
@@ -40,7 +41,7 @@ func (r *PlacesRepo) FindNearbyPlaces(lat, lng, radiusM float64, query string, l
 		ORDER BY rank DESC, distance_m ASC
 		LIMIT $5`
 	if err := r.db.Select(&results, sql, lng, lat, radiusM, query, limit); err != nil {
-		return nil, fmt.Errorf("failed to find nearby places: %w", err)
+		return nil, wrapDB("find nearby places", err)
 	}
 	return results, nil
 }
@@ -59,11 +60,11 @@ func (r *PlacesRepo) ReverseGeocode(lat, lng, radiusM float64) (*model.NearbyPla
 		ORDER BY distance_m ASC
 		LIMIT 1`
 	err := r.db.Get(result, query, lng, lat, radiusM)
-	if err == sql.ErrNoRows {
+	if errors.Is(err, sql.ErrNoRows) {
 		return nil, nil
 	}
 	if err != nil {
-		return nil, fmt.Errorf("failed to reverse geocode: %w", err)
+		return nil, wrapDB("reverse geocode", err)
 	}
 	return result, nil
 }
@@ -71,7 +72,7 @@ func (r *PlacesRepo) ReverseGeocode(lat, lng, radiusM float64) (*model.NearbyPla
 func (r *PlacesRepo) CountPlaces() (int, error) {
 	var n int
 	if err := r.db.Get(&n, `SELECT COUNT(*) FROM places`); err != nil {
-		return 0, fmt.Errorf("failed to count places: %w", err)
+		return 0, wrapDB("count places", err)
 	}
 	return n, nil
 }
@@ -113,7 +114,7 @@ func (r *PlacesRepo) insertBatch(batch []model.PlaceSeed) (int, error) {
 
 	res, err := r.db.Exec(sql, args...)
 	if err != nil {
-		return 0, fmt.Errorf("failed to bulk insert places: %w", err)
+		return 0, wrapDB("bulk insert places", err)
 	}
 	affected, _ := res.RowsAffected()
 	return int(affected), nil

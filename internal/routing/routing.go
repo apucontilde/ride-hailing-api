@@ -13,11 +13,15 @@ import (
 
 var ErrNoRoute = errors.New("no route found")
 
-// Node is a road network vertex with a WGS84 coordinate.
+// Node is a road network vertex with a WGS84 coordinate and an optional
+// elevation. EleM is meters above sea level and 0 when unknown; it is an
+// additive field, so every existing construction site using keyed literals
+// stays valid.
 type Node struct {
-	ID  int64
-	Lat float64
-	Lng float64
+	ID   int64
+	Lat  float64
+	Lng  float64
+	EleM float64
 }
 
 // Edge is a directed traverse of a road segment. Cost is the segment length
@@ -235,18 +239,39 @@ func candidateBounds(lat, bestD float64) (dLat, dLng float64) {
 // fromLng) to (toLat, toLng), snapping both endpoints to their nearest nodes,
 // plus the total distance in meters. The first path node is the snapped
 // origin and the last is the snapped destination.
+//
+// Route is unchanged in SIGNATURE and MEANING: it is the shortest path by
+// distance (CostWeights{}), and its second return value is always meters —
+// today that equals the weighted cost, but it is reported separately so stage
+// 02 can turn elevation on without touching total_distance_m.
 func (g *Graph) Route(fromLat, fromLng, toLat, toLng float64) ([]int64, float64, error) {
+	p, err := g.RouteWithWeights(fromLat, fromLng, toLat, toLng, CostWeights{})
+	if err != nil {
+		return nil, 0, err
+	}
+	return p.Nodes, p.Meters, nil
+}
+
+// RouteWithWeights runs A* under the given elevation weights, returning the
+// full Path telemetry (nodes, true road length Meters, weighted search Cost,
+// and raw AscentM/DescentM). An invalid weight set is treated as CostWeights{}
+// — a misconfigured deploy gets a flat router, never a wrong one or a crash.
+func (g *Graph) RouteWithWeights(fromLat, fromLng, toLat, toLng float64, w CostWeights) (*Path, error) {
+	if err := w.Validate(); err != nil {
+		w = CostWeights{}
+	}
+
 	start, ok := g.NearestNode(fromLat, fromLng)
 	if !ok {
-		return nil, 0, ErrNoRoute
+		return nil, ErrNoRoute
 	}
 	goal, ok := g.NearestNode(toLat, toLng)
 	if !ok {
-		return nil, 0, ErrNoRoute
+		return nil, ErrNoRoute
 	}
 
 	if start.ID == goal.ID {
-		return []int64{start.ID}, 0, nil
+		return &Path{Nodes: []int64{start.ID}, Expanded: 1}, nil
 	}
 
 	open := &nodeHeap{}
@@ -255,48 +280,65 @@ func (g *Graph) Route(fromLat, fromLng, toLat, toLng float64) ([]int64, float64,
 
 	cameFrom := make(map[int64]int64)
 	gScore := map[int64]float64{start.ID: 0}
+	metersScore := map[int64]float64{start.ID: 0}
 	closed := make(map[int64]bool)
 
+	// scale is the heuristic lower-bound factor D. Once validated, D > 0, so
+	// every weighted cost is > 0 and each node expands at most once.
+	scale := w.heuristicScale()
+	goalNode := g.nodes[goal.ID]
+
+	expanded := 0
 	for open.Len() > 0 {
 		cur := heap.Pop(open).(*item)
 		if closed[cur.node] {
 			continue
 		}
 		closed[cur.node] = true
+		expanded++
 
 		if cur.node == goal.ID {
-			return g.reconstruct(cameFrom, start.ID, goal.ID, gScore[goal.ID])
+			p, err := g.reconstructWeighted(cameFrom, start.ID, goal.ID,
+				gScore[goal.ID], metersScore[goal.ID])
+			if err != nil {
+				return nil, err
+			}
+			p.Expanded = expanded
+			return p, nil
 		}
 
+		from := g.nodes[cur.node]
 		for _, e := range g.adj[cur.node] {
 			if closed[e.to] {
 				continue
 			}
-			tent := gScore[cur.node] + e.cost
+			to := g.nodes[e.to]
+			c := weightedEdgeCost(e.cost, to.EleM-from.EleM, w)
+			tent := gScore[cur.node] + c
 			if prev, ok := gScore[e.to]; !ok || tent < prev {
 				cameFrom[e.to] = cur.node
 				gScore[e.to] = tent
-				heur := g.haversineTo(e.to, goal.ID)
+				metersScore[e.to] = metersScore[cur.node] + e.cost
+				heur := scale * HaversineMeters(to.Lat, to.Lng, goalNode.Lat, goalNode.Lng)
 				heap.Push(open, &item{node: e.to, g: tent, f: tent + heur})
 			}
 		}
 	}
 
-	return nil, 0, ErrNoRoute
+	return nil, ErrNoRoute
 }
 
-func (g *Graph) haversineTo(from, to int64) float64 {
-	a := g.nodes[from]
-	b := g.nodes[to]
-	return HaversineMeters(a.Lat, a.Lng, b.Lat, b.Lng)
-}
-
-func (g *Graph) reconstruct(cameFrom map[int64]int64, start, goal int64, cost float64) ([]int64, float64, error) {
+// reconstructWeighted reverses the cameFrom trail into an ordered node slice
+// and builds the Path telemetry: Meters is the authoritative metersScore (the
+// sum over the same relaxation sequence that produced the cost), and
+// AscentM/DescentM are raw (pre-deadband, pre-clamp) elevation deltas of the
+// actual followed path — telemetry, not the optimized quantity.
+func (g *Graph) reconstructWeighted(cameFrom map[int64]int64, start, goal int64, cost, meters float64) (*Path, error) {
 	path := []int64{goal}
 	for node := goal; node != start; {
 		prev, ok := cameFrom[node]
 		if !ok {
-			return nil, 0, ErrNoRoute
+			return nil, ErrNoRoute
 		}
 		path = append(path, prev)
 		node = prev
@@ -304,7 +346,17 @@ func (g *Graph) reconstruct(cameFrom map[int64]int64, start, goal int64, cost fl
 	for i, j := 0, len(path)-1; i < j; i, j = i+1, j-1 {
 		path[i], path[j] = path[j], path[i]
 	}
-	return path, cost, nil
+
+	p := &Path{Nodes: path, Meters: meters, Cost: cost}
+	for i := 1; i < len(path); i++ {
+		dz := g.nodes[path[i]].EleM - g.nodes[path[i-1]].EleM
+		if dz > 0 {
+			p.AscentM += dz
+		} else {
+			p.DescentM += -dz
+		}
+	}
+	return p, nil
 }
 
 // HaversineMeters is the great-circle distance in meters between two WGS84

@@ -616,3 +616,33 @@ func TestGetRouteUncoveredDropoffIsEstimate(t *testing.T) {
 		t.Error("a pickup in a region and a dropoff outside every region must be an estimate")
 	}
 }
+
+// ---- additive elevation totals (api_plans [elevation] stage 01) ----------
+
+// routeInfo copies the last row's raw ascent/descent and the per-response
+// elevation flag, exactly as it copies AggCost.
+func TestRouteInfoCarriesElevationTotals(t *testing.T) {
+	nodes := []repository.RouteResult{
+		{NodeID: 1, NodeSeq: 0, Lat: 9.9400, Lng: -84.0800},
+		{NodeID: 2, NodeSeq: 1, Lat: 9.9433, Lng: -84.0733, AggCost: 5000,
+			AscentM: 412, DescentM: 388, ElevationAware: true},
+	}
+	got, err := routeInfo(sjPin[0], sjPin[1], sjDropPin[0], sjDropPin[1], nodes)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if got.AscentM != 412 || got.DescentM != 388 || !got.ElevationAware {
+		t.Errorf("elevation totals = %v/%v aware=%v, want 412/388 true",
+			got.AscentM, got.DescentM, got.ElevationAware)
+	}
+}
+
+// A straight-line estimate never claims elevation awareness: 0/false keeps the
+// response shape stable when no region covered the pins.
+func TestEstimateRouteElevationTotalsAreZero(t *testing.T) {
+	got := estimateRoute(sjPin[0], sjPin[1], sjDropPin[0], sjDropPin[1])
+	if got.AscentM != 0 || got.DescentM != 0 || got.ElevationAware {
+		t.Errorf("estimate elevation totals = %v/%v aware=%v, want 0/0 false",
+			got.AscentM, got.DescentM, got.ElevationAware)
+	}
+}

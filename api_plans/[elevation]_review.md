@@ -10,13 +10,22 @@ status: open
 > ones.** The elevation chain was renumbered after this review was written so that its head is
 > unnumbered (a `NN_` prefix is earned only by a `depends_on` naming an *open* plan —
 > `.opencode/skills/plan-management/SKILL.md`). Every "stage N" below means the pre-renumbering
-> stage: **stage 01** = `[elevation]_directional_cost_model.md` (now the unnumbered head),
-> **stage 02** = `01_[elevation]_elevation_column_and_repo_plumb.md`, **stage 03** =
-> `02_[elevation]_dem_ingest_and_noise_control.md`, **stage 04** =
-> `03_[elevation]_calibration_and_rollout_gate.md`, **stage 05** =
-> `04_[elevation]_duration_and_api_surface.md`. "The five stage docs" / "stages 01–05" = the head
-> plus today's stages 01–04. The prose is deliberately left as-written so the review still reads
-> as the record of what was reviewed; the filenames and `depends_on` are authoritative.
+> stage: **stage 01** = `[elevation]_directional_cost_model.md` (**landed**, deleted),
+> **stage 02** = `[elevation]_elevation_column_and_repo_plumb.md` (**landed**, deleted),
+> **stage 03** = `[elevation]_dem_ingest_and_noise_control.md` (**landed**, deleted),
+> **stage 04** = `[elevation]_calibration_and_rollout_gate.md` (the current **unnumbered head**,
+> open), **stage 05** = `01_[elevation]_duration_model.md` (current stage 01, open). "The five
+> stage docs" / "stages 01–05" = the five files above. Item C from review stage 05 is now the
+> unnumbered `[elevation]_pgrouting_parity.md`. The prose is deliberately left as-written so the
+> review still reads as the record of what was reviewed; the filenames and `depends_on` are
+> authoritative.
+>
+> ⚠️ **Update (post-landing).** Since this review was written, all three heads landed and were
+> deleted, so the surviving elevation chain is `[elevation]_calibration_and_rollout_gate.md`
+> (unnumbered head) → `01_[elevation]_duration_model.md`, plus the independent
+> `[elevation]_pgrouting_parity.md` and this review. The review prose is unchanged and still uses
+> its original numbering — map through the list above (review **stage 04** is now the unnumbered
+> calibration head, review **stage 05** is now `01_[elevation]_duration_model.md`).
 
 **Reviewed:** 2026-09-25, before any code was written. The whole series is a **proposal**;
 nothing in stages 01–05 has been implemented.

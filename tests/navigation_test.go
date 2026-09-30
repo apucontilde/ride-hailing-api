@@ -40,13 +40,19 @@ func TestNavigationRoute(t *testing.T) {
 
 		assert.Equal(t, http.StatusOK, resp.StatusCode)
 
-		var result struct {
-			Polyline       []map[string]float64 `json:"polyline"`
-			TotalDistanceM int                  `json:"total_distance_m"`
-			TotalDurationS int                  `json:"total_duration_s"`
-		}
+		var result map[string]interface{}
 		err = json.NewDecoder(resp.Body).Decode(&result)
 		assert.NoError(t, err)
+
+		// Additive elevation fields (api_plans [elevation] stage 01) must always
+		// be present — 0/false when elevation routing is off — so the response
+		// shape is stable and clients can rely on the keys existing.
+		for _, key := range []string{"total_ascent_m", "total_descent_m", "elevation_aware"} {
+			assert.Contains(t, result, key)
+		}
+		assert.Equal(t, float64(0), result["total_ascent_m"])
+		assert.Equal(t, float64(0), result["total_descent_m"])
+		assert.Equal(t, false, result["elevation_aware"])
 
 		// If DB is empty, result might be empty, but it shouldn't 500.
 		// In a real integration test, we'd ensure the road network is populated.

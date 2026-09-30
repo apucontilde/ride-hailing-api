@@ -25,6 +25,15 @@ type RouteInfo struct {
 	// straight-line estimate instead of a road-following route (api_plans/05).
 	// The field is additive: existing clients keep reading the other three.
 	IsEstimate bool
+	// AscentM/DescentM are the RAW metres the route climbed/descended
+	// (api_plans [elevation] stage 01), 0 when elevation routing is off or the
+	// region has no coverage. ElevationAware is per-response: with the
+	// coverage gate, elevation can be live for one region and off for another
+	// in the same process, so a client needs to know whether the numbers mean
+	// anything.
+	AscentM        float64
+	DescentM       float64
+	ElevationAware bool
 }
 
 // RegionSource is the OPTIONAL region-resolution capability of a
@@ -265,11 +274,15 @@ func routeInfo(fromLat, fromLng, toLat, toLng float64, nodes []repository.RouteR
 	polyline = appendPoint(polyline, model.LatLng{Lat: toLat, Lng: toLng})
 
 	totalDistance := int(nodes[len(nodes)-1].AggCost)
+	last := nodes[len(nodes)-1]
 
 	return &RouteInfo{
 		DistanceMeters: totalDistance,
 		DurationSecs:   totalDistance / avgSpeedMps,
 		Polyline:       polyline,
+		AscentM:        last.AscentM,
+		DescentM:       last.DescentM,
+		ElevationAware: last.ElevationAware,
 	}, nil
 }
 

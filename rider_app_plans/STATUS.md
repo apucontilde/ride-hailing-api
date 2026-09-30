@@ -72,14 +72,15 @@ unless they cross a package, in which case they are repo-relative
 | # | Issue | Evidence | Severity | Owner |
 | --- | --- | --- | --- | --- |
 | 1 | `ActiveRideScreen` reads invented `driver_lat`/`driver_lng` and `driver_name`/`car_model` instead of typed `RideState.driver`/`driverLocation` | `features/home/presentation/active_ride_screen.dart:109,173-174` | high | [tracking] |
-| 2 | `home_screen.dart` `error: (_, _) => Polyline(...)` draws a straight line on EVERY error status, discarding the exception; narrowing to 5xx-only is a logged follow-up | `features/home/presentation/home_screen.dart:128` | high | [map] |
+| 2 | `home_screen.dart` `error: (_, _) => Polyline(...)` draws a straight line on EVERY error status, discarding the exception — planned fix: `01_[map]_route_fallback_honesty.md` (honest grey-dashed fallback + surface the API `error.message`) | `features/home/presentation/home_screen.dart:157` | high | [map] |
 | 3 | Forgot-password screen is a local `setState` fake; `ApiEndpoints.forgotPassword` dead | `features/auth/presentation/forgot_password_screen.dart:26-29`; `core/api/endpoints.dart:5` | medium | [auth] |
 | 4 | History screen hardcodes "No rides yet" | `features/home/presentation/history_screen.dart:13` | medium | [history] |
 | 5 | Security/SOS screen is a placeholder; `ApiEndpoints.sos` dead | `features/home/presentation/security_screen.dart:13`; `core/api/endpoints.dart:27` | medium | [safety] |
 | 6 | `nearbyDriversProvider` declared but never consumed | `features/home/data/home_provider.dart:12` (sole reference) | low | [geo] |
 | 7 | No code calls `PUT /geo/rider/location` — rider location never streamed | `features/home/presentation/active_ride_screen.dart:29-42` (only local-position listener, no API call) | medium | [geo] |
 | 8 | `current_ride_provider` poll only self-stops on `no_driver_available`; cancel/complete stop relies on screen navigation | `features/home/data/current_ride_provider.dart:102` | low | [tracking] |
-| 9 | Sidebar exists only on `/home`, so switching sections costs a back-press; `AppSidebar.selectedRoute` is wired but no section-level sidebar consumes it (needs a `ShellRoute`/app-wide `drawer:` + a back-hamburger decision) | `features/home/presentation/home_screen.dart:96` | low | [nav] |
+| 9 | Sidebar exists only on `/home`, so switching sections costs a back-press; `AppSidebar.selectedRoute` is wired but no section-level sidebar consumes it — planned: `[nav]_app_wide_drawer.md` (ShellRoute; consumes `selectedRoute`) | `features/home/presentation/home_screen.dart:96` | low | [nav] |
+| 10 | Place autocomplete fires one request per keystroke (no debounce) AND up to 4 sequential requests per query via the `_radiusSteps` 1000/3000/10000/30000 m loop | `features/home/presentation/location_search_screen.dart:50-52`; `features/home/data/home_provider.dart:51,58-73` | medium | [search] |
 
 ## Open plans
 
@@ -90,6 +91,11 @@ unless they cross a package, in which case they are repo-relative
 | `[geo]_rider_location_ping.md` | geo | — | rider-location ping (GEO-1) + `nearbyDriversProvider` consumer chip (GEO-3) |
 | `[auth]_forgot_password.md` | auth | — | real forgot-password (AC-1) |
 | `[safety]_sos.md` | safety | — | SOS button + authoritative backend skip list |
+| `[session]_switch_account.md` | session | — | cancel current session + switch account (shared/ + both login screens; backend session/device semantics noted for api-planner) |
+| `[search]_throttle_place_autocomplete.md` | search | — | debounce autocomplete + collapse `_radiusSteps` fan-out |
+| `[ontrip]_live_route_and_eta.md` | ontrip | `[tracking]_ride_detail_receipt_rating.md` (LC-4) | rider live road route + ETA display (does not steal LC-4 driver-marker item) |
+| `01_[map]_route_fallback_honesty.md` | map | `api_plans/[errors]_route_outage_contract_test.md` (open, cross-domain) | parse `is_estimate`; grey-dashed fallback vs solid blue road route; surface the API `error.message` + Retry (resolves bug #2) |
+| `[nav]_app_wide_drawer.md` | nav | — | bug #9: `ShellRoute` around the six top-level sections so the sidebar (and `selectedRoute`) is app-wide; flow routes stay drawer-free |
 
 ## Invariants
 
@@ -101,7 +107,7 @@ unless they cross a package, in which case they are repo-relative
 - Never build UI around a backend STUB (see the skip list in `[safety]_sos.md`).
 - Don't remove public providers used by other screens; extend them.
 - The API never answers an outage with 4xx: the rider's straight-line fallback fires on every
-  error status (`home_screen.dart:128`), so an outage must be 5xx or `is_estimate: true`.
+  error status (`home_screen.dart:157`), so an outage must be 5xx or `is_estimate: true`.
 
 ## Verification
 

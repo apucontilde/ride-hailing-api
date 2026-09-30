@@ -1,4 +1,4 @@
-.PHONY: all build run test test-integration benchmark bench-integration lint clean docker-up docker-down migrate-up migrate-down seed import-osm download-osm download-osm-san-jose export-places openapi flutter-bootstrap flutter-analyze flutter-test
+.PHONY: all build run test test-integration benchmark bench-integration lint clean docker-up docker-down migrate-up migrate-down seed import-osm import-elevation download-osm download-osm-san-jose export-places openapi flutter-bootstrap flutter-analyze flutter-test
 
 APP_NAME=ride-hailing-api
 BUILD_DIR=./build
@@ -53,6 +53,14 @@ import-osm:
 # Same import, forced re-run of osm2pgrouting for THAT region only.
 import-osm-force:
 	./scripts/import-road-network.sh --force
+
+# Elevation backfill (api_plans/[elevation]_dem_ingest_and_noise_control.md):
+# samples the SRTM "skadi" DEM onto road_network_vertices_pgr and asserts
+# post-backfill coverage. Run AFTER make import-osm; restart the API after
+# (the native graph is cached in-process — the runbook order is
+# import -> elevation -> restart).
+import-elevation:
+	./scripts/import-elevation.sh
 
 # To import a different OSM extract (e.g. whole country):
 #	make import-osm-force OSM_INPUT=data/costa-rica-latest.osm.pbf

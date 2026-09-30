@@ -1,8 +1,6 @@
 package repository
 
 import (
-	"fmt"
-
 	"github.com/jmoiron/sqlx"
 
 	"ride-hailing-api/internal/model"
@@ -43,7 +41,7 @@ func (r *GeoRepo) UpsertDriverPosition(driverID string, lat, lng, heading, speed
 			status     = $6,
 			updated_at = NOW()`,
 		driverID, lng, lat, heading, speed, status)
-	return err
+	return wrapDB("upsert driver position", err)
 }
 
 func (r *GeoRepo) UpsertRiderPosition(riderID string, lat, lng float64) error {
@@ -55,7 +53,7 @@ func (r *GeoRepo) UpsertRiderPosition(riderID string, lat, lng float64) error {
 			location   = ST_SetSRID(ST_MakePoint($2, $3), 4326)::GEOGRAPHY,
 			updated_at = NOW()`,
 		riderID, lng, lat)
-	return err
+	return wrapDB("upsert rider position", err)
 }
 
 func (r *GeoRepo) FindNearbyDrivers(lat, lng float64, radiusM float64, limit int) ([]model.NearbyDriverResult, error) {
@@ -81,7 +79,7 @@ func (r *GeoRepo) FindNearbyDrivers(lat, lng float64, radiusM float64, limit int
 
 	err := r.db.Select(&results, query, lng, lat, radiusM, limit)
 	if err != nil {
-		return nil, fmt.Errorf("failed to find nearby drivers: %w", err)
+		return nil, wrapDB("find nearby drivers", err)
 	}
 	return results, nil
 }
@@ -98,7 +96,7 @@ func (r *GeoRepo) GetDriverLocation(driverID string) (*model.NearbyDriverResult,
 		WHERE driver_id = $1`
 	err := r.db.Get(result, query, driverID)
 	if err != nil {
-		return nil, fmt.Errorf("driver location not found: %w", err)
+		return nil, wrapDB("load driver location", err)
 	}
 	return result, nil
 }
@@ -117,7 +115,7 @@ func (r *GeoRepo) CountNearbyDrivers(lat, lng float64, radiusM float64) (int, er
 			  )`
 	err := r.db.Get(&count, query, lng, lat, radiusM)
 	if err != nil {
-		return 0, fmt.Errorf("failed to count nearby drivers: %w", err)
+		return 0, wrapDB("count nearby drivers", err)
 	}
 	return count, nil
 }
@@ -126,5 +124,5 @@ func (r *GeoRepo) MarkStaleDriversOffline() error {
 	_, err := r.db.Exec(`
 		UPDATE driver_positions SET status = 'offline'
 		WHERE status = 'online' AND updated_at < NOW() - INTERVAL '30 seconds'`)
-	return err
+	return wrapDB("mark stale drivers offline", err)
 }

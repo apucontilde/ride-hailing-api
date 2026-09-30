@@ -1,6 +1,7 @@
 package repository
 
 import (
+	"database/sql"
 	"fmt"
 	"time"
 
@@ -49,7 +50,7 @@ func (r *RideRepo) FindByID(id string) (*model.Ride, error) {
 	ride := &model.Ride{}
 	err := r.db.Get(ride, "SELECT * FROM rides WHERE id = $1", id)
 	if err != nil {
-		return nil, fmt.Errorf("ride not found: %w", err)
+		return nil, wrapDB("load ride", err)
 	}
 	return ride, nil
 }
@@ -61,7 +62,7 @@ func (r *RideRepo) FindCurrentRideByRider(riderID string) (*model.Ride, error) {
 		WHERE rider_id = $1 AND status IN ('pending', 'accepted', 'driver_arrived', 'in_progress')
 		ORDER BY created_at DESC LIMIT 1`, riderID)
 	if err != nil {
-		return nil, fmt.Errorf("no active ride: %w", err)
+		return nil, wrapDB("load active ride", err)
 	}
 	return ride, nil
 }
@@ -73,7 +74,7 @@ func (r *RideRepo) FindCurrentRideByDriver(driverID string) (*model.Ride, error)
 		WHERE driver_id = $1 AND status IN ('accepted', 'driver_arrived', 'in_progress')
 		ORDER BY created_at DESC LIMIT 1`, driverID)
 	if err != nil {
-		return nil, fmt.Errorf("no active ride: %w", err)
+		return nil, wrapDB("load active ride", err)
 	}
 	return ride, nil
 }
@@ -81,7 +82,7 @@ func (r *RideRepo) FindCurrentRideByDriver(driverID string) (*model.Ride, error)
 func (r *RideRepo) FindRidesByRider(riderID string, limit, offset int) ([]model.Ride, int, error) {
 	var total int
 	if err := r.db.Get(&total, "SELECT COUNT(*) FROM rides WHERE rider_id = $1", riderID); err != nil {
-		return nil, 0, err
+		return nil, 0, wrapDB("load rides by rider", err)
 	}
 
 	var rides []model.Ride
@@ -89,7 +90,7 @@ func (r *RideRepo) FindRidesByRider(riderID string, limit, offset int) ([]model.
 		SELECT * FROM rides WHERE rider_id = $1
 		ORDER BY created_at DESC LIMIT $2 OFFSET $3`, riderID, limit, offset)
 	if err != nil {
-		return nil, 0, err
+		return nil, 0, wrapDB("load rides by rider", err)
 	}
 	return rides, total, nil
 }
@@ -97,7 +98,7 @@ func (r *RideRepo) FindRidesByRider(riderID string, limit, offset int) ([]model.
 func (r *RideRepo) FindRidesByDriver(driverID string, limit, offset int) ([]model.Ride, int, error) {
 	var total int
 	if err := r.db.Get(&total, "SELECT COUNT(*) FROM rides WHERE driver_id = $1", driverID); err != nil {
-		return nil, 0, err
+		return nil, 0, wrapDB("load rides by driver", err)
 	}
 
 	var rides []model.Ride
@@ -105,7 +106,7 @@ func (r *RideRepo) FindRidesByDriver(driverID string, limit, offset int) ([]mode
 		SELECT * FROM rides WHERE driver_id = $1
 		ORDER BY created_at DESC LIMIT $2 OFFSET $3`, driverID, limit, offset)
 	if err != nil {
-		return nil, 0, err
+		return nil, 0, wrapDB("load rides by driver", err)
 	}
 	return rides, total, nil
 }
@@ -136,7 +137,7 @@ func (r *RideRepo) UpdateRideStatus(rideID, status string, timestamp *time.Time)
 		statusCol,
 	)
 	_, err := r.db.Exec(query, status, *now, rideID)
-	return err
+	return wrapDB("update ride status", err)
 }
 
 func (r *RideRepo) AssignDriver(rideID, driverID string) error {
@@ -145,14 +146,14 @@ func (r *RideRepo) AssignDriver(rideID, driverID string) error {
 		WHERE id=$2 AND status='pending'`,
 		driverID, rideID)
 	if err != nil {
-		return err
+		return wrapDB("assign driver", err)
 	}
 	rows, err := res.RowsAffected()
 	if err != nil {
-		return err
+		return wrapDB("assign driver", err)
 	}
 	if rows == 0 {
-		return fmt.Errorf("ride already accepted or not found")
+		return fmt.Errorf("accept ride: %w: %w", ErrConflict, sql.ErrNoRows)
 	}
 	return nil
 }
@@ -162,14 +163,14 @@ func (r *RideRepo) CreateEvent(event *model.RideEvent) error {
 		INSERT INTO ride_events (ride_id, from_status, to_status, actor, reason)
 		VALUES ($1, $2, $3, $4, $5)`,
 		event.RideID, event.FromStatus, event.ToStatus, event.Actor, event.Reason)
-	return err
+	return wrapDB("create ride event", err)
 }
 
 func (r *RideRepo) FindVehicleByDriverID(driverID string) (*model.DriverVehicle, error) {
 	v := &model.DriverVehicle{}
 	err := r.db.Get(v, "SELECT * FROM driver_vehicles WHERE driver_id = $1 AND is_active = true ORDER BY created_at DESC LIMIT 1", driverID)
 	if err != nil {
-		return nil, fmt.Errorf("vehicle not found: %w", err)
+		return nil, wrapDB("load vehicle", err)
 	}
 	return v, nil
 }
@@ -179,5 +180,5 @@ func (r *RideRepo) CreateRating(rating *model.Rating) error {
 		INSERT INTO ratings (ride_id, rater_role, rater_id, ratee_id, score, comment)
 		VALUES ($1, $2, $3, $4, $5, $6)`,
 		rating.RideID, rating.RaterRole, rating.RaterID, rating.RateeID, rating.Score, rating.Comment)
-	return err
+	return wrapDB("create rating", err)
 }

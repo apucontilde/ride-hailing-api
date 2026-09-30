@@ -109,12 +109,18 @@ definitions:
         type: object
     handler.NavigationRouteResponse:
         properties:
+            elevation_aware:
+                type: boolean
             is_estimate:
                 type: boolean
             polyline:
                 items:
                     $ref: '#/definitions/handler.PolylinePoint'
                 type: array
+            total_ascent_m:
+                type: number
+            total_descent_m:
+                type: number
             total_distance_m:
                 type: number
             total_duration_s:

@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"ride-hailing-api/internal/model"
+	"ride-hailing-api/internal/repository"
 )
 
 func newID() string {
@@ -16,6 +17,18 @@ func newID() string {
 		panic(fmt.Sprintf("testutil: cannot read random bytes: %v", err))
 	}
 	return fmt.Sprintf("%x-%x-%x-%x-%x", b[0:4], b[4:6], b[6:8], b[8:10], b[10:])
+}
+
+// failNext consumes a repo's one-shot injected failure, if any. It lets the
+// write-failure branches (which the real repositories can hit through a dead
+// driver) be exercised under test.
+func failNext(fail *error) error {
+	if fail == nil || *fail == nil {
+		return nil
+	}
+	err := *fail
+	*fail = nil
+	return err
 }
 
 // --- MockUserRepo ---
@@ -28,6 +41,13 @@ type MockUserRepo struct {
 	byEmail             map[string]string
 	refreshTokens       map[string]*model.RefreshToken
 	passwordResetTokens map[string]*model.PasswordResetToken
+
+	// FailNext, when non-nil, is returned by the next operation that checks it
+	// (FindByEmail read path, and the fail-closed write branches: token
+	// revocation, write failures) and then cleared. It makes the failure
+	// branches reachable under test: the real repositories return a driver
+	// error from Exec/Query, and the mock must be able to too.
+	FailNext error
 }
 
 func NewMockUserRepo() *MockUserRepo {
@@ -44,8 +64,11 @@ func NewMockUserRepo() *MockUserRepo {
 func (m *MockUserRepo) CreateUser(u *model.User) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	if err := failNext(&m.FailNext); err != nil {
+		return err
+	}
 	if _, exists := m.byEmail[u.Email]; exists {
-		return fmt.Errorf("user with email %s already exists", u.Email)
+		return fmt.Errorf("create user: %w", repository.ErrConflict)
 	}
 	id := newID()
 	now := time.Now()
@@ -66,13 +89,16 @@ func (m *MockUserRepo) CreateUser(u *model.User) error {
 func (m *MockUserRepo) FindByEmail(email string) (*model.User, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	if err := failNext(&m.FailNext); err != nil {
+		return nil, err
+	}
 	id, ok := m.byEmail[email]
 	if !ok {
-		return nil, fmt.Errorf("user not found")
+		return nil, fmt.Errorf("load user: %w", repository.ErrNotFound)
 	}
 	u, ok := m.users[id]
 	if !ok {
-		return nil, fmt.Errorf("user not found")
+		return nil, fmt.Errorf("load user: %w", repository.ErrNotFound)
 	}
 	cp := *u
 	return &cp, nil
@@ -83,7 +109,7 @@ func (m *MockUserRepo) FindByID(id string) (*model.User, error) {
 	defer m.mu.Unlock()
 	u, ok := m.users[id]
 	if !ok {
-		return nil, fmt.Errorf("user not found")
+		return nil, fmt.Errorf("load user: %w", repository.ErrNotFound)
 	}
 	cp := *u
 	return &cp, nil
@@ -94,7 +120,7 @@ func (m *MockUserRepo) UpdateUser(u *model.User) error {
 	defer m.mu.Unlock()
 	existing, ok := m.users[u.ID]
 	if !ok {
-		return fmt.Errorf("user not found")
+		return fmt.Errorf("load user: %w", repository.ErrNotFound)
 	}
 	u.CreatedAt = existing.CreatedAt
 	u.UpdatedAt = time.Now()
@@ -120,7 +146,7 @@ func (m *MockUserRepo) FindRiderByID(userID string) (*model.Rider, error) {
 	defer m.mu.Unlock()
 	r, ok := m.riders[userID]
 	if !ok {
-		return nil, fmt.Errorf("rider not found")
+		return nil, fmt.Errorf("load rider: %w", repository.ErrNotFound)
 	}
 	cp := *r
 	return &cp, nil
@@ -131,7 +157,7 @@ func (m *MockUserRepo) UpdateRider(rider *model.Rider) error {
 	defer m.mu.Unlock()
 	existing, ok := m.riders[rider.UserID]
 	if !ok {
-		return fmt.Errorf("rider not found")
+		return fmt.Errorf("load rider: %w", repository.ErrNotFound)
 	}
 	rider.CreatedAt = existing.CreatedAt
 	rider.UpdatedAt = time.Now()
@@ -160,7 +186,7 @@ func (m *MockUserRepo) FindDriverByID(userID string) (*model.Driver, error) {
 	defer m.mu.Unlock()
 	d, ok := m.drivers[userID]
 	if !ok {
-		return nil, fmt.Errorf("driver not found")
+		return nil, fmt.Errorf("load driver: %w", repository.ErrNotFound)
 	}
 	cp := *d
 	return &cp, nil
@@ -171,7 +197,7 @@ func (m *MockUserRepo) UpdateDriver(driver *model.Driver) error {
 	defer m.mu.Unlock()
 	existing, ok := m.drivers[driver.UserID]
 	if !ok {
-		return fmt.Errorf("driver not found")
+		return fmt.Errorf("load driver: %w", repository.ErrNotFound)
 	}
 	driver.CreatedAt = existing.CreatedAt
 	driver.UpdatedAt = time.Now()
@@ -184,7 +210,7 @@ func (m *MockUserRepo) SoftDeleteUser(userID string) error {
 	defer m.mu.Unlock()
 	u, ok := m.users[userID]
 	if !ok {
-		return fmt.Errorf("user not found")
+		return fmt.Errorf("load user: %w", repository.ErrNotFound)
 	}
 	u.Status = "deleted"
 	u.UpdatedAt = time.Now()
@@ -206,10 +232,7 @@ func (m *MockUserRepo) FindRefreshTokenByHash(hash string) (*model.RefreshToken,
 	defer m.mu.Unlock()
 	t, ok := m.refreshTokens[hash]
 	if !ok || t.Revoked {
-		return nil, fmt.Errorf("refresh token not found")
-	}
-	if time.Now().After(t.ExpiresAt) {
-		return nil, fmt.Errorf("refresh token expired")
+		return nil, fmt.Errorf("load refresh token: %w", repository.ErrNotFound)
 	}
 	cp := *t
 	return &cp, nil
@@ -218,6 +241,9 @@ func (m *MockUserRepo) FindRefreshTokenByHash(hash string) (*model.RefreshToken,
 func (m *MockUserRepo) RevokeRefreshToken(id string) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	if err := failNext(&m.FailNext); err != nil {
+		return err
+	}
 	for _, t := range m.refreshTokens {
 		if t.ID == id {
 			t.Revoked = true
@@ -242,10 +268,7 @@ func (m *MockUserRepo) FindPasswordResetTokenByHash(hash string) (*model.Passwor
 	defer m.mu.Unlock()
 	t, ok := m.passwordResetTokens[hash]
 	if !ok || t.Used {
-		return nil, fmt.Errorf("password reset token not found")
-	}
-	if time.Now().After(t.ExpiresAt) {
-		return nil, fmt.Errorf("password reset token expired")
+		return nil, fmt.Errorf("load password reset token: %w", repository.ErrNotFound)
 	}
 	cp := *t
 	return &cp, nil
@@ -254,6 +277,9 @@ func (m *MockUserRepo) FindPasswordResetTokenByHash(hash string) (*model.Passwor
 func (m *MockUserRepo) RevokePasswordResetToken(id string) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	if err := failNext(&m.FailNext); err != nil {
+		return err
+	}
 	for _, t := range m.passwordResetTokens {
 		if t.ID == id {
 			t.Used = true
@@ -266,6 +292,9 @@ func (m *MockUserRepo) RevokePasswordResetToken(id string) error {
 func (m *MockUserRepo) RevokeUserPasswordResetTokens(userID string) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	if err := failNext(&m.FailNext); err != nil {
+		return err
+	}
 	for _, t := range m.passwordResetTokens {
 		if t.UserID == userID && !t.Used {
 			t.Used = true
@@ -282,6 +311,11 @@ type MockRideRepo struct {
 	events   []*model.RideEvent
 	ratings  []*model.Rating
 	vehicles map[string]*model.DriverVehicle
+
+	// FailNext, when non-nil, is returned by the next write operation and then
+	// cleared. It makes the write-failure branches in CreateEvent/CreateRating
+	// reachable: the real repositories return a driver error from Exec.
+	FailNext error
 }
 
 func NewMockRideRepo() *MockRideRepo {
@@ -312,7 +346,7 @@ func (m *MockRideRepo) FindByID(id string) (*model.Ride, error) {
 	defer m.mu.Unlock()
 	r, ok := m.rides[id]
 	if !ok {
-		return nil, fmt.Errorf("ride not found")
+		return nil, fmt.Errorf("load ride: %w", repository.ErrNotFound)
 	}
 	cp := *r
 	return &cp, nil
@@ -331,7 +365,7 @@ func (m *MockRideRepo) FindCurrentRideByRider(riderID string) (*model.Ride, erro
 		}
 	}
 	if latest == nil {
-		return nil, fmt.Errorf("no active ride")
+		return nil, fmt.Errorf("load active ride: %w", repository.ErrNotFound)
 	}
 	return latest, nil
 }
@@ -349,7 +383,7 @@ func (m *MockRideRepo) FindCurrentRideByDriver(driverID string) (*model.Ride, er
 		}
 	}
 	if latest == nil {
-		return nil, fmt.Errorf("no active ride")
+		return nil, fmt.Errorf("load active ride: %w", repository.ErrNotFound)
 	}
 	return latest, nil
 }
@@ -414,7 +448,7 @@ func (m *MockRideRepo) UpdateRideStatus(rideID, status string, timestamp *time.T
 	defer m.mu.Unlock()
 	r, ok := m.rides[rideID]
 	if !ok {
-		return fmt.Errorf("ride not found")
+		return fmt.Errorf("load ride: %w", repository.ErrNotFound)
 	}
 	r.Status = status
 	r.UpdatedAt = time.Now()
@@ -443,10 +477,10 @@ func (m *MockRideRepo) AssignDriver(rideID, driverID string) error {
 	defer m.mu.Unlock()
 	r, ok := m.rides[rideID]
 	if !ok {
-		return fmt.Errorf("ride not found")
+		return fmt.Errorf("load ride: %w", repository.ErrNotFound)
 	}
 	if r.Status != "pending" {
-		return fmt.Errorf("ride is not pending")
+		return fmt.Errorf("update ride status: %w", repository.ErrConflict)
 	}
 	now := time.Now()
 	r.DriverID = &driverID
@@ -459,6 +493,9 @@ func (m *MockRideRepo) AssignDriver(rideID, driverID string) error {
 func (m *MockRideRepo) CreateEvent(event *model.RideEvent) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	if err := failNext(&m.FailNext); err != nil {
+		return err
+	}
 	event.ID = newID()
 	event.CreatedAt = time.Now()
 	m.events = append(m.events, event)
@@ -468,6 +505,9 @@ func (m *MockRideRepo) CreateEvent(event *model.RideEvent) error {
 func (m *MockRideRepo) CreateRating(rating *model.Rating) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	if err := failNext(&m.FailNext); err != nil {
+		return err
+	}
 	rating.ID = newID()
 	rating.CreatedAt = time.Now()
 	m.ratings = append(m.ratings, rating)
@@ -526,6 +566,11 @@ type MockGeoRepo struct {
 	// It mirrors the production query, which has no such fallback
 	// (internal/repository/geo_repo.go:61-87).
 	FabricateNearbyDriver bool
+
+	// FailNext, when non-nil, is returned by the next write operation and then
+	// cleared. It makes the Upsert{Driver,Rider}Position write-failure branches
+	// reachable: the real repositories return a driver error from Exec.
+	FailNext error
 }
 
 func NewMockGeoRepo() *MockGeoRepo {
@@ -571,6 +616,9 @@ func (m *MockGeoRepo) DriverIDs() []string {
 func (m *MockGeoRepo) UpsertDriverPosition(driverID string, lat, lng, heading, speed float64, status string) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	if err := failNext(&m.FailNext); err != nil {
+		return err
+	}
 	m.drivers[driverID] = &driverPosEntry{
 		lat: lat, lng: lng, heading: heading, speed: speed,
 		status: status, updatedAt: time.Now(),
@@ -581,6 +629,9 @@ func (m *MockGeoRepo) UpsertDriverPosition(driverID string, lat, lng, heading, s
 func (m *MockGeoRepo) UpsertRiderPosition(riderID string, lat, lng float64) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	if err := failNext(&m.FailNext); err != nil {
+		return err
+	}
 	m.riders[riderID] = &riderPosEntry{
 		lat: lat, lng: lng, updatedAt: time.Now(),
 	}
@@ -636,7 +687,7 @@ func (m *MockGeoRepo) GetDriverLocation(driverID string) (*model.NearbyDriverRes
 	defer m.mu.Unlock()
 	d, ok := m.drivers[driverID]
 	if !ok {
-		return nil, fmt.Errorf("driver location not found")
+		return nil, fmt.Errorf("load driver location: %w", repository.ErrNotFound)
 	}
 	return &model.NearbyDriverResult{
 		DriverID: driverID,

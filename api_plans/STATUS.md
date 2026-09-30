@@ -38,10 +38,71 @@
   `internal/config/config.go:44-57`. Known issue: the native `RouteInRegion` does not itself
   apply the snap radius; coverage is enforced only at the resolver.
 
-### [errors] — partial; stages 01–03 of the series are still open
-Landed as a side effect of the golangci-lint fix, **not** via the `[errors]` stages: there is
-still no `wrapDB` taxonomy, no `respond.go`/`fail`/`respondRepo` helper, and no `c.Error` on any
-of these sites. The stages' remaining work is unchanged except where noted below.
+### [elevation]
+- Chain head (directional cost model): `CostWeights{AscentW,DescentW,MaxGrade,DeadbandM}` +
+  `weightedEdgeCost`/`deadband`/`clamp`/`heuristicScale`/`Validate` in
+  `internal/routing/elevation.go:47,58,65,99,112`; `Node.EleM` additive field at
+  `internal/routing/routing.go:24`; `RouteWithWeights` returning `Path{Nodes,Meters,Cost,AscentM,DescentM}`
+  at `routing.go:259`, with `Route` becoming a zero-weight wrapper (`routing.go:247`) so the
+  default is byte-identical distance routing. Zero-elevation cost equivalence proved by
+  `TestRouteZeroWeightsEqualsDistance` (`routing_test.go:225`); admissibility by
+  `TestWeightedMatchesBruteForceDijkstra` (`:600`) + `TestHeuristicIsAdmissible` (`:641`);
+10 new tests total appended (11 pre-existing unmodified), `BenchmarkRouteElevated`
+   (`benchmark_test.go:179`).
+- Vertex elevation column + repo/config plumbing (chain head, landed): migration
+  `014_vertex_elevation.up.sql` (`elevation_m DOUBLE PRECISION`, `elevation_source TEXT`,
+  both metadata-only + idempotent); `roadNode.EleM *float64` scan of `elevation_m` +
+  `known` set in `toRoutingNodes` (`navigation_repo.go:57,550`); coverage gate + NULL-endpoint
+  rule in `resolveElevation`/`fillUnknownElevation` (`navigation_repo.go:318,351`, the
+  unknown-endpoint neighbour-mean propagation, pure + DB-free-tested); `RoutingElevation`
+  config struct default-**off** with fail-closed bool parse
+  (`internal/config/config.go:70,77,127,183`); `AggCost = p.Meters` never the weighted cost
+  (`navigation_repo.go:643`); pgrouting-divergence warning in the factory
+  (`pgrouting_repo.go:110,123`). *Renumber drift:* the plan's prose said migration 015 while
+  the correct on-disk version is **014** (013 was the landed region schema) — already resolved
+  on disk.
+- DEM ingest + noise control (chain head, landed): `cmd/elevtool/hgt.go` (stdlib-only gzipped
+  SRTM `.hgt.gz` reader — `ParseHGT`/`At`/`Sample`, north-up row order, void `-32768`
+  rejection, size validation), `cmd/elevtool/main.go` (tile set derived from the **vertex set**
+  — not the bbox corners — `-fetch`/`-dry-run`/`-min-coverage`, transaction-wrapped `COPY` into
+  `road_network_vertices_pgr`, unmatched vertices stay `NULL`), `cmd/elevtool/hgt_test.go` +
+  `main_test.go` (DB/network-free), `scripts/import-elevation.sh` (three-step runbook
+  `import → elevation → restart` + a post-import coverage assertion that exits non-zero below
+  the gate), `Makefile:62` `import-elevation` target. Measured 100.00 % coverage (152,665/152,665),
+  five `skadi` tiles (`elevation_source` per vertex), grade histogram peaked at 2–4 % with a fat
+  tail, `short − long` tripwire 5.0% vs 5.0% = 1.00× (retained as a tripwire, not a calibration
+  input). The `short − long` calibration estimator was **deleted** (measured 1.00×, no signal);
+  its replacement (cell-boundary straddling + known-flat-street `Δz` spread) is owned by the
+  calibration stage.
+- Additive elevation response fields (Item A — condensed from the retired
+  duration/API-surface plan): raw `total_ascent_m` / `total_descent_m` + per-response
+  `elevation_aware`, always present (0/false when off) — `RouteResult.AscentM/DescentM/ElevationAware`
+  last-row (`internal/repository/navigation_repo.go:15,662-666`) → `service.RouteInfo`
+  (`internal/service/navigation.go:20,283-285,299-304`) → `GET /api/v1/navigation/route`
+  (`internal/handler/platform.go:415-423`, `internal/handler/responses.go:154-162`); spec
+  regenerated. Raw metres, never the weighted cost; additive only — `total_distance_m` unchanged,
+  neither app needs a change. Landed 2026-09-29, adversarially confirmed.
+
+### [errors]
+- Error taxonomy: `ErrNotFound`/`ErrConflict` sentinels + `wrapDB` classifier at
+  `internal/repository/errors.go:17-24,44-59`; all repository sites routed through it. Chain
+  **head landed** (deleted).
+- HTTP error contract: `fail`/`respondRepo` helper in `internal/handler/respond.go:19-50` —
+  `fail` attaches the cause (`c.Error`) and writes the house envelope via
+  `AbortWithStatusJSON`, `respondRepo` maps `ErrNotFound`→404 `NOT_FOUND`, `ErrConflict`→409
+  `CONFLICT`, else 500 `INTERNAL` (operation-specific sentence). All five (six including
+  `platform.go`) handler files instrumented (`auth.go`, `driver.go`, `geo.go`, `platform.go`,
+  `ride.go`, `rider.go`); no `gin.H{"error": gin.H` hand-roll and no `err.Error()` in any body
+  remain. Service sentinels `ErrInvalidCredentials`/`ErrInvalidRefreshToken`/
+  `ErrInvalidResetToken` at `internal/service/auth.go:36,42,48`, mapped by the handler so a
+   login/refresh/reset outage now answers **500**, never 401/400 — still 401 for a genuinely bad
+   token (`TestLoginDBOutageIs500Not401` + `TestLoginUnknownEmailStill401`,
+   `tests/error_contract_test.go:104,128`).
+- Validation + client contract: `bindJSON` helper + `fieldName` map + validator JSON
+  `TagNameFunc` in `internal/handler/respond.go:38-125` — all 22 `ShouldBindJSON` sites now go
+  through `bindJSON` and answer human field names (`"Invalid Email"`) or `"Malformed request
+  body"` (`400 BAD_REQUEST`), never a validator trace; the envelope is documented in
+  `RIDER_API_GUIDE.md` (`## Errors`). Chain landed complete.
 - A failed write answers 5xx instead of a false success — 10 new `INTERNAL` sites:
   `internal/handler/driver.go:41,51,101,129` (`Register`'s `UpdateUser`+`CreateDriver`,
   `UpdateProfile`, `UpdateStatus`), `internal/handler/rider.go:80,88,118,136` (`UpdateProfile`'s
@@ -65,6 +126,13 @@ of these sites. The stages' remaining work is unchanged except where noted below
   `pushNoDriverAvailable`). The other path is unchanged: no drivers found at all still logs and
   pushes (`:59-63`). See `rider_app_plans/STATUS.md:22` for the client-side dependency.
 
+### [fare]
+- Completion fare is no longer manufactured: the 1.1× `TotalFare *= 1.1` is gone and the
+  completed-ride WS payload carries the booked estimate unchanged — `internal/service/ride.go:175-196`;
+  the price endpoint's `distance_rate`/`time_rate` now carry the real per-km/per-minute rates from
+  `getRates` (`internal/handler/platform.go:328-329`, `internal/service/fare.go:83-91`) instead of
+  the `DistanceFare`/`TimeFare` totals.
+
 ### [startup]
 - `main()` delegates to `run() error`, so `defer db.Close()` actually runs on the early-return
   paths — `cmd/server/main.go:21,29,36`; the four `log.Fatalf` sites became
@@ -76,30 +144,34 @@ of these sites. The stages' remaining work is unchanged except where noted below
 
 | # | Issue | Evidence | Severity | Owner |
 | --- | --- | --- | --- | --- |
-| 1 | `ROUTING_ENGINE` default stays `native` (performance gate not met) | `internal/config/config.go:145`, `internal/repository/pgrouting_repo.go:112` | medium | [routing] |
 | 2 | Estimate fallback dead by default (`ROUTING_SNAP_RADIUS_M=0` = always snap) | `internal/config/config.go:101`, `internal/service/navigation.go:280` | medium | [routing] |
-| 3 | Rider app draws a straight line on **every** error status, so a misclassified 4xx silently renders a wrong route. API must answer an outage as 5xx or 200+`is_estimate`, never 4xx | `rider_app/lib/features/home/presentation/home_screen.dart:128` | high | [errors] |
-| 4 | Migration numbering: max on disk is 013; elevation reserves 015 (absent); the retired `elevation/README.md` claimed max 012 | `internal/database/migrations/013_region_schema.up.sql`; `01_[elevation]_elevation_column_and_repo_plumb.md:90` | low | [elevation] |
-| 5 | The new fail-closed revocation errors are surfaced as **4xx with the raw wrapped error in the body**: `Refresh` answers 401 + `err.Error()`, `ResetPassword` answers 400 + `err.Error()`. A DB outage during revoke now masquerades as "bad token" *and* leaks driver text — violates bug 3 / the never-4xx invariant. Regression introduced by the fail-closed change | `internal/handler/auth.go:157-161`, `:259-263`; service at `internal/service/auth.go:111,257` | high | [errors] |
-| 6 | The 10 new write-failure 500s drop the cause entirely — no `c.Error`, no `log`, so `ErrorLogger` has nothing to print and the 500 is undiagnosable from the server side | `internal/handler/driver.go:41`, `internal/handler/rider.go:80`, `internal/handler/geo.go:104`; logger at `internal/router/router.go:61` | medium | [errors] |
-| 7 | The `FindByID`/`FindDriverByID`/`FindRiderByID` **reads** immediately before each guarded write still discard their error, so a missing row nil-derefs and is swallowed by gin's `Recovery` (`gin.Default()`, `internal/router/router.go:48`) as an unexplained 500 — never the 404 the endpoint owes | `internal/handler/driver.go:38,96,126`; `internal/handler/rider.go:75,85,115` | medium | [errors] |
-| 8 | None of the new failure branches is reachable from `tests/`: `MockGeoRepo.Upsert{Driver,Rider}Position`, `MockRideRepo.CreateEvent` and all three `MockUserRepo.Revoke*` return `nil` unconditionally, and the real repositories only fail them on a driver error. No test asserts any of the new 500s | `tests/testutil/mock_repos.go:459,571,581,218,254,266` vs `internal/repository/user_repo.go:153,175,180`, `internal/repository/ride_repo.go:139` | medium | [errors] |
+| 3 | Rider app draws a straight line on **every** error status, so a misclassified 4xx silently renders a wrong route. API must answer an outage as 5xx or 200+`is_estimate`, never 4xx | `rider_app/lib/features/home/presentation/home_screen.dart:157` | high | [errors] |
 | 9 | `internal/middleware/idempotency.go` has no unit test at all (the package's only tests cover `AuthRequired`/`maskQueryTokens`), so the "never replay a partial read" rule is unenforced | `internal/middleware/` (no `idempotency_test.go`) | low | [errors] |
+| 10 | `MarkStaleDriversOffline` is in the `GeoRepo` interface but is **never called** — no cron/goroutine invokes it, so stale `status='online'` rows are not swept and the 30 s freshness window (`geo_repo.go:73`) is the only liveness bound | `internal/repository/geo_repo.go:125-129` (definition) vs no call site | medium | [dispatch] |
+| 11 | Dispatch search reads the DB but the offer loop skips any driver whose socket isn't in the hub map (`IsConnected` = map presence only), so a DB-fresh online driver with a stale/absent WS entry is dropped and the loop can answer `no_driver_available` despite a live driver; no driver-side keep-alive `ping()` exists | `internal/service/dispatch.go:101-105`, `internal/websocket/hub.go:120-125` | high | [dispatch] |
+| 12 | `PUT /rides/:id/destination` is a stub: returns `{"message":"destination updated"}` and never mutates state | `internal/handler/platform.go:386-388` | high | [multi] |
+| 15 | Arrival notify over WS exists (`ride.go:193`) but `POST /driver/rides/:id/notify-arrival` is a no-op stub; `device_tokens` table is never written and register/unregister are stubs — no backgrounded push pipeline | `internal/handler/platform.go:466-477,106-128`, `internal/database/migrations/007_create_misc.up.sql:36` | high | [push] |
+| 16 | Idempotent replay stores `json.Marshal(gin.H{})` = `{}` as `response_body` regardless of what the handler wrote, so a replay returns the right status with an **empty** body | `internal/middleware/idempotency.go:54` | medium | [errors] |
 
 ## Open plans
 
 | File | Tag | Depends on | What remains |
 | --- | --- | --- | --- |
-| `[elevation]_directional_cost_model.md` | elevation | — | engine minimizes `meters + w·ascent`; pure Go, no schema |
-| `01_[elevation]_elevation_column_and_repo_plumb.md` | elevation | `[elevation]_directional_cost_model.md` (unnumbered head) | `elevation_m` column (migration 015) + repo/config plumbing, default off |
-| `02_[elevation]_dem_ingest_and_noise_control.md` | elevation | `01_[elevation]_…` | DEM ingest (`cmd/elevtool`) + noise-control rationale |
-| `03_[elevation]_calibration_and_rollout_gate.md` | elevation | `02_[elevation]_…` | sweep-first calibration, acceptance suite, go/no-go gate |
-| `04_[elevation]_duration_and_api_surface.md` | elevation | `03_[elevation]_…` | deferred: grade-aware duration + additive response fields + pgr parity |
-| `[errors]_error_taxonomy_in_repositories.md` | errors | — | `ErrNotFound`/`ErrConflict` + `wrapDB`; mocks in lockstep |
-| `01_[errors]_repository_errors_to_http.md` | errors | `[errors]_error_taxonomy_in_repositories.md` (unnumbered head) | one `respond`/`respondRepo`, `c.Error` instrumentation, stop `err.Error()` leaks; must **not** re-do the landed 500s, and must fix bug 5 |
-| `02_[errors]_validation_and_client_contract.md` | errors | `01_[errors]_…` | clean validator text from the 22 `ShouldBindJSON` sites; document envelope |
-| `[elevation]_review.md` | elevation | — | pre-implementation review of the whole elevation chain (the unnumbered head plus stages 01–04); keep dispositioned as the stages move. ⚠️ Its prose still uses the **pre-renumbering** stage numbers — see the mapping note at the top of that file |
+| `[elevation]_calibration_and_rollout_gate.md` | elevation | landed DEM ingest | gate run 2026-09-29: **NO-GO, stay `off`**; remaining: (a) certify a flat control, (b) implement G6 + calibrate `DeadbandM` into `config.go`, (c) run the N=2000 sweep |
+| `01_[elevation]_duration_model.md` | elevation | `[elevation]_calibration…` | grade-aware `total_duration_s`; **blocked** — no driver-trace/drive-time dataset exists to calibrate the speed-vs-grade curve |
+| `[elevation]_pgrouting_parity.md` | elevation | pgrouting engine + elevation columns (landed) | **deferred**; add `reverse_cost`/`cost_ascent` migration + elevation-aware edges SQL, backfilled by a script referenced from `import-osm` |
+| `[elevation]_review.md` | elevation | — | pre-implementation review of the whole elevation chain (all three landed heads + stage 01); keep dispositioned as the stages move. ⚠️ Its prose still uses the **pre-renumbering** stage numbers — see the mapping note at the top of that file |
 | `[routing]_intercity.md` | routing | routing region resolution (STATUS.md) | **deferred**; holds the archived overlay-ports/planner design |
+| `[multi]_add_stops_change_destination.md` | multi | — | waypoints in DB/model + DTO, service stop handling, real `PUT /rides/:id/destination` (replace stub), rider-app stop surface (cross-app) |
+| `[dispatch]_reliability_and_no_driver_false_negative.md` | dispatch | — | reconcile search vs WS-eligibility so a DB-fresh online driver isn't skipped; wire `MarkStaleDriversOffline`; observe/log every skip. Driver keep-alive `ping()` is cross-app |
+| `[push]_delivery_pipeline.md` | push | — | persist `device_tokens`, FCM/APNs provider, backgrounded notify-arrival + updates (WS-path stays for connected riders) |
+| `[errors]_route_outage_contract_test.md` | errors | — | regression test: a nav-repo failure answers 500 `INTERNAL`, never 4xx; inject a failing nav repo into the test server; fix the `RIDER_API_GUIDE` fallback wording |
+| `[routing]_native_engine_default.md` | routing | — | record `native` as the permanent engine default (config comment + AGENTS + benchmark evidence); close bug #1 as a decision |
+| `[routing]_estimate_fallback_default.md` | routing | — | bug #2: default `ROUTING_SNAP_RADIUS_M=50000` so the no-coverage `is_estimate` path can fire; keep `0` = always-snap |
+| `[errors]_idempotency_middleware_tests.md` | errors | — | bug #9: DB-free unit tests for `idempotency.go` via an `idempotencyStore` seam; pin the partial-read re-run rule (test-only) |
+| `[errors]_idempotent_replay_body.md` | errors | — | bug #16: capture the real response body so a replay is not `{}` |
+| `[ratings]_ratings_list.md` | ratings | — | server half of driver-app bug #5 **plus** the symmetric rider endpoint: replace `GET /driver/ratings` **and** `GET /rider/ratings` stubs with real rater-scoped, paginated lists so each app's "already rated" set is server-backed |
+| `[payout]_driver_earnings_and_withdraw.md` | payout | — | **deferred**: server half of driver-app bug #6 — `driver_earnings` ledger + credit-on-completion + real `GET /driver/me/earnings` and idempotent `POST /driver/earnings/withdraw` (pending debit, no external payout); design settled, no scheduling |
 
 ## Decisions already taken — [errors] (do not re-litigate)
 
@@ -109,12 +181,36 @@ of these sites. The stages' remaining work is unchanged except where noted below
   `"internal error"`.
 - Duplicate-register copy: **`"Account already exists"`** (the wording `auth.go` already
   documents), not the mock's string.
-- Client straight-line fallback is **out of scope**: the plan was corrected to the truth
-  (any-error, not 500-only); narrowing the app to 5xx-only is a logged follow-up.
-- The landed write-failure 500s use the **existing** hand-rolled `c.JSON` envelope and the
-  operation-specific sentence, i.e. exactly what stage 02 decides to standardise. Stage 02's
-  diff therefore *shrinks*: 10 sites already have the right status, code and wording and only
-  need their cause attached (bug 6).
+- Client straight-line fallback: the plan was corrected to the truth (any-error, not 500-only).
+  The app-side fix is now planned in `rider_app_plans/01_[map]_route_fallback_honesty.md` (honest
+  grey-dashed fallback + surface the API `error.message`), gated on the API-contract test
+  `[errors]_route_outage_contract_test.md`. The API keeps answering outages as 5xx.
+- The landed write-failure 500s are now constructed via `fail(...)` and their causes attached
+  (`c.Error`) — the `respond.go` HTTP contract (STATUS.md `[errors]`) standardised them.
+
+## Decisions already taken — [routing] (do not re-litigate)
+
+- **`native` (in-process A*) is the permanent production default**; `pgrouting` is opt-in for
+  parity/validation. The plan-03 benchmark gate (~28,000× slower on the `hop` workset) is not
+  going to be re-opened. See `[routing]_native_engine_default.md`.
+- **`ROUTING_SNAP_RADIUS_M` default becomes `50000` m** (was `0` = always-snap) so the
+  no-coverage `is_estimate` path can fire; `0` stays as an explicit always-snap opt-in. See
+  `[routing]_estimate_fallback_default.md`.
+
+## Decisions already taken — [payout] (do not re-litigate)
+
+> Status: **deferred** — decisions are settled, implementation unscheduled. See
+> `[payout]_driver_earnings_and_withdraw.md`.
+
+- **Integer cents** in the ledger; the `float64` ride fare is converted once at credit time.
+- **No wallet column**: available balance is `SUM(amount_cents)` over `status='available'` ledger
+  rows (single source of truth, no drift).
+- **Commission defaults to 0** in dev (`PAYOUT_COMMISSION_RATE`); per-region/versioned fares are
+  deferred to the `fare.go` trigger.
+- **Withdrawal is a `pending` ledger debit, not a bank transfer** — no external payout provider in
+  this plan; the API is honest about the pending state.
+- **Withdraw is idempotent** (`Idempotency-Key`), like create-ride.
+  See `[payout]_driver_earnings_and_withdraw.md`.
 
 ## Invariants
 
@@ -128,10 +224,8 @@ of these sites. The stages' remaining work is unchanged except where noted below
 - **No assumption that pgRouting is installed**: `pgr_*` is gated behind extension-present and
   every failure degrades gracefully.
 - Success paths and status codes for *valid* requests never change.
-- A genuine outage answers **5xx or 200+`is_estimate`, never 4xx**. `is_estimate` stays. (Currently
-  violated on `POST /auth/refresh` and `/auth/reset-password` — bug 5.)
-- A cause is logged (`c.Error`) whenever a message is generalised. (The 10 landed 500s generalise
-  nothing but also log nothing — bug 6.)
+- A genuine outage answers **5xx or 200+`is_estimate`, never 4xx**. `is_estimate` stays.
+- A cause is logged (`c.Error`) whenever a message is generalised.
 - **A failed write never answers success.** Any repository write error is a 5xx, never the
   endpoint's success code, and the cause is logged.
 - **Ancillary rows are best-effort.** `ride_events` and `idempotency_keys` are written *after* the

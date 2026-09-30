@@ -11,6 +11,10 @@ build/
 # `driver_app/lib/features/rides/data/rides_repository.dart`.
 /data/
 
+# `elevtool` is the compiled `cmd/elevtool` binary (built at repo root by
+# scripts/import-elevation.sh); never commit the artifact.
+/elevtool
+
 .dart_tool
 .idea
 .opencode

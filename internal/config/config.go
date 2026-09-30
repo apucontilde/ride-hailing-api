@@ -63,6 +63,24 @@ type Config struct {
 	// selected), never the native in-memory hot path, so a small pool per city
 	// is the right shape. <= 0 leaves sizing to database/sql.
 	RoutingDatasourceMaxConns int
+
+	// RoutingElevation configures the native engine's elevation cost model
+	// (api_plans/[elevation]). Off by default: the zero configuration
+	// reproduces the pre-elevation engine exactly.
+	RoutingElevation RoutingElevation
+}
+
+// RoutingElevation configures the native engine's elevation cost model
+// (api_plans/[elevation]). Off by default: the zero configuration reproduces
+// the pre-elevation engine exactly. The numeric defaults are PROPOSALS, not
+// findings — the real values come out of the calibration stage's sweep.
+type RoutingElevation struct {
+	Enabled       bool    // ROUTING_ELEVATION=on|off   (default off)
+	AscentWeight  float64 // ROUTING_ASCENT_WEIGHT       (default 1.5)
+	DescentWeight float64 // ROUTING_DESCENT_WEIGHT      (default 0.3)
+	MaxGrade      float64 // ROUTING_MAX_GRADE           (default 0.15)
+	DeadbandM     float64 // ROUTING_ELEV_DEADBAND_M     (default 3.0)
+	MinCoverage   float64 // ROUTING_ELEV_MIN_COVERAGE   (default 0.99)
 }
 
 func Load() *Config {
@@ -106,6 +124,14 @@ func Load() *Config {
 		// local database".
 		RoutingDatasourceSSLMode:  getEnv("ROUTING_DATASOURCE_SSLMODE", getEnv("DB_SSLMODE", "disable")),
 		RoutingDatasourceMaxConns: getInt("ROUTING_DATASOURCE_MAX_CONNS", 10),
+		RoutingElevation: RoutingElevation{
+			Enabled:       routingElevationEnabledFromEnv(),
+			AscentWeight:  getFloat("ROUTING_ASCENT_WEIGHT", 1.5),
+			DescentWeight: getFloat("ROUTING_DESCENT_WEIGHT", 0.3),
+			MaxGrade:      getFloat("ROUTING_MAX_GRADE", 0.15),
+			DeadbandM:     getFloat("ROUTING_ELEV_DEADBAND_M", 3.0),
+			MinCoverage:   getFloat("ROUTING_ELEV_MIN_COVERAGE", 0.99),
+		},
 	}
 }
 
@@ -149,6 +175,13 @@ func routingEngineFromEnv() string {
 	default:
 		return "native"
 	}
+}
+
+// routingElevationEnabledFromEnv whitelists ROUTING_ELEVATION to on|off. Anything
+// else (including unset) means off — a typo must fail CLOSED (flat routing), not
+// open.
+func routingElevationEnabledFromEnv() bool {
+	return getEnv("ROUTING_ELEVATION", "off") == "on"
 }
 
 func getFloat(key string, fallback float64) float64 {

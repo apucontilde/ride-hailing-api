@@ -43,10 +43,14 @@ func (h *RiderHandler) GetProfile(c *gin.Context) {
 	userID, _ := c.Get("user_id")
 	rider, err := h.userRepo.FindRiderByID(userID.(string))
 	if err != nil {
-		c.JSON(http.StatusNotFound, gin.H{"error": gin.H{"code": "NOT_FOUND", "message": "rider not found"}})
+		respondRepo(c, err, "rider not found", "", "failed to load rider")
 		return
 	}
-	user, _ := h.userRepo.FindByID(userID.(string))
+	user, err := h.userRepo.FindByID(userID.(string))
+	if err != nil {
+		respondRepo(c, err, "user not found", "", "failed to load user")
+		return
+	}
 	c.JSON(http.StatusOK, gin.H{
 		"user":  sanitizeUser(user),
 		"rider": rider,
@@ -67,25 +71,32 @@ func (h *RiderHandler) GetProfile(c *gin.Context) {
 func (h *RiderHandler) UpdateProfile(c *gin.Context) {
 	userID, _ := c.Get("user_id")
 	var body updateRiderRequest
-	if err := c.ShouldBindJSON(&body); err != nil {
-		c.JSON(http.StatusUnprocessableEntity, gin.H{"error": gin.H{"code": "VALIDATION_ERROR", "message": err.Error()}})
+	if !bindJSON(c, &body, "") {
 		return
 	}
 
-	rider, _ := h.userRepo.FindRiderByID(userID.(string))
+	rider, err := h.userRepo.FindRiderByID(userID.(string))
+	if err != nil {
+		respondRepo(c, err, "rider not found", "", "failed to load rider")
+		return
+	}
 	rider.FirstName = body.FirstName
 	rider.LastName = body.LastName
 	rider.PhotoURL = body.PhotoURL
 	if err := h.userRepo.UpdateRider(rider); err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": gin.H{"code": "INTERNAL", "message": "failed to update rider profile"}})
+		fail(c, http.StatusInternalServerError, "INTERNAL", "failed to update rider profile", err)
 		return
 	}
 
 	if body.Phone != "" {
-		user, _ := h.userRepo.FindByID(userID.(string))
+		user, err := h.userRepo.FindByID(userID.(string))
+		if err != nil {
+			respondRepo(c, err, "user not found", "", "failed to load user")
+			return
+		}
 		user.Phone = body.Phone
 		if err := h.userRepo.UpdateUser(user); err != nil {
-			c.JSON(http.StatusInternalServerError, gin.H{"error": gin.H{"code": "INTERNAL", "message": "failed to update user phone"}})
+			fail(c, http.StatusInternalServerError, "INTERNAL", "failed to update user phone", err)
 			return
 		}
 	}
@@ -107,15 +118,18 @@ func (h *RiderHandler) UpdateProfile(c *gin.Context) {
 func (h *RiderHandler) UpdateStatus(c *gin.Context) {
 	userID, _ := c.Get("user_id")
 	var body updateStatusRequest
-	if err := c.ShouldBindJSON(&body); err != nil {
-		c.JSON(http.StatusUnprocessableEntity, gin.H{"error": gin.H{"code": "VALIDATION_ERROR", "message": err.Error()}})
+	if !bindJSON(c, &body, "") {
 		return
 	}
 
-	rider, _ := h.userRepo.FindRiderByID(userID.(string))
+	rider, err := h.userRepo.FindRiderByID(userID.(string))
+	if err != nil {
+		respondRepo(c, err, "rider not found", "", "failed to load rider")
+		return
+	}
 	rider.Status = body.Status
 	if err := h.userRepo.UpdateRider(rider); err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": gin.H{"code": "INTERNAL", "message": "failed to update rider status"}})
+		fail(c, http.StatusInternalServerError, "INTERNAL", "failed to update rider status", err)
 		return
 	}
 	c.JSON(http.StatusOK, gin.H{"rider": rider})
@@ -133,7 +147,7 @@ func (h *RiderHandler) UpdateStatus(c *gin.Context) {
 func (h *RiderHandler) DeleteAccount(c *gin.Context) {
 	userID, _ := c.Get("user_id")
 	if err := h.userRepo.SoftDeleteUser(userID.(string)); err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": gin.H{"code": "INTERNAL", "message": "failed to deactivate account"}})
+		fail(c, http.StatusInternalServerError, "INTERNAL", "failed to deactivate account", err)
 		return
 	}
 	c.JSON(http.StatusOK, gin.H{"message": "account deactivated"})

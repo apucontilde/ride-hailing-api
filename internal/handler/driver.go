@@ -35,10 +35,14 @@ type updateDriverRequest struct {
 func (h *DriverHandler) Register(c *gin.Context) {
 	userID, _ := c.Get("user_id")
 
-	user, _ := h.userRepo.FindByID(userID.(string))
+	user, err := h.userRepo.FindByID(userID.(string))
+	if err != nil {
+		respondRepo(c, err, "user not found", "", "failed to load user")
+		return
+	}
 	user.Role = "driver"
 	if err := h.userRepo.UpdateUser(user); err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": gin.H{"code": "INTERNAL", "message": "failed to update user role"}})
+		fail(c, http.StatusInternalServerError, "INTERNAL", "failed to update user role", err)
 		return
 	}
 
@@ -48,7 +52,7 @@ func (h *DriverHandler) Register(c *gin.Context) {
 		OnboardingStatus: "documents_submitted",
 	}
 	if err := h.userRepo.CreateDriver(driver); err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": gin.H{"code": "INTERNAL", "message": "failed to create driver profile"}})
+		fail(c, http.StatusInternalServerError, "INTERNAL", "failed to create driver profile", err)
 		return
 	}
 
@@ -68,7 +72,7 @@ func (h *DriverHandler) GetProfile(c *gin.Context) {
 	userID, _ := c.Get("user_id")
 	driver, err := h.userRepo.FindDriverByID(userID.(string))
 	if err != nil {
-		c.JSON(http.StatusNotFound, gin.H{"error": gin.H{"code": "NOT_FOUND", "message": "driver not found"}})
+		respondRepo(c, err, "driver not found", "", "failed to load driver")
 		return
 	}
 	c.JSON(http.StatusOK, gin.H{"driver": driver})
@@ -88,17 +92,20 @@ func (h *DriverHandler) GetProfile(c *gin.Context) {
 func (h *DriverHandler) UpdateProfile(c *gin.Context) {
 	userID, _ := c.Get("user_id")
 	var body updateDriverRequest
-	if err := c.ShouldBindJSON(&body); err != nil {
-		c.JSON(http.StatusUnprocessableEntity, gin.H{"error": gin.H{"code": "VALIDATION_ERROR", "message": err.Error()}})
+	if !bindJSON(c, &body, "") {
 		return
 	}
 
-	driver, _ := h.userRepo.FindDriverByID(userID.(string))
+	driver, err := h.userRepo.FindDriverByID(userID.(string))
+	if err != nil {
+		respondRepo(c, err, "driver not found", "", "failed to load driver")
+		return
+	}
 	driver.FirstName = body.FirstName
 	driver.LastName = body.LastName
 	driver.PhotoURL = body.PhotoURL
 	if err := h.userRepo.UpdateDriver(driver); err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": gin.H{"code": "INTERNAL", "message": "failed to update driver profile"}})
+		fail(c, http.StatusInternalServerError, "INTERNAL", "failed to update driver profile", err)
 		return
 	}
 	c.JSON(http.StatusOK, gin.H{"driver": driver})
@@ -118,15 +125,18 @@ func (h *DriverHandler) UpdateProfile(c *gin.Context) {
 func (h *DriverHandler) UpdateStatus(c *gin.Context) {
 	userID, _ := c.Get("user_id")
 	var body updateStatusRequest
-	if err := c.ShouldBindJSON(&body); err != nil {
-		c.JSON(http.StatusUnprocessableEntity, gin.H{"error": gin.H{"code": "VALIDATION_ERROR", "message": err.Error()}})
+	if !bindJSON(c, &body, "") {
 		return
 	}
 
-	driver, _ := h.userRepo.FindDriverByID(userID.(string))
+	driver, err := h.userRepo.FindDriverByID(userID.(string))
+	if err != nil {
+		respondRepo(c, err, "driver not found", "", "failed to load driver")
+		return
+	}
 	driver.Status = body.Status
 	if err := h.userRepo.UpdateDriver(driver); err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": gin.H{"code": "INTERNAL", "message": "failed to update driver status"}})
+		fail(c, http.StatusInternalServerError, "INTERNAL", "failed to update driver status", err)
 		return
 	}
 	c.JSON(http.StatusOK, gin.H{"driver": driver})

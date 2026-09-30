@@ -9,8 +9,10 @@ import (
 
 type FareEstimate struct {
 	BaseFare        float64
-	DistanceFare    float64
-	TimeFare        float64
+	DistanceRate    float64 // per-kilometer rate
+	TimeRate        float64 // per-minute rate
+	DistanceFare    float64 // computed total for the distance leg
+	TimeFare        float64 // computed total for the time leg
 	SurgeMultiplier float64
 	Total           float64
 }
@@ -42,6 +44,8 @@ func (s *FareService) CalculateEstimate(pickupLat, pickupLng, dropoffLat, dropof
 
 	return &FareEstimate{
 		BaseFare:        base,
+		DistanceRate:    distRate,
+		TimeRate:        timeRate,
 		DistanceFare:    distFare,
 		TimeFare:        timeFare,
 		SurgeMultiplier: surge,

@@ -63,18 +63,13 @@ type registerRequest struct {
 //	@Router			/api/v1/auth/register [post]
 func (h *AuthHandler) Register(c *gin.Context) {
 	var req registerRequest
-	if err := c.ShouldBindJSON(&req); err != nil {
-		c.JSON(http.StatusUnprocessableEntity, gin.H{
-			"error": gin.H{"code": "VALIDATION_ERROR", "message": err.Error()},
-		})
+	if !bindJSON(c, &req, "") {
 		return
 	}
 
 	user, err := h.authService.Register(req.Email, req.Phone, req.Password)
 	if err != nil {
-		c.JSON(http.StatusConflict, gin.H{
-			"error": gin.H{"code": "CONFLICT", "message": err.Error()},
-		})
+		respondRepo(c, err, "account not found", "Account already exists", "failed to create account")
 		return
 	}
 
@@ -107,18 +102,17 @@ type loginRequest struct {
 //	@Router			/api/v1/auth/login [post]
 func (h *AuthHandler) Login(c *gin.Context) {
 	var req loginRequest
-	if err := c.ShouldBindJSON(&req); err != nil {
-		c.JSON(http.StatusUnprocessableEntity, gin.H{
-			"error": gin.H{"code": "VALIDATION_ERROR", "message": err.Error()},
-		})
+	if !bindJSON(c, &req, "") {
 		return
 	}
 
 	tokens, user, err := h.authService.Login(req.Email, req.Password)
 	if err != nil {
-		c.JSON(http.StatusUnauthorized, gin.H{
-			"error": gin.H{"code": "UNAUTHORIZED", "message": err.Error()},
-		})
+		if errors.Is(err, service.ErrInvalidCredentials) {
+			fail(c, http.StatusUnauthorized, "UNAUTHORIZED", "invalid credentials", err)
+			return
+		}
+		respondRepo(c, err, "account not found", "", "failed to log in")
 		return
 	}
 
@@ -147,26 +141,17 @@ func (h *AuthHandler) Login(c *gin.Context) {
 //	@Router			/api/v1/auth/refresh [post]
 func (h *AuthHandler) Refresh(c *gin.Context) {
 	var req refreshRequest
-	if err := c.ShouldBindJSON(&req); err != nil {
-		c.JSON(http.StatusUnprocessableEntity, gin.H{
-			"error": gin.H{"code": "VALIDATION_ERROR", "message": err.Error()},
-		})
+	if !bindJSON(c, &req, "") {
 		return
 	}
 
 	tokens, err := h.authService.RefreshAccessToken(req.RefreshToken)
 	if err != nil {
-		if errors.Is(err, service.ErrTokenRevoke) {
-			// A backend outage is not the client's fault, and the driver error
-			// must not reach the client.
-			c.JSON(http.StatusInternalServerError, gin.H{
-				"error": gin.H{"code": "INTERNAL", "message": "failed to revoke refresh token"},
-			})
+		if errors.Is(err, service.ErrInvalidRefreshToken) {
+			fail(c, http.StatusUnauthorized, "UNAUTHORIZED", "invalid or expired refresh token", err)
 			return
 		}
-		c.JSON(http.StatusUnauthorized, gin.H{
-			"error": gin.H{"code": "UNAUTHORIZED", "message": err.Error()},
-		})
+		respondRepo(c, err, "", "", "failed to refresh token")
 		return
 	}
 
@@ -191,17 +176,12 @@ func (h *AuthHandler) Refresh(c *gin.Context) {
 //	@Router			/api/v1/auth/logout [post]
 func (h *AuthHandler) Logout(c *gin.Context) {
 	var req logoutRequest
-	if err := c.ShouldBindJSON(&req); err != nil {
-		c.JSON(http.StatusUnprocessableEntity, gin.H{
-			"error": gin.H{"code": "VALIDATION_ERROR", "message": err.Error()},
-		})
+	if !bindJSON(c, &req, "") {
 		return
 	}
 
 	if err := h.authService.Logout(req.RefreshToken); err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{
-			"error": gin.H{"code": "INTERNAL", "message": "logout failed"},
-		})
+		fail(c, http.StatusInternalServerError, "INTERNAL", "logout failed", err)
 		return
 	}
 
@@ -222,18 +202,13 @@ func (h *AuthHandler) Logout(c *gin.Context) {
 //	@Router			/api/v1/auth/forgot-password [post]
 func (h *AuthHandler) ForgotPassword(c *gin.Context) {
 	var req forgotPasswordRequest
-	if err := c.ShouldBindJSON(&req); err != nil {
-		c.JSON(http.StatusUnprocessableEntity, gin.H{
-			"error": gin.H{"code": "VALIDATION_ERROR", "message": err.Error()},
-		})
+	if !bindJSON(c, &req, "") {
 		return
 	}
 
 	token, err := h.authService.ForgotPassword(req.Email)
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{
-			"error": gin.H{"code": "INTERNAL", "message": "failed to process request"},
-		})
+		fail(c, http.StatusInternalServerError, "INTERNAL", "failed to process request", err)
 		return
 	}
 
@@ -258,25 +233,16 @@ func (h *AuthHandler) ForgotPassword(c *gin.Context) {
 //	@Router			/api/v1/auth/reset-password [post]
 func (h *AuthHandler) ResetPassword(c *gin.Context) {
 	var req resetPasswordRequest
-	if err := c.ShouldBindJSON(&req); err != nil {
-		c.JSON(http.StatusUnprocessableEntity, gin.H{
-			"error": gin.H{"code": "VALIDATION_ERROR", "message": err.Error()},
-		})
+	if !bindJSON(c, &req, "") {
 		return
 	}
 
 	if err := h.authService.ResetPassword(req.Token, req.NewPassword); err != nil {
-		if errors.Is(err, service.ErrTokenRevoke) {
-			// A backend outage is not the client's fault, and the driver error
-			// must not reach the client.
-			c.JSON(http.StatusInternalServerError, gin.H{
-				"error": gin.H{"code": "INTERNAL", "message": "failed to revoke reset token"},
-			})
+		if errors.Is(err, service.ErrInvalidResetToken) {
+			fail(c, http.StatusBadRequest, "BAD_REQUEST", "invalid or expired reset token", err)
 			return
 		}
-		c.JSON(http.StatusBadRequest, gin.H{
-			"error": gin.H{"code": "BAD_REQUEST", "message": err.Error()},
-		})
+		respondRepo(c, err, "", "", "failed to reset password")
 		return
 	}
 
@@ -299,17 +265,12 @@ func (h *AuthHandler) VerifyEmail(c *gin.Context) {
 	userID, _ := c.Get("user_id")
 
 	var req verifyCodeRequest
-	if err := c.ShouldBindJSON(&req); err != nil {
-		c.JSON(http.StatusUnprocessableEntity, gin.H{
-			"error": gin.H{"code": "VALIDATION_ERROR", "message": err.Error()},
-		})
+	if !bindJSON(c, &req, "") {
 		return
 	}
 
 	if err := h.authService.VerifyEmail(userID.(string), req.Code); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{
-			"error": gin.H{"code": "BAD_REQUEST", "message": err.Error()},
-		})
+		respondRepo(c, err, "user not found", "", "failed to verify email")
 		return
 	}
 
@@ -332,17 +293,12 @@ func (h *AuthHandler) VerifyPhone(c *gin.Context) {
 	userID, _ := c.Get("user_id")
 
 	var req verifyCodeRequest
-	if err := c.ShouldBindJSON(&req); err != nil {
-		c.JSON(http.StatusUnprocessableEntity, gin.H{
-			"error": gin.H{"code": "VALIDATION_ERROR", "message": err.Error()},
-		})
+	if !bindJSON(c, &req, "") {
 		return
 	}
 
 	if err := h.authService.VerifyPhone(userID.(string), req.Code); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{
-			"error": gin.H{"code": "BAD_REQUEST", "message": err.Error()},
-		})
+		respondRepo(c, err, "user not found", "", "failed to verify phone")
 		return
 	}
 
@@ -362,10 +318,7 @@ func (h *AuthHandler) VerifyPhone(c *gin.Context) {
 //	@Router			/api/v1/auth/social [post]
 func (h *AuthHandler) SocialLogin(c *gin.Context) {
 	var req socialLoginRequest
-	if err := c.ShouldBindJSON(&req); err != nil {
-		c.JSON(http.StatusUnprocessableEntity, gin.H{
-			"error": gin.H{"code": "VALIDATION_ERROR", "message": err.Error()},
-		})
+	if !bindJSON(c, &req, "") {
 		return
 	}
 

@@ -437,9 +437,7 @@ func TestRideRequestRejectsMissingFields(t *testing.T) {
 	}
 	parseJSON(t, loginResp.Body, &loginResult)
 
-	resp := ts.DoRequest("POST", "/api/v1/rides", loginResult.AccessToken, map[string]string{
-		"pickup_lat": "invalid",
-	})
+	resp := ts.DoRequest("POST", "/api/v1/rides", loginResult.AccessToken, map[string]string{})
 	resp.AssertStatus(t, http.StatusUnprocessableEntity)
 }
 

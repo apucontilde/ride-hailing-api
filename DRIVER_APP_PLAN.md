@@ -12,7 +12,7 @@ Scope: a new **Flutter driver app** (passenger side already exists as `rider_app
 > >200 m refetch, driver cancel, the fare receipt, and a `GET /driver/rides/current`
 > launch restore) plus M8/M9 (the paged ride history with a **client-side** earnings
 > header, and rating the rider from the trip receipt or the history list). Current
-> totals: **171 driver_app tests green, `flutter analyze` clean** in all three
+> totals: **224 driver_app tests green, `flutter analyze` clean** in all three
 > packages. Five bugs were fixed on the way — the old stage machine merged
 > `accepted`/`driver_arrived`, so the first button press sent `in_progress` and the
 > server answered 400; `ride.updated` was parsed as a flat `Ride` when the wire shape

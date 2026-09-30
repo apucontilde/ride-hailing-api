@@ -63,7 +63,8 @@ func seedPGRTestGraph(t *testing.T) *sqlx.DB {
 
 	mustExec(t, db, "CREATE TEMP TABLE road_network_vertices_pgr ("+
 		"id BIGINT PRIMARY KEY, the_geom GEOMETRY(Point,4326), "+
-		"lat DOUBLE PRECISION NOT NULL, lng DOUBLE PRECISION NOT NULL)")
+		"lat DOUBLE PRECISION NOT NULL, lng DOUBLE PRECISION NOT NULL, "+
+		"elevation_m DOUBLE PRECISION, elevation_source TEXT)")
 	mustExec(t, db, "CREATE TEMP TABLE road_network_edges_pgr ("+
 		"id BIGINT PRIMARY KEY, source BIGINT, target BIGINT, cost DOUBLE PRECISION)")
 	mustExec(t, db, "CREATE INDEX ON road_network_vertices_pgr USING GIST (the_geom)")

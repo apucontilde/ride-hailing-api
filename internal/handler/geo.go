@@ -43,18 +43,17 @@ type locationUpdate struct {
 func (h *GeoHandler) UpdateDriverLocation(c *gin.Context) {
 	driverID, _ := c.Get("user_id")
 	var req locationUpdate
-	if err := c.ShouldBindJSON(&req); err != nil {
-		c.JSON(http.StatusUnprocessableEntity, gin.H{"error": gin.H{"code": "VALIDATION_ERROR", "message": err.Error()}})
+	if !bindJSON(c, &req, "") {
 		return
 	}
 
 	if req.Lat < -90 || req.Lat > 90 || req.Lng < -180 || req.Lng > 180 {
-		c.JSON(http.StatusUnprocessableEntity, gin.H{"error": gin.H{"code": "VALIDATION_ERROR", "message": "lat/lng out of range"}})
+		fail(c, http.StatusUnprocessableEntity, "VALIDATION_ERROR", "lat/lng out of range", nil)
 		return
 	}
 
 	if err := h.geoRepo.UpsertDriverPosition(driverID.(string), req.Lat, req.Lng, req.Heading, req.Speed, "online"); err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": gin.H{"code": "INTERNAL", "message": "failed to update location"}})
+		fail(c, http.StatusInternalServerError, "INTERNAL", "failed to update location", err)
 		return
 	}
 
@@ -90,18 +89,17 @@ func (h *GeoHandler) UpdateDriverLocation(c *gin.Context) {
 func (h *GeoHandler) UpdateDriverLocationBatch(c *gin.Context) {
 	driverID, _ := c.Get("user_id")
 	var reqs []locationUpdate
-	if err := c.ShouldBindJSON(&reqs); err != nil {
-		c.JSON(http.StatusUnprocessableEntity, gin.H{"error": gin.H{"code": "VALIDATION_ERROR", "message": err.Error()}})
+	if !bindJSON(c, &reqs, "") {
 		return
 	}
 
 	for _, r := range reqs {
 		if r.Lat < -90 || r.Lat > 90 || r.Lng < -180 || r.Lng > 180 {
-			c.JSON(http.StatusUnprocessableEntity, gin.H{"error": gin.H{"code": "VALIDATION_ERROR", "message": "lat/lng out of range"}})
+			fail(c, http.StatusUnprocessableEntity, "VALIDATION_ERROR", "lat/lng out of range", nil)
 			return
 		}
 		if err := h.geoRepo.UpsertDriverPosition(driverID.(string), r.Lat, r.Lng, r.Heading, r.Speed, "online"); err != nil {
-			c.JSON(http.StatusInternalServerError, gin.H{"error": gin.H{"code": "INTERNAL", "message": "failed to update location"}})
+			fail(c, http.StatusInternalServerError, "INTERNAL", "failed to update location", err)
 			return
 		}
 	}
@@ -123,13 +121,12 @@ func (h *GeoHandler) UpdateDriverLocationBatch(c *gin.Context) {
 func (h *GeoHandler) UpdateRiderLocation(c *gin.Context) {
 	riderID, _ := c.Get("user_id")
 	var req locationUpdate
-	if err := c.ShouldBindJSON(&req); err != nil {
-		c.JSON(http.StatusUnprocessableEntity, gin.H{"error": gin.H{"code": "VALIDATION_ERROR", "message": err.Error()}})
+	if !bindJSON(c, &req, "") {
 		return
 	}
 
 	if err := h.geoRepo.UpsertRiderPosition(riderID.(string), req.Lat, req.Lng); err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": gin.H{"code": "INTERNAL", "message": "failed to update location"}})
+		fail(c, http.StatusInternalServerError, "INTERNAL", "failed to update location", err)
 		return
 	}
 	c.Status(http.StatusNoContent)
@@ -153,12 +150,12 @@ func (h *GeoHandler) UpdateRiderLocation(c *gin.Context) {
 func (h *GeoHandler) GetNearbyDrivers(c *gin.Context) {
 	lat, err := strconv.ParseFloat(c.Query("lat"), 64)
 	if err != nil {
-		c.JSON(http.StatusUnprocessableEntity, gin.H{"error": gin.H{"code": "VALIDATION_ERROR", "message": "invalid lat"}})
+		fail(c, http.StatusUnprocessableEntity, "VALIDATION_ERROR", "invalid lat", err)
 		return
 	}
 	lng, err := strconv.ParseFloat(c.Query("lng"), 64)
 	if err != nil {
-		c.JSON(http.StatusUnprocessableEntity, gin.H{"error": gin.H{"code": "VALIDATION_ERROR", "message": "invalid lng"}})
+		fail(c, http.StatusUnprocessableEntity, "VALIDATION_ERROR", "invalid lng", err)
 		return
 	}
 
@@ -177,7 +174,7 @@ func (h *GeoHandler) GetNearbyDrivers(c *gin.Context) {
 
 	drivers, err := h.geoRepo.FindNearbyDrivers(lat, lng, radius, limit)
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": gin.H{"code": "INTERNAL", "message": "failed to query drivers"}})
+		fail(c, http.StatusInternalServerError, "INTERNAL", "failed to query drivers", err)
 		return
 	}
 
@@ -198,7 +195,7 @@ func (h *GeoHandler) GetDriverLocation(c *gin.Context) {
 	driverID := c.Param("id")
 	loc, err := h.geoRepo.GetDriverLocation(driverID)
 	if err != nil {
-		c.JSON(http.StatusNotFound, gin.H{"error": gin.H{"code": "NOT_FOUND", "message": "driver location not found"}})
+		respondRepo(c, err, "driver location not found", "", "failed to load driver location")
 		return
 	}
 	c.JSON(http.StatusOK, loc)

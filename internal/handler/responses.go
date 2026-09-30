@@ -147,11 +147,17 @@ type PolylinePoint struct {
 // NavigationRouteResponse is returned by GET /api/v1/navigation/route.
 // IsEstimate is true when the pins fell outside every imported region, so
 // Polyline is the straight line between them rather than a road path
-// (api_plans/05).
+// (api_plans/05). TotalAscentM/TotalDescentM/ElevationAware are additive
+// elevation fields (api_plans [elevation] stage 01): the raw metres climbed and
+// descended, and whether elevation routing was live for this response. They are
+// always present (0/false when off) so the shape is stable.
 type NavigationRouteResponse struct {
 	Polyline       []PolylinePoint `json:"polyline"`
 	TotalDistanceM float64         `json:"total_distance_m"`
 	TotalDurationS float64         `json:"total_duration_s"`
+	TotalAscentM   float64         `json:"total_ascent_m"`
+	TotalDescentM  float64         `json:"total_descent_m"`
+	ElevationAware bool            `json:"elevation_aware"`
 	IsEstimate     bool            `json:"is_estimate"`
 }
 

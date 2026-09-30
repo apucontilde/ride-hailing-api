@@ -62,8 +62,7 @@ func (h *RideHandler) CreateRide(c *gin.Context) {
 	riderID, _ := c.Get("user_id")
 
 	var req rideRequest
-	if err := c.ShouldBindJSON(&req); err != nil {
-		c.JSON(http.StatusUnprocessableEntity, gin.H{"error": gin.H{"code": "VALIDATION_ERROR", "message": err.Error()}})
+	if !bindJSON(c, &req, "") {
 		return
 	}
 
@@ -82,7 +81,7 @@ func (h *RideHandler) CreateRide(c *gin.Context) {
 		vehicleType, idKey)
 
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": gin.H{"code": "INTERNAL", "message": err.Error()}})
+		respondRepo(c, err, "rider not found", "ride already requested", "failed to create ride")
 		return
 	}
 
@@ -139,7 +138,7 @@ func (h *RideHandler) GetRideByID(c *gin.Context) {
 	id := c.Param("id")
 	ride, err := h.rideRepo.FindByID(id)
 	if err != nil {
-		c.JSON(http.StatusNotFound, gin.H{"error": gin.H{"code": "NOT_FOUND", "message": "ride not found"}})
+		respondRepo(c, err, "ride not found", "", "failed to load ride")
 		return
 	}
 	c.JSON(http.StatusOK, gin.H{"ride": ride})
@@ -182,7 +181,7 @@ func (h *RideHandler) GetRideHistory(c *gin.Context) {
 	}
 
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": gin.H{"code": "INTERNAL", "message": err.Error()}})
+		respondRepo(c, err, "rides not found", "", "failed to load ride history")
 		return
 	}
 
@@ -213,7 +212,7 @@ func (h *RideHandler) CancelRide(c *gin.Context) {
 
 	ride, err := h.rideService.CancelRide(id, actor.(string))
 	if err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": gin.H{"code": "BAD_REQUEST", "message": err.Error()}})
+		fail(c, http.StatusBadRequest, "BAD_REQUEST", "ride cannot be cancelled", err)
 		return
 	}
 
@@ -238,14 +237,13 @@ func (h *RideHandler) AdvanceStatus(c *gin.Context) {
 	actor, _ := c.Get("role")
 
 	var req updateRideStatusRequest
-	if err := c.ShouldBindJSON(&req); err != nil {
-		c.JSON(http.StatusUnprocessableEntity, gin.H{"error": gin.H{"code": "VALIDATION_ERROR", "message": err.Error()}})
+	if !bindJSON(c, &req, "") {
 		return
 	}
 
 	ride, err := h.rideService.AdvanceStatus(id, req.Status, actor.(string))
 	if err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": gin.H{"code": "BAD_REQUEST", "message": err.Error()}})
+		fail(c, http.StatusBadRequest, "BAD_REQUEST", "invalid status transition", err)
 		return
 	}
 
@@ -273,14 +271,13 @@ func (h *RideHandler) RateRide(c *gin.Context) {
 	userID, _ := c.Get("user_id")
 
 	var req rateRideRequest
-	if err := c.ShouldBindJSON(&req); err != nil {
-		c.JSON(http.StatusUnprocessableEntity, gin.H{"error": gin.H{"code": "VALIDATION_ERROR", "message": err.Error()}})
+	if !bindJSON(c, &req, "") {
 		return
 	}
 
 	ride, err := h.rideRepo.FindByID(id)
 	if err != nil {
-		c.JSON(http.StatusNotFound, gin.H{"error": gin.H{"code": "NOT_FOUND", "message": "ride not found"}})
+		respondRepo(c, err, "ride not found", "", "failed to load ride")
 		return
 	}
 
@@ -292,12 +289,12 @@ func (h *RideHandler) RateRide(c *gin.Context) {
 	}
 
 	if rateeID == nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": gin.H{"code": "BAD_REQUEST", "message": "no ratee found"}})
+		fail(c, http.StatusBadRequest, "BAD_REQUEST", "no ratee found", nil)
 		return
 	}
 
 	if err := h.rideService.Rate(id, raterRole, userID.(string), *rateeID, req.Score, req.Comment); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": gin.H{"code": "BAD_REQUEST", "message": err.Error()}})
+		fail(c, http.StatusBadRequest, "BAD_REQUEST", "invalid rating", err)
 		return
 	}
 
@@ -321,10 +318,10 @@ func (h *RideHandler) AcceptRide(c *gin.Context) {
 
 	if err := h.dispatchService.AcceptRide(id, driverID.(string)); err != nil {
 		if _, ok := err.(*service.DispatchConflictError); ok {
-			c.JSON(http.StatusConflict, gin.H{"error": gin.H{"code": "CONFLICT", "message": err.Error()}})
+			fail(c, http.StatusConflict, "CONFLICT", "ride already accepted", err)
 			return
 		}
-		c.JSON(http.StatusBadRequest, gin.H{"error": gin.H{"code": "BAD_REQUEST", "message": err.Error()}})
+		fail(c, http.StatusBadRequest, "BAD_REQUEST", "cannot accept ride", err)
 		return
 	}
 
@@ -345,7 +342,7 @@ func (h *RideHandler) GetRideReceipt(c *gin.Context) {
 	id := c.Param("id")
 	ride, err := h.rideRepo.FindByID(id)
 	if err != nil {
-		c.JSON(http.StatusNotFound, gin.H{"error": gin.H{"code": "NOT_FOUND", "message": "ride not found"}})
+		respondRepo(c, err, "ride not found", "", "failed to load ride")
 		return
 	}
 

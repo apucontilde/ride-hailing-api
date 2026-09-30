@@ -173,9 +173,13 @@ func (s *RideService) AdvanceStatus(rideID, newStatus, actor string) (*model.Rid
 		},
 	}
 	if newStatus == "completed" {
-		// In a real system, we would get actual distance/time from GPS logs
-		// Here we'll just assume it's 10% different from the estimate for demonstration
-		ride.TotalFare *= 1.1
+		// The final fare is the booked estimate, unchanged. No GPS odometer or
+		// completion duration is captured on the ride row (model.Ride carries the
+		// booking-time fare snapshot and status timestamps only), so manufacturing
+		// a different completion fare (e.g. a "10% markup") would be fabricated.
+		// GPS-based completion fares stay deferred until real odometer/duration
+		// telemetry exists; the same trigger is named in fare.go's getRates
+		// comment for moving the tariff into a versioned fare_rates table.
 
 		msg.Data = websocket.RideUpdateData{
 			RideID:    rideID,

@@ -66,6 +66,7 @@ func createRegionTables(t *testing.T, db *sqlx.DB) {
 	mustExec(t, db, "CREATE TEMP TABLE road_network_vertices_pgr ("+
 		"region_id TEXT NOT NULL, id BIGINT NOT NULL, the_geom GEOMETRY(Point,4326), "+
 		"lat DOUBLE PRECISION NOT NULL, lng DOUBLE PRECISION NOT NULL, "+
+		"elevation_m DOUBLE PRECISION, elevation_source TEXT, "+
 		"PRIMARY KEY (region_id, id))")
 	mustExec(t, db, "CREATE TEMP TABLE road_network_edges_pgr ("+
 		"region_id TEXT NOT NULL, id BIGINT NOT NULL, source BIGINT, target BIGINT, "+

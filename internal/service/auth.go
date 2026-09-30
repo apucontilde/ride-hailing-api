@@ -28,6 +28,25 @@ type AuthService struct {
 // sentinel with the full taxonomy.
 var ErrTokenRevoke = errors.New("token revocation failed")
 
+// ErrInvalidCredentials marks a login attempt with wrong credentials (unknown
+// email or wrong password, deliberately indistinguishable). The handler maps
+// only this sentinel to 401; every other Login error is an internal failure
+// (e.g. a database outage) and becomes a 500, so an outage can no longer
+// masquerade as "invalid credentials".
+var ErrInvalidCredentials = errors.New("invalid credentials")
+
+// ErrInvalidRefreshToken marks a refresh attempt whose token is not usable:
+// unknown, expired, or already revoked. Only this sentinel maps to 401; any
+// wrapped repository failure (e.g. the fail-closed RevokeRefreshToken) falls
+// through to a 500 with the driver error in the log, not the body.
+var ErrInvalidRefreshToken = errors.New("invalid or expired refresh token")
+
+// ErrInvalidResetToken marks a reset attempt whose token is not usable:
+// unknown, expired, or already consumed. Only this sentinel maps to 400; any
+// wrapped repository failure (e.g. the fail-closed RevokePasswordResetToken)
+// falls through to a 500 with the driver error in the log, not the body.
+var ErrInvalidResetToken = errors.New("invalid or expired reset token")
+
 func NewAuthService(cfg *config.Config, userRepo repository.UserRepository) *AuthService {
 	return &AuthService{cfg: cfg, userRepo: userRepo}
 }
@@ -72,7 +91,10 @@ func (s *AuthService) Register(email, phone, password string) (*model.User, erro
 func (s *AuthService) Login(email, password string) (*TokenPair, *model.User, error) {
 	user, err := s.userRepo.FindByEmail(email)
 	if err != nil {
-		return nil, nil, errors.New("invalid credentials")
+		if errors.Is(err, repository.ErrNotFound) {
+			return nil, nil, ErrInvalidCredentials
+		}
+		return nil, nil, fmt.Errorf("failed to load user: %w", err)
 	}
 
 	if user.Status == "deleted" || user.Status == "suspended" {
@@ -80,7 +102,7 @@ func (s *AuthService) Login(email, password string) (*TokenPair, *model.User, er
 	}
 
 	if bcrypt.CompareHashAndPassword([]byte(user.PasswordHash), []byte(password)) != nil {
-		return nil, nil, errors.New("invalid credentials")
+		return nil, nil, ErrInvalidCredentials
 	}
 
 	tokens, refreshModel, err := s.generateTokenPair(user.ID, user.Role)
@@ -99,15 +121,15 @@ func (s *AuthService) RefreshAccessToken(refreshTokenStr string) (*TokenPair, er
 	hash := hashToken(refreshTokenStr)
 	stored, err := s.userRepo.FindRefreshTokenByHash(hash)
 	if err != nil {
-		return nil, errors.New("invalid or expired refresh token")
+		return nil, ErrInvalidRefreshToken
 	}
 
 	if time.Now().After(stored.ExpiresAt) {
-		return nil, errors.New("refresh token expired")
+		return nil, ErrInvalidRefreshToken
 	}
 
 	if stored.Revoked {
-		return nil, errors.New("refresh token revoked")
+		return nil, ErrInvalidRefreshToken
 	}
 
 	user, err := s.userRepo.FindByID(stored.UserID)
@@ -247,11 +269,11 @@ func (s *AuthService) ResetPassword(tokenStr, newPassword string) error {
 	hash := hashToken(tokenStr)
 	stored, err := s.userRepo.FindPasswordResetTokenByHash(hash)
 	if err != nil {
-		return errors.New("invalid or expired reset token")
+		return ErrInvalidResetToken
 	}
 
 	if time.Now().After(stored.ExpiresAt) {
-		return errors.New("reset token expired")
+		return ErrInvalidResetToken
 	}
 
 	passwordHash, err := bcrypt.GenerateFromPassword([]byte(newPassword), bcrypt.DefaultCost)

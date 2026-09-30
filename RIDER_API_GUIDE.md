@@ -13,6 +13,33 @@ This guide lists the currently exposed API surface. It is rider-focused, but it 
 { "error": { "code": "UNAUTHORIZED", "message": "..." } }
 ```
 
+## Errors
+
+Every non-2xx response body is the same envelope:
+
+```json
+{ "error": { "code": "<CODE>", "message": "<string>" } }
+```
+
+- `message` is **user-facing** and safe to render verbatim. It never contains SQL, driver
+  text, Go identifiers, or internal hints.
+- Error codes and what each means for a client:
+  - `VALIDATION_ERROR` (422) — the request has a fixable problem (a missing or malformed field).
+  - `BAD_REQUEST` (400) — the body could not be read as JSON.
+  - `UNAUTHORIZED` (401) — credentials are missing, invalid, or expired.
+  - `NOT_FOUND` (404) — the requested resource does not exist.
+  - `CONFLICT` (409) — the request conflicts with existing state (e.g. email already taken).
+  - `INTERNAL` (500) — our failure. The rider app's straight-line fallback triggers here and only here.
+- 4xx means **the caller can fix it by changing something**; 5xx means **we are broken**. A
+  client must not retry a 4xx and must not treat a 5xx as final. A backend failure is **never**
+  a 4xx.
+- A route returned with `200` and `is_estimate: true` is **not** an error — it is a
+  straight-line estimate for coordinates outside every imported routing region.
+- A write that fails answers 5xx, never the endpoint's success code (including the batch
+  location endpoint, where one rejected item fails the whole request).
+- Audit rows and the idempotency store are best-effort and invisible: a failure writing them is
+  logged and the response is unchanged.
+
 ## Public Endpoints
 
 | Method | Path | Auth | Notes |

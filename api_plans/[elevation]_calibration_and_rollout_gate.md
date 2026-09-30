@@ -1,16 +1,23 @@
 ---
 tag: elevation
-depends_on: ["02_[elevation]_dem_ingest_and_noise_control.md"]
+depends_on: ["elevation DEM ingest + noise control (STATUS.md, landed)"]
 status: open
 ---
 
-# Stage 03 — Calibration, acceptance suite, and the rollout gate
+# Calibration, acceptance suite, and the rollout gate
 
-> **Numbering note.** This chain was renumbered so that its head is unnumbered — a `NN_`
-> prefix is earned only by a `depends_on` that names an *open* plan
-> (`.opencode/skills/plan-management/SKILL.md`). **Filenames and `depends_on` are
-> authoritative.** Body prose below may still say "stage N" in the
-> pre-renumbering scheme, where old stage 01 = the unnumbered head `[elevation]_directional_cost_model.md`, old 02 = `01_[elevation]_elevation_column_and_repo_plumb.md`, old 03 = `02_[elevation]_dem_ingest_and_noise_control.md`, old 04 = `03_[elevation]_calibration_and_rollout_gate.md`, old 05 = `04_[elevation]_duration_and_api_surface.md`.
+> **Numbering note.** All three earlier chain heads have **landed**
+> (`[elevation]_directional_cost_model.md`, the `elevation_m`/`elevation_source` plumbing, and
+> `[elevation]_dem_ingest_and_noise_control.md` — all condensed into STATUS.md), so this file is
+> now the **unnumbered head** — a `NN_` prefix is earned only by a `depends_on` naming an *open*
+> plan (`.opencode/skills/plan-management/SKILL.md`). **Filenames and `depends_on` are
+> authoritative.** Body prose below may still say "stage N" in the original scheme, where
+> stage 01 = `[elevation]_directional_cost_model.md` (**landed**), stage 02 =
+> `[elevation]_elevation_column_and_repo_plumb.md` (**landed**), stage 03 =
+> `[elevation]_dem_ingest_and_noise_control.md` (**landed**), stage 04 =
+> `[elevation]_calibration_and_rollout_gate.md` (this file, the unnumbered head), stage 05 =
+> `01_[elevation]_duration_model.md` (Item B; Item C is now the unnumbered
+> `[elevation]_pgrouting_parity.md`).
 > Translating that prose is a tracked follow-up; do not renumber it piecemeal.
 
 
@@ -20,8 +27,8 @@ live data where the feature changes the answer, quantifies the change, measures 
 records an explicit **go / no-go** for flipping `ROUTING_ELEVATION` — the same discipline
 `api_plans/STATUS.md` applied to its pgRouting gate.
 
-Depends on: `03_dem_ingest_and_noise_control.md` (real `elevation_m` on the live vertices, and
-the grade histogram from its diagnostics).
+Depends on: `[elevation]_dem_ingest_and_noise_control.md` — **landed** (real `elevation_m` on the
+live vertices, and the grade histogram from its diagnostics, condensed into STATUS.md).
 
 > ⚠ **This stage's original gates are pre-falsified and must be re-derived (`[elevation]_review.md`
 > §3.1–3.7, §4.2, §4.5).** Two independent problems, both measured on the real `skadi` DEM
@@ -42,16 +49,16 @@ the grade histogram from its diagnostics).
 **Read (nothing else):**
 
 - `api_plans/STATUS.md` — invariants 1 and 3, and the verified-facts table.
-- `api_plans/[elevation]_directional_cost_model.md` — the Part 2 trade-off this stage must
+- `api_plans/STATUS.md` (`[elevation]` landed head) — the Part 2 trade-off this stage must
   now *measure*: as `heuristicScale` (= `1 - DescentW·MaxGrade`) shrinks, A\* prunes less and
   the search gets slower.
-- `api_plans/01_[elevation]_elevation_column_and_repo_plumb.md` — the config knobs and their
+- `api_plans/STATUS.md` (`[elevation]` landed plumbing) — the config knobs and their
   (deliberately provisional) defaults.
-- `api_plans/02_[elevation]_dem_ingest_and_noise_control.md` — the MEASURED block (grade
-  histogram, `short − long` tripwire, known-flat-street `Δz` spread). **Stage 04's `DeadbandM`
-  is set from the flat-street spread** (measured by the replacement estimator in *stage 03's*
-  Part 4a), not from the code default. The `short − long` delta is *not* a calibration input:
-  measured on real data it is 1.00×, so it carries no signal.
+- `api_plans/STATUS.md` (`[elevation]` landed DEM ingest) — the MEASURED block (grade
+  histogram, `short − long` tripwire, known-flat-street `Δz` spread). **The `DeadbandM`
+  calibration is set from the flat-street spread** (measured by the replacement estimator in the
+  landed DEM stage's Part 4a), not from the code default. The `short − long` delta is *not* a
+  calibration input: measured on real data it is 1.00×, so it carries no signal.
   *(Note: this stage has its own Part 4a, the weight sweep. The two are unrelated.)*
 - `api_plans/STATUS.md` — the format of a decision gate that was
   actually executed (the `GATE RESULT` block). Match its honesty: numbers, verdicts, and a
@@ -67,7 +74,7 @@ the grade histogram from its diagnostics).
   `Path`, incremented once per node popped. Nothing else in `internal/routing` may change in
   this stage. This is the one sanctioned cross-stage edit; if the suite seems to need more,
   that is a finding, not a licence.
-- `api_plans/03_[elevation]_calibration_and_rollout_gate.md` — this file, with the results and
+- `api_plans/[elevation]_calibration_and_rollout_gate.md` — this file, with the results and
   the gate decision.
 
 **Do NOT touch:** `internal/repository/navigation_repo.go` and `pgrouting_repo.go` (stage 02's
@@ -401,9 +408,116 @@ owner decides whether to make it.** Record the answer here when it exists.
 
 ## MEASURED / WEIGHT RESPONSE / GATE RESULT
 
-_(to fill. Three blocks, in this order, because they are produced in this order: the **sweep
-curve** (Part 4a), then the **gate table** (Part 6) with the unroutable-pair count, then the
-**verdict**. A gate result with no sweep curve behind it is not reviewable.)_
+> Run **2026-09-29** against the live SJ import: **152,665 vertices, 183,371 edges, 100.00 %
+> `elevation_m` coverage**. Engine `ROUTING_ENGINE=native` (G8). The committed suite
+> (`internal/repository/elevation_acceptance_integration_test.go`) runs the reduced sample
+> `sampleN=100`; a scratch `TestZZSweep2` (`internal/repository/zz_sweep2_test.go`, not part of
+> the committed suite) ran a fuller N=250 5-point sweep. **The plan's full N=2000 sample was
+> never run** — no recorded number in this gate is at N=2000, and the bars written for that
+> sample are therefore not settled below.
+
+### MEASURED (non-sweep)
+
+**Flat-area control — UNCERTIFIED.** Part 2 Step 1 (the 0.005° lattice certification SQL) was
+**never implemented**; no ≤15 m-relief / ≥500-vertex box exists in this hilly import. The best
+available box (`lat 9.84..9.86, lng −83.96..−83.94`) has **33 m of relief**, so under the plan's
+own rule ("an uncertified control area is not a control") every G1 number below is measured on a
+slope, not a control.
+
+- `TestElevationFlatAreaInvariance`: **194/200 identical (97.0 %)**, max `Meters` delta
+  **0.0039 (0.39 %)**, rejected **0**, on the uncertified 33 m box.
+- `TestElevationDetourBounds`: **p90 1.0192, p99 1.0505** over 200 weighted routes.
+- `TestElevationFindsClimbAvoidanceCases`: **13/100** pairs qualify at `asc12_db8` on the
+  committed sample; **25/250** on the fuller run.
+- `TestReportedMetersUnaffected`: **PASS** — `Meters` == true summed edge length under every
+  weight set (series invariant #1, end-to-end on real data).
+
+**Part 5 hot path** (same machine, live graph):
+
+| bench | flat | elevated | ratio |
+|---|---|---|---|
+| `BenchmarkRouteRealSJ` | 78.3 ms/op, 3.99 MB, 19,799 allocs | 84.4 ms/op, 5.46 MB, 23,815 allocs | **1.08×** |
+| `BenchmarkRoute/{corner,hop}` | 301.6 ms / 1424 ns | 299.3 ms / 1447 ns | ~1.00× |
+
+### WEIGHT RESPONSE (Part 4a sweep curve)
+
+**Committed sweep** — `TestElevationWeightsSweep`, **N=100 routable (10 rejected: no route/snap)**,
+flat `Expanded` sum **3,621,598**:
+
+| setting | ascent-med | meters-med | p90 | p99 | qualify | expanded |
+|---|---|---|---|---|---|---|
+| default (1.5/0.3/0.15/3) | 1.0000 | 1.0000 | 1.0019 | 1.0053 | 6 | 4,053,985 |
+| asc3_db5 | 0.9974 | 1.0003 | 1.0040 | 1.0058 | 7 | 4,246,179 |
+| asc6_db5 | 0.9614 | 1.0042 | 1.0171 | 1.0401 | 11 | 4,557,491 |
+| asc12_db8 | 0.9261 | 1.0091 | 1.0326 | 1.0794 | 13 | 5,069,159 |
+
+**Fuller explicit sweep** — `TestZZSweep2` (scratch, N=250):
+
+| setting | ascent-med | meters-med | p90 | p99 | qualify |
+|---|---|---|---|---|---|
+| default | 1.0000 | 1.0000 | 1.0013 | 1.0054 | 11 |
+| asc3_db5 | 0.9971 | 1.0003 | 1.0038 | 1.0080 | 14 |
+| asc6_db5 | 0.9674 | 1.0029 | 1.0154 | 1.0385 | 22 |
+| asc12_db8 | 0.9403 | 1.0089 | 1.0312 | 1.0794 | 25 |
+| asc25_db8 | 0.8889 | 1.0298 | 1.0911 | 1.1887 | 26 |
+
+**Readings.** Monotone as required (G7). At the **shipped default** the feature is inert on the
+typical trip (median ascent ratio **1.0000**, median meters **1.0000**) — the pre-falsified
+finding stands; the default is a no-op, not a bad route. The first setting with a real effect
+while staying inside the Part 4 targets is **`asc12_db8`** (median ascent 0.9403, meters 1.0089,
+p99 1.0794). The deadband axis does help (`asc6_db5` → `asc12_db8` at +6 ascent weight buys
+~2.5 pts of ascent median for ~0.6 pts of meters) but a committed deadband-axis ablation was not
+run to separate deadband from weight, so the Part 4a "deadband matters most" claim is **not
+confirmed** here — the operating point is to be settled by the re-run below.
+
+### GATE RESULT (Part 6)
+
+| # | Criterion | Bar | Result |
+|---|---|---|---|
+| G1 | Flat-area invariance, **certified** flat box | ≥ 95 % identical, no pair > +2 % meters | **NOT MET as specified** — numeric bar passes (97.0 % / 0.39 %) but the box has 33 m relief and no ≤15 m/≥500-vertex box exists, so the control is **uncertified** ("an uncertified control area is not a control") |
+| G2 | Genuine climb-avoidance cases exist | ≥ 20 qualifying pairs, count reported | **Below bar at the committed sample: 13/100** at `asc12_db8`; **25/250** on the fuller run clears it. The ≥20 bar was written for the N=2000 sample, which was **never run** |
+| G3 | Typical-trip detour | median `Meters` ratio ≤ 1.02 | **PASS** — `asc12_db8` 1.0089 (also `asc6_db5` 1.0029) |
+| G4 | Detour tail | p99 `Meters` ratio ≤ 1.25 | **PASS** — `asc12_db8` 1.0794 |
+| G5 | Hot-path cost | within the Part 5 ~2× bound | **PASS** — 1.08× |
+| G6 | Deadband calibration | `DeadbandM` set from the known-flat-street Δz spread, written into `config.go` with measured justification | **NOT DONE** — the estimator is not implemented anywhere; `DeadbandM` is still the provisional **3.0** (`internal/config/config.go:82`) |
+| G7 | Monotonicity | median `AscentM` ratio falls as `AscentW` rises | **PASS** — 1.0000 > 0.9971 > 0.9674 > 0.9403 > 0.8889 |
+| G8 | Engine precondition | recorded against `ROUTING_ENGINE=native` | **PASS** — native |
+
+### VERDICT: NO-GO / not met — `ROUTING_ELEVATION` stays `off`
+
+Two of the eight criteria are not satisfied — **G6 is unimplemented** and **G1's control is
+uncertified** — and the decision policy flips the default only on **all eight**. Independently of
+the paperwork, the feature is **inert on the typical trip at the shipped defaults** (median ascent
+ratio 1.0000), so flipping today would ship a cost function no rider can feel. Per the plan's own
+policy, G1 and G2 failures are each disqualifying on their own; the honest result is to record
+"not met, staying off", not to rationalise a pass from the sub-numbers that did clear.
+
+**Chosen operating point** (for the re-run, not shipped): **`asc12_db8`**
+(`AscentW=12, DescentW=0.3, MaxGrade=0.15, DeadbandM=8`) — the first measured setting with a
+material ascent reduction inside the G3/G4 detour ceilings. It is **not** written into
+`config.go`: a weight change with no measured reason recorded is not allowed, and G6/G1 remain
+open. Do **not** read this as a go on the sub-metrics.
+
+### Remaining work to re-open the gate
+
+1. **(a) Certify a flat control (Part 2 Step 1).** Implement the 0.005° lattice SQL: over the
+   metro area, keep cells whose 4 corners are all within 15 m of the cell minimum and that hold
+   ≥ 500 routing vertices; union the largest qualifying cluster; **record the measured min/max
+   elevation and vertex count in MEASURED**. If no cluster exists on this import (the current
+   result), either widen the search to a genuinely flat costa-rica city extract or record
+   explicitly that G1 **cannot** be certified on the SJ import — which is itself a no-go. Then
+   re-run `TestElevationFlatAreaInvariance` restricted to the certified box and set the baseline
+   from the observed identical-rate (the 95 %/2 % bars are still unvalidated).
+2. **(b) Implement G6 (deadband calibration).** Add the known-flat-street Δz spread estimator
+   (reconstruct from the landed DEM stage's Part 4a, whose replacement estimator was deferred
+   here) and write the **calibrated `DeadbandM`** into `internal/config/config.go:82` plus its
+   comment, with the measured justification (before/after) recorded in this file. Do not tune it
+   by eye.
+3. **(c) Run the full N=2000 sweep** over the Part 4a weight grid to settle **G2** (and give
+   G3/G4 statistical support). Paste the curve into WEIGHT RESPONSE. Keep `TestElevationWeightsSweep`
+   as the reduced committed guard; run the full grid offline, not as a shipped test.
+4. **Then** re-run the gate at the operating point, certify G1, and only flip on all eight
+   (native engine only, separate commit, update `.env.example` + `AGENTS.md` per the policy).
 
 ## Decisions Recorded
 
@@ -454,6 +568,6 @@ curve** (Part 4a), then the **gate table** (Part 6) with the unroutable-pair cou
 - `internal/config/config.go` — **only if G6 changes a default**: update the calibrated
   `DeadbandM` (and any other weight) with the measured justification in the comment, and record
   the before/after here. A weight change with no measured reason recorded is not allowed.
-- `api_plans/03_[elevation]_calibration_and_rollout_gate.md` — results + verdict.
+- `api_plans/[elevation]_calibration_and_rollout_gate.md` — results + verdict.
 - If the gate passes: `.env.example`, `AGENTS.md`, and `api_plans/STATUS.md` get the
   flipped default, in a separate commit from the measurements.
