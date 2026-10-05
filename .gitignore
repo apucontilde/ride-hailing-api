@@ -22,3 +22,5 @@ build/
 .tmp
 # Widget Preview related
 .widget_preview/
+
+pubspeck.lock
