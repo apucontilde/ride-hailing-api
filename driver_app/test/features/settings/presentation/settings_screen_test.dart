@@ -10,7 +10,9 @@ import 'package:driver_app/core/network/websocket_service.dart';
 import 'package:driver_app/features/settings/presentation/settings_screen.dart';
 
 class MockAuthStorage extends Mock implements AuthStorage {}
+
 class MockApiClient extends Mock implements ApiClient {}
+
 class MockWebSocketService extends Mock implements WebSocketService {}
 
 /// The first coverage `settings_screen.dart` has ever had — driver known bug #4
@@ -43,10 +45,20 @@ void main() {
         routerConfig: GoRouter(
           initialLocation: '/settings',
           routes: [
-            GoRoute(path: '/settings', builder: (_, _) => const SettingsScreen()),
+            // Body-only since bug #10; host it in a Scaffold the way
+            // DriverShell does in the app.
+            GoRoute(
+              path: '/settings',
+              builder: (_, _) => const Scaffold(body: SettingsScreen()),
+            ),
+            GoRoute(
+              path: '/safety',
+              builder: (_, _) => const Scaffold(body: Text('Safety Page')),
+            ),
             GoRoute(
               path: '/login',
-              builder: (_, _) => const Scaffold(body: Center(child: Text('Log In'))),
+              builder: (_, _) =>
+                  const Scaffold(body: Center(child: Text('Log In'))),
             ),
           ],
         ),
@@ -69,7 +81,22 @@ void main() {
     expect(find.byIcon(Icons.logout), findsOneWidget);
   });
 
-  testWidgets('tapping sign out asks for confirmation with the driver copy', (tester) async {
+  testWidgets('the safety row opens /safety', (tester) async {
+    await tester.pumpWidget(createTestWidget());
+    await tester.pumpAndSettle();
+
+    // The driver's only entry to US-12, and it goes through the shared
+    // `extraSections` slot rather than a bespoke Card/ListTile.
+    expect(find.text('Safety & support'), findsOneWidget);
+    await tester.tap(find.text('Safety & support'));
+    await tester.pumpAndSettle();
+
+    expect(find.text('Safety Page'), findsOneWidget);
+  });
+
+  testWidgets('tapping sign out asks for confirmation with the driver copy', (
+    tester,
+  ) async {
     await tester.pumpWidget(createTestWidget());
     await tester.pumpAndSettle();
 
@@ -83,7 +110,10 @@ void main() {
       find.text('You will need to log in again to accept ride requests.'),
       findsOneWidget,
     );
-    expect(find.text('You will need to log in again to request rides.'), findsNothing);
+    expect(
+      find.text('You will need to log in again to request rides.'),
+      findsNothing,
+    );
   });
 
   testWidgets('cancelling the dialog keeps the session', (tester) async {
@@ -100,7 +130,9 @@ void main() {
     verifyNever(() => mockStorage.clearTokens());
   });
 
-  testWidgets('confirming clears the session and returns to /login', (tester) async {
+  testWidgets('confirming clears the session and returns to /login', (
+    tester,
+  ) async {
     await tester.pumpWidget(createTestWidget());
     await tester.pumpAndSettle();
 

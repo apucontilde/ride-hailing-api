@@ -66,8 +66,8 @@ func seedServiceRegion(t *testing.T) *sqlx.DB {
 		"parent_region TEXT, bbox_lon_min DOUBLE PRECISION, bbox_lat_min DOUBLE PRECISION, " +
 		"bbox_lon_max DOUBLE PRECISION, bbox_lat_max DOUBLE PRECISION, " +
 		"default_region BOOLEAN, datasource TEXT)")
-	exec("INSERT INTO routing_regions (region_id, level, name, parent_region, "+
-		"bbox_lon_min, bbox_lat_min, bbox_lon_max, bbox_lat_max, default_region, datasource) "+
+	exec("INSERT INTO routing_regions (region_id, level, name, parent_region, " +
+		"bbox_lon_min, bbox_lat_min, bbox_lon_max, bbox_lat_max, default_region, datasource) " +
 		"VALUES ('cr-sj', 'state', 'San Jose', NULL, -84.50, 9.00, -83.50, 10.20, TRUE, NULL)")
 
 	for id, lat := range map[int64]float64{1: bandVertexLat, 2: bandVertexLat + 0.01} {

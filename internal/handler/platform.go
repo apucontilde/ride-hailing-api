@@ -1,12 +1,17 @@
 package handler
 
 import (
+	"errors"
 	"fmt"
 	"net/http"
 	"strconv"
+	"time"
 
+	"ride-hailing-api/internal/model"
 	"ride-hailing-api/internal/repository"
 	"ride-hailing-api/internal/service"
+	"ride-hailing-api/internal/service/push"
+	"ride-hailing-api/internal/websocket"
 
 	"github.com/gin-gonic/gin"
 )
@@ -15,12 +20,39 @@ type PlatformHandler struct {
 	navSvc       *service.NavigationService
 	fareSvc      *service.FareService
 	placesRepo   repository.PlacesRepository
+	deviceRepo   repository.DeviceTokenRepository
+	feedbackRepo repository.FeedbackRepository
+	rideRepo     repository.RideRepository
+	hub          *websocket.Hub
+	pushSvc      *push.Service
 	maxRadiusM   float64
 	defaultLimit int
 }
 
-func NewPlatformHandler(navSvc *service.NavigationService, fareSvc *service.FareService, placesRepo repository.PlacesRepository, maxRadiusM float64, defaultLimit int) *PlatformHandler {
-	return &PlatformHandler{navSvc: navSvc, fareSvc: fareSvc, placesRepo: placesRepo, maxRadiusM: maxRadiusM, defaultLimit: defaultLimit}
+func NewPlatformHandler(
+	navSvc *service.NavigationService,
+	fareSvc *service.FareService,
+	placesRepo repository.PlacesRepository,
+	deviceRepo repository.DeviceTokenRepository,
+	feedbackRepo repository.FeedbackRepository,
+	rideRepo repository.RideRepository,
+	hub *websocket.Hub,
+	pushSvc *push.Service,
+	maxRadiusM float64,
+	defaultLimit int,
+) *PlatformHandler {
+	return &PlatformHandler{
+		navSvc:       navSvc,
+		fareSvc:      fareSvc,
+		placesRepo:   placesRepo,
+		deviceRepo:   deviceRepo,
+		feedbackRepo: feedbackRepo,
+		rideRepo:     rideRepo,
+		hub:          hub,
+		pushSvc:      pushSvc,
+		maxRadiusM:   maxRadiusM,
+		defaultLimit: defaultLimit,
+	}
 }
 
 type sosRequest struct {
@@ -28,14 +60,18 @@ type sosRequest struct {
 	Lng float64 `json:"lng" binding:"required"`
 }
 
+// feedbackRequest is the body of POST /api/v1/feedback. Type is the client's
+// classification (e.g. "app_issue"); it is optional so a pre-existing client
+// that sends only `message` keeps working, and it is persisted (bug #20).
 type feedbackRequest struct {
+	Type    string  `json:"type"`
 	Message string  `json:"message" binding:"required"`
 	RideID  *string `json:"ride_id"`
 }
 
 type deviceRegisterRequest struct {
 	Token    string `json:"token" binding:"required"`
-	Platform string `json:"platform" binding:"required"`
+	Platform string `json:"platform" binding:"required,oneof=ios android web"`
 }
 
 // SOS godoc
@@ -75,8 +111,9 @@ func (h *PlatformHandler) SOS(c *gin.Context) {
 //	@Produce	json
 //	@Security	BearerAuth
 //	@Param		body	body		feedbackRequest	true	"Feedback request"
-//	@Success	201		{object}	MessageResponse
+//	@Success	201		{object}	FeedbackResponse
 //	@Failure	422		{object}	ErrorResponse	"Validation error"
+//	@Failure	500		{object}	ErrorResponse	"Feedback could not be stored"
 //	@Router		/api/v1/feedback [post]
 func (h *PlatformHandler) Feedback(c *gin.Context) {
 	userID, _ := c.Get("user_id")
@@ -85,20 +122,45 @@ func (h *PlatformHandler) Feedback(c *gin.Context) {
 		return
 	}
 
-	c.JSON(http.StatusCreated, gin.H{"message": "feedback submitted"})
+	if h.feedbackRepo == nil {
+		fail(c, http.StatusInternalServerError, "INTERNAL", "failed to submit feedback",
+			errors.New("feedback repository is not configured"))
+		return
+	}
+
+	feedback := &model.Feedback{
+		UserID:  userID.(string),
+		RideID:  req.RideID,
+		Type:    req.Type,
+		Message: req.Message,
+	}
+	// A failed write must never answer 201: the client sends feedback once and
+	// has no way to notice it was dropped.
+	if err := h.feedbackRepo.CreateFeedback(feedback); err != nil {
+		respondRepo(c, err, "feedback not found", "", "failed to submit feedback")
+		return
+	}
+
+	c.JSON(http.StatusCreated, gin.H{"message": "feedback submitted", "feedback": feedback})
 }
 
 // DeviceRegister godoc
 //
-//	@Summary	Register a push notification device
-//	@Tags		platform
-//	@Accept		json
-//	@Produce	json
-//	@Security	BearerAuth
-//	@Param		body	body		deviceRegisterRequest	true	"Device registration request"
-//	@Success	201		{object}	MessageResponse
-//	@Failure	422		{object}	ErrorResponse	"Validation error"
-//	@Router		/api/v1/devices [post]
+//	@Summary		Register a push notification device
+//	@Description	Upserts the authenticated user's device token. A token is
+//	@Description	globally unique: registering a token that another user holds
+//	@Description	REASSIGNS it, so the previous user stops receiving pushes to
+//	@Description	it. Re-registering the same token does not duplicate.
+//	@Tags			platform
+//	@Accept			json
+//	@Produce		json
+//	@Security		BearerAuth
+//	@Param			body	body		deviceRegisterRequest	true	"Device registration request"
+//	@Success		201		{object}	DeviceResponse
+//	@Failure		422		{object}	ErrorResponse	"Validation error"
+//	@Failure		500		{object}	ErrorResponse	"Device could not be stored"
+//	@Router			/api/v1/devices [post]
+//	@Router			/api/v1/device-tokens [post]
 func (h *PlatformHandler) DeviceRegister(c *gin.Context) {
 	userID, _ := c.Get("user_id")
 	var req deviceRegisterRequest
@@ -106,18 +168,48 @@ func (h *PlatformHandler) DeviceRegister(c *gin.Context) {
 		return
 	}
 
-	c.JSON(http.StatusCreated, gin.H{"message": "device registered"})
+	if h.deviceRepo == nil {
+		fail(c, http.StatusInternalServerError, "INTERNAL", "failed to register device",
+			errors.New("device token repository is not configured"))
+		return
+	}
+
+	device, err := h.deviceRepo.Register(userID.(string), req.Token, req.Platform)
+	if err != nil {
+		respondRepo(c, err, "device not found", "", "failed to register device")
+		return
+	}
+
+	c.JSON(http.StatusCreated, gin.H{"message": "device registered", "device": device})
 }
 
 // DeviceUnregister godoc
 //
-//	@Summary	Unregister a push notification device
-//	@Tags		platform
-//	@Security	BearerAuth
-//	@Param		token	path	string	true	"Device token"
-//	@Success	204		"No content"
-//	@Router		/api/v1/devices/{token} [delete]
+//	@Summary		Unregister a push notification device
+//	@Description	Deactivates the authenticated user's token. Idempotent: an
+//	@Description	unknown, already-inactive, or another user's token is a no-op.
+//	@Tags			platform
+//	@Security		BearerAuth
+//	@Param			token	path	string	true	"Device token"
+//	@Success		204		"No content"
+//	@Failure		500		{object}	ErrorResponse	"Device could not be updated"
+//	@Router			/api/v1/devices/{token} [delete]
+//	@Router			/api/v1/device-tokens/{token} [delete]
 func (h *PlatformHandler) DeviceUnregister(c *gin.Context) {
+	userID, _ := c.Get("user_id")
+	token := c.Param("token")
+
+	if h.deviceRepo == nil {
+		fail(c, http.StatusInternalServerError, "INTERNAL", "failed to unregister device",
+			errors.New("device token repository is not configured"))
+		return
+	}
+
+	if err := h.deviceRepo.Unregister(userID.(string), token); err != nil {
+		respondRepo(c, err, "device not found", "", "failed to unregister device")
+		return
+	}
+
 	c.JSON(http.StatusNoContent, nil)
 }
 
@@ -368,19 +460,6 @@ func (h *PlatformHandler) EstimatesETA(c *gin.Context) {
 	})
 }
 
-// UpdateDestination godoc
-//
-//	@Summary	Update a ride's destination (stub)
-//	@Tags		rides
-//	@Produce	json
-//	@Security	BearerAuth
-//	@Param		id	path		string	true	"Ride ID"
-//	@Success	200	{object}	MessageResponse
-//	@Router		/api/v1/rides/{id}/destination [put]
-func (h *PlatformHandler) UpdateDestination(c *gin.Context) {
-	c.JSON(http.StatusOK, gin.H{"message": "destination updated"})
-}
-
 // NavigationRoute godoc
 //
 //	@Summary	Get a route between two coordinates
@@ -462,14 +541,66 @@ func (h *PlatformHandler) DriverRiderInfo(c *gin.Context) {
 
 // ArrivalNotification godoc
 //
-//	@Summary	Notify the rider that the driver has arrived
-//	@Tags		driver
-//	@Produce	json
-//	@Security	BearerAuth
-//	@Param		id	path		string	true	"Ride ID"
-//	@Success	200	{object}	MessageResponse
-//	@Router		/api/v1/driver/rides/{id}/notify-arrival [post]
+//	@Summary		Notify the rider that the driver has arrived
+//	@Description	Sends the live `ride.updated` update to a connected rider, or
+//	@Description	a backgrounded push when the rider is not connected.
+//	@Description	Ancillary: it never changes the ride's stored status.
+//	@Tags			driver
+//	@Produce		json
+//	@Security		BearerAuth
+//	@Param			id	path		string	true	"Ride ID"
+//	@Success		200	{object}	MessageResponse
+//	@Failure		404	{object}	ErrorResponse	"Ride not found for this driver"
+//	@Failure		500	{object}	ErrorResponse	"Notification could not be sent"
+//	@Router			/api/v1/driver/rides/{id}/notify-arrival [post]
 func (h *PlatformHandler) ArrivalNotification(c *gin.Context) {
+	userID, _ := c.Get("user_id")
+	driverID, _ := userID.(string)
+	rideID := c.Param("id")
+
+	if h.rideRepo == nil {
+		fail(c, http.StatusInternalServerError, "INTERNAL", "failed to notify rider of arrival",
+			errors.New("ride repository is not configured"))
+		return
+	}
+
+	ride, err := h.rideRepo.FindByID(rideID)
+	if err != nil {
+		respondRepo(c, err, "ride not found", "", "failed to notify rider of arrival")
+		return
+	}
+	// Only the driver actually assigned to the ride may notify its rider. A
+	// 404 (not 403) avoids confirming that somebody else's ride exists.
+	if ride.DriverID == nil || *ride.DriverID != driverID {
+		fail(c, http.StatusNotFound, "NOT_FOUND", "ride not found", nil)
+		return
+	}
+
+	msg := websocket.OutgoingMessage{
+		Type: "ride.updated",
+		Data: websocket.RideUpdateData{
+			RideID:    rideID,
+			Status:    "driver_arrived",
+			Timestamp: time.Now(),
+		},
+	}
+	// A connected rider gets the live update; a backgrounded one gets a push.
+	// SendToUser is a no-op when the rider has no socket.
+	if h.hub != nil {
+		h.hub.SendToUser(ride.RiderID, msg)
+	}
+	if (h.hub == nil || !h.hub.IsConnected(ride.RiderID)) && h.pushSvc != nil {
+		go h.pushSvc.NotifyUser(ride.RiderID, push.Message{
+			Title: "Driver arrived",
+			Body:  "Your driver has arrived at the pickup point.",
+			Data: map[string]string{
+				"type":    "ride.updated",
+				"status":  "driver_arrived",
+				"ride_id": rideID,
+			},
+		})
+	}
+
 	c.JSON(http.StatusOK, gin.H{"message": "rider notified of arrival"})
 }
 

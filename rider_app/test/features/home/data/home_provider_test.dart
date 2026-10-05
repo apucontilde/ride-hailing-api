@@ -1,7 +1,9 @@
 import 'package:flutter_test/flutter_test.dart';
 import 'package:dio/dio.dart';
+import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:http_mock_adapter/http_mock_adapter.dart';
 import 'package:rider_app/core/api/api_client.dart';
+import 'package:rider_app/core/auth/auth_provider.dart';
 import 'package:rider_app/features/home/data/home_provider.dart';
 
 void main() {
@@ -243,6 +245,59 @@ void main() {
         'is_estimate': true,
       });
       expect(route.isEstimate, isTrue);
+    });
+  });
+
+  group('placeSearchProvider', () {
+    late ApiClient apiClient;
+    late DioAdapter dioAdapter;
+    late ProviderContainer container;
+    late List<Map<String, dynamic>> requests;
+
+    setUp(() {
+      apiClient = ApiClient(baseUrl: 'http://localhost:8080');
+      dioAdapter = DioAdapter(
+        dio: apiClient.dio,
+        matcher: const UrlRequestMatcher(matchMethod: true),
+      );
+      requests = <Map<String, dynamic>>[];
+      apiClient.dio.interceptors.add(
+        InterceptorsWrapper(
+          onRequest: (options, handler) {
+            requests.add(Map<String, dynamic>.from(options.queryParameters));
+            handler.next(options);
+          },
+        ),
+      );
+      container = ProviderContainer(
+        overrides: [apiClientProvider.overrideWithValue(apiClient)],
+      );
+      addTearDown(container.dispose);
+    });
+
+    test('sends a single request with one fixed radius', () async {
+      dioAdapter.onGet(
+        '/api/v1/places/autocomplete',
+        (server) => server.reply(200, {'places': <dynamic>[]}),
+      );
+
+      final places = await container.read(placeSearchProvider(
+        const PlaceSearchArgs(query: 'cafe', lat: 9.93, lng: -84.08),
+      ).future);
+
+      expect(places, isEmpty);
+      expect(requests, hasLength(1));
+      expect(requests.single['q'], 'cafe');
+      expect(requests.single['radius'], 30000.0);
+    });
+
+    test('blank query makes no request', () async {
+      final places = await container.read(placeSearchProvider(
+        const PlaceSearchArgs(query: '   ', lat: 9.93, lng: -84.08),
+      ).future);
+
+      expect(places, isEmpty);
+      expect(requests, isEmpty);
     });
   });
 }

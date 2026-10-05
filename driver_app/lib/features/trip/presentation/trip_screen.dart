@@ -6,6 +6,7 @@ import 'package:ride_hailing_shared/ride_hailing_shared.dart';
 import 'package:latlong2/latlong.dart';
 import '../../../core/location/location_service.dart';
 import '../../../core/ride/ride_state_notifier.dart';
+import '../../rides/data/rated_rides_provider.dart';
 import '../../rides/presentation/rate_sheet.dart';
 import '../providers/trip_notifier.dart';
 
@@ -168,12 +169,16 @@ class _TripScreenState extends ConsumerState<TripScreen> {
     final ride = trip.currentRide;
     final stage = trip.stage;
     // Watched, not read: a rating submitted from the sheet has to retire this
-    // prompt, and only a subscription rebuilds the screen. The server would
-    // accept a second rating for the same ride, so the prompt is shown at most
-    // once per ride per session.
-    final ratedRideIds = ref.watch(ratedRideIdsProvider);
-    final canRate =
-        ride != null && ride.id.isNotEmpty && !ratedRideIds.contains(ride.id);
+    // prompt, and only a subscription rebuilds the screen. Tri-state, so the
+    // prompt appears only once the server's list of already-rated rides is on
+    // screen and does not list this ride — while the list loads (and after it
+    // fails) the answer is `unknown` and the prompt stays hidden rather than
+    // claiming the driver never rated this trip.
+    final ratingStatus = ref.watch(ratedRideStatusProvider(ride?.id ?? ''));
+    final ratedRides = ref.watch(ratedRidesProvider);
+    final canRate = ride != null &&
+        ride.id.isNotEmpty &&
+        ratingStatus.canPrompt;
 
     // Refetch on GPS moves (collapsed by the 200 m cache) and when the target
     // flips from pickup to dropoff as the trip starts.
@@ -233,8 +238,49 @@ class _TripScreenState extends ConsumerState<TripScreen> {
                 ),
               ),
             ),
+            // The prompt above is hidden while the rated list is unknown, so a
+            // failed load needs to be visible and recoverable here too —
+            // otherwise the post-trip screen silently loses the rating step.
+            if (ratedRides.hasError)
+              _RatingsLoadError(
+                onRetry: () => ref.read(ratedRidesProvider.notifier).refresh(),
+              ),
           ],
         ),
+      ),
+    );
+  }
+}
+
+/// Why the "Rate the rider" prompt is missing, and how to get it back.
+class _RatingsLoadError extends StatelessWidget {
+  final VoidCallback onRetry;
+
+  const _RatingsLoadError({required this.onRetry});
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(16, 0, 16, 8),
+      child: Row(
+        children: [
+          Icon(Icons.error_outline, size: 16, color: theme.colorScheme.error),
+          const SizedBox(width: 8),
+          Expanded(
+            child: Text(
+              ratedRidesErrorMessage,
+              style: theme.textTheme.bodySmall?.copyWith(
+                color: theme.colorScheme.error,
+              ),
+            ),
+          ),
+          TextButton(
+            key: const Key('trip-ratings-retry'),
+            onPressed: onRetry,
+            child: const Text('Retry'),
+          ),
+        ],
       ),
     );
   }

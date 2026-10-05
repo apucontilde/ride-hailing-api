@@ -122,7 +122,7 @@ Verify email/phone:
 | DELETE | `/api/v1/rider/me` | Yes, role rider | Soft-deletes the account |
 | GET | `/api/v1/rider/me/preferences` | Yes, role rider | Stub |
 | PUT | `/api/v1/rider/me/preferences` | Yes, role rider | Stub |
-| GET | `/api/v1/rider/ratings` | Yes, role rider | Stub |
+| GET | `/api/v1/rider/ratings` | Yes, role rider | Paginated ratings the rider submitted |
 | GET | `/api/v1/rider/favorites` | Yes, role rider | Stub |
 | POST | `/api/v1/rider/favorites` | Yes, role rider | Stub |
 | DELETE | `/api/v1/rider/favorites/:id` | Yes, role rider | Stub |
@@ -162,7 +162,7 @@ Update status:
 | GET | `/api/v1/driver/me/vehicle` | Yes, role driver | Stub |
 | PUT | `/api/v1/driver/me/vehicle` | Yes, role driver | Stub |
 | GET | `/api/v1/driver/me/earnings` | Yes, role driver | Stub |
-| GET | `/api/v1/driver/ratings` | Yes, role driver | Stub |
+| GET | `/api/v1/driver/ratings` | Yes, role driver | Paginated ratings the driver submitted |
 | POST | `/api/v1/driver/earnings/withdraw` | Yes, role driver | Stub |
 
 ## Driver Ride Endpoints
@@ -179,21 +179,21 @@ Update status:
 | PUT | `/api/v1/driver/rides/:id/status` | Yes, role driver | Advances ride status |
 | POST | `/api/v1/driver/rides/:id/cancel` | Yes, role driver | Cancels ride when allowed |
 | POST | `/api/v1/driver/rides/:id/rate` | Yes, role driver | Rates the rider |
-| POST | `/api/v1/driver/rides/:id/notify-arrival` | Yes, role driver | Stub |
+| POST | `/api/v1/driver/rides/:id/notify-arrival` | Yes, role driver | Sends a live `ride.updated` (`driver_arrived`) to a connected rider, or a backgrounded push when the rider is offline. Ancillary: it does not change the stored status. 404 for another driver's / an unknown ride |
 
 ## Ride Endpoints
 
 | Method | Path | Auth | Notes |
 |---|---|---|---|
 | POST | `/api/v1/rides` | Yes, role rider | Creates a ride, idempotent with `Idempotency-Key` |
-| GET | `/api/v1/rides/current` | Yes | Returns the current ride for the authenticated user |
-| GET | `/api/v1/rides/history` | Yes | Paginated history for rider or driver |
+| GET | `/api/v1/rides/current` | Yes | Returns the current ride plus its `stops`, or `ride: null` |
+| GET | `/api/v1/rides/history` | Yes | Paginated history for rider or driver, plus each ride's `stops` |
 | GET | `/api/v1/rides/:id` | Yes | Returns ride by ID |
 | GET | `/api/v1/rides/:id/receipt` | Yes | Returns fare breakdown |
 | POST | `/api/v1/rides/:id/cancel` | Yes | Cancels ride when state allows it |
 | POST | `/api/v1/rides/:id/rate` | Yes | Rates the other party |
 | POST | `/api/v1/rides/:id/tip` | Yes | Stub |
-| PUT | `/api/v1/rides/:id/destination` | Yes | Stub |
+| PUT | `/api/v1/rides/:id/destination` | Yes, role rider | Changes the destination of a ride that is still open |
 
 ### Create ride body
 
@@ -205,11 +205,109 @@ Update status:
   "dropoff_lng": -46.656,
   "pickup_address": "Av. Paulista, 1000",
   "dropoff_address": "Rua Augusta, 500",
-  "vehicle_type": "sedan"
+  "vehicle_type": "sedan",
+  "stops": [
+    { "lat": -23.5555, "lng": -46.6444, "address": "Shopping Paulista" }
+  ]
 }
 ```
 
 `vehicle_type` defaults to `sedan`.
+
+### Multi-stop rides
+
+`stops` is **optional and additive**: a body without it behaves exactly as before,
+so an older client keeps working unchanged.
+
+- The array **is** the visit order. Do not send a sequence number — it is derived
+  from the array position and returned as `sequence` (1-based).
+- `lat` and `lng` are both required on every stop. `0` is a valid coordinate, so
+  an absent coordinate is a `422`, not a default.
+- `kind` is optional and defaults to `stop`; the only accepted value is `stop`
+  (or omitted). A client stop with `kind: "destination"` is rejected as a `422`
+  — the final destination is defined solely by the top-level `dropoff_lat`/
+  `dropoff_lng`/`dropoff_address`.
+- The ride's own `dropoff_lat`/`dropoff_lng`/`dropoff_address` are **always**
+  appended as the final `destination` stop, so `stops` always ends in exactly one
+  destination and the ride's `dropoff_*` scalars can never disagree with it.
+- `stops` are the intermediate waypoints only; the pickup point is never a stop
+  (it stays in the `pickup_*` fields).
+
+`POST /api/v1/rides` and `GET /api/v1/rides/:id` answer with `stops` next to
+`ride`:
+
+```json
+{
+  "ride": { "id": "…", "status": "pending", "…": "unchanged" },
+  "stops": [
+    { "id": "…", "ride_id": "…", "sequence": 1, "kind": "stop",
+      "lat": -23.5555, "lng": -46.6444, "address": "Shopping Paulista" },
+    { "id": "…", "ride_id": "…", "sequence": 2, "kind": "destination",
+      "lat": -23.561, "lng": -46.656, "address": "Rua Augusta, 500" }
+  ]
+}
+```
+
+`stops` is always an array, never `null`. For a ride created before multi-stop,
+or one with no intermediate stops, it holds only the destination.
+
+A rejected itinerary is a `422 VALIDATION_ERROR` naming the offending stop, e.g.
+`"stop 2: the final destination is set by dropoff_lat/dropoff_lng/dropoff_address, not by a stop"`.
+
+Every ride read carries its itinerary, so the same ride never looks
+multi-stop in one response and single-leg in another:
+
+| Endpoint | Where `stops` appears |
+|---|---|
+| `POST /api/v1/rides` | sibling of `ride` |
+| `GET /api/v1/rides/:id` | sibling of `ride` |
+| `PUT /api/v1/rides/:id/destination` | sibling of `ride` |
+| `GET /api/v1/rides/current` | sibling of `ride`, `[]` when `ride` is `null` |
+| `GET /api/v1/rides/history` | sibling **map** of ride id → itinerary, fetched in one query |
+
+For history, `rides` is still the flat array it always was; the itineraries come
+alongside it keyed by ride id:
+
+```json
+{
+  "rides": [ { "id": "…", "…": "unchanged" } ],
+  "total": 1, "page": 1, "per_page": 20, "total_pages": 1,
+  "stops": { "…ride id…": [ { "sequence": 1, "kind": "destination", "…": "…" } ] }
+}
+```
+
+`GET /api/v1/rides/:id/receipt` is unchanged: it is a fare breakdown, not an
+itinerary.
+
+### Change destination
+
+`PUT /api/v1/rides/:id/destination` — rider only, and only the rider who owns the
+ride.
+
+```json
+{ "lat": -23.57, "lng": -46.66, "address": "Vila Madalena" }
+```
+
+Both `lat` and `lng` are required; `address` is optional and omitted means empty.
+
+The response is the same `{ "ride": …, "stops": […] }` envelope as above, with the
+destination stop moved to the new coordinates.
+
+What it does **not** do:
+
+- It does not change the ride status. Allowed while `pending`, `accepted`,
+  `driver_arrived` or `in_progress`; afterwards it is a `409 CONFLICT`.
+- It does not reprice the ride. The booking-time estimate is what the receipt
+  pays out, so a destination change never moves `total_fare`.
+- It does not re-route. Route cost stays in meters and the routing contract is
+  frozen, so **re-request `GET /api/v1/navigation/route`** for the new leg.
+
+Someone else's ride answers `404` (not `403`, so ride existence is not confirmed),
+and an unknown ride answers `404` too. A database outage answers `500`, never a
+`4xx` — see `## Errors`.
+
+Both parties then receive a `ride.updated` websocket message carrying the new
+dropoff with `status` unchanged.
 
 ### Ride status flow
 
@@ -218,6 +316,27 @@ Update status:
 `cancelled` is allowed from `pending`, `accepted`, or `driver_arrived`.
 
 On ride creation, the backend also sends a `ride.updated` websocket event with `status: pending` and starts dispatching nearby drivers.
+
+### Submitted ratings
+
+`GET /api/v1/rider/ratings` and `GET /api/v1/driver/ratings` return the
+authenticated user's own submitted ratings (newest first), scoped to their role.
+Pagination is `page`/`per_page` (1-based, `per_page` max 50). `ride_id` is the
+key the apps use to mark a ride as already rated.
+
+```json
+{
+  "ratings": [
+    { "id": "…", "ride_id": "…", "rater_role": "rider", "score": 5, "comment": "Smooth", "created_at": "2026-09-30T12:00:00Z" }
+  ],
+  "total": 1,
+  "page": 1,
+  "per_page": 20,
+  "total_pages": 1
+}
+```
+
+A repository failure answers `500 INTERNAL` with `"failed to load ratings"`.
 
 ## Geo Endpoints
 
@@ -295,12 +414,28 @@ for both a failed request and an `is_estimate` answer); the rider app is still t
 | Method | Path | Auth | Notes |
 |---|---|---|---|
 | POST | `/api/v1/sos` | Yes | Creates an SOS response payload, but it is not persisted |
-| POST | `/api/v1/feedback` | Yes | Stub-like acknowledgement |
-| POST | `/api/v1/devices` | Yes | Registers a device token |
-| DELETE | `/api/v1/devices/:token` | Yes | Unregisters a device token |
+| POST | `/api/v1/feedback` | Yes | Persists the feedback and echoes it, including the client `type` |
+| POST | `/api/v1/devices` (alias `/api/v1/device-tokens`) | Yes | Upserts a push device token; a token is globally unique and moves to the account that registers it last |
+| DELETE | `/api/v1/devices/:token` (alias `/api/v1/device-tokens/:token`) | Yes | Deactivates the caller's own token; idempotent |
 | GET | `/api/v1/heatmap` | Yes | Stub |
 | GET | `/api/v1/drivers/:id/location` | Yes | Returns current driver location |
 | GET | `/api/v1/version` | No | App version metadata |
+
+### Feedback body
+
+```json
+{
+  "type": "app_issue",
+  "message": "The app crashed on the trip screen",
+  "ride_id": "optional-ride-uuid"
+}
+```
+
+`type` is optional (a client that omits it stores `""`). The response echoes the persisted row:
+
+```json
+{ "message": "feedback submitted", "feedback": { "id": "…", "type": "app_issue", "message": "…", "created_at": "…" } }
+```
 
 ### Device body
 
@@ -310,6 +445,8 @@ for both a failed request and an `is_estimate` answer); the rider app is still t
   "platform": "ios"
 }
 ```
+
+`platform` must be `ios`, `android`, or `web` (anything else is a 422). A device token identifies one install, so it is globally unique: registering a token that another account already holds **reassigns** it, and the previous account stops receiving its notifications. A push is only sent to a backgrounded client; a connected WebSocket still gets `ride.updated` live.
 
 ### SOS body
 
@@ -339,17 +476,18 @@ Auth: Bearer token required before upgrade.
 | Type | Notes |
 |---|---|
 | `ride.offer` | Sent to connected drivers during dispatch |
-| `ride.updated` | Sent on ride create, accept, cancel, status changes, and completion |
+| `ride.updated` | Sent on ride create, accept, cancel, status changes, completion, and a destination change |
 | `driver.location` | Sent to the rider during an active ride |
 | `pong` | Reply to `ping` |
 
 ## Current Behavior Notes
 
 - `POST /api/v1/auth/social` is exposed but returns a not-yet-implemented response.
-- `POST /api/v1/rides/:id/tip`, `PUT /api/v1/rides/:id/destination`, `GET /api/v1/geo/isochrone`, `GET /api/v1/places/*`, `GET /api/v1/promotions`, `POST /api/v1/promotions/apply`, and several rider/driver profile extras are stubs.
+- `POST /api/v1/rides/:id/tip`, `GET /api/v1/geo/isochrone`, `GET /api/v1/places/*`, `GET /api/v1/promotions`, `POST /api/v1/promotions/apply`, and several rider/driver profile extras are stubs.
 - `POST /api/v1/rides` calculates fare using the current fare service, including distance, time, and surge heuristics.
 - `POST /api/v1/driver/rides/:id/accept` is the HTTP accept path; websocket `ride.accept` is the live driver channel used by dispatch.
 - If dispatch finds no driver, the ride can move to `no_driver_available`.
+- Backgrounded push is best-effort: `POST /api/v1/devices` registers the token, and ride status changes (`driver_arrived`, `in_progress`, `completed`, `cancelled`) are pushed only when the rider has no live `/ws` socket. A push that cannot be delivered is logged and never fails the ride transition. With no provider credentials configured the default is a log-and-continue no-op.
 
 ## Recommended Rider Flow
 

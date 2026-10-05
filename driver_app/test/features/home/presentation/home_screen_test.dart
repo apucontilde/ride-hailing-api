@@ -16,6 +16,7 @@ import 'package:driver_app/core/ride/ride_state_notifier.dart';
 import 'package:driver_app/features/driver/model/driver_profile.dart';
 import 'package:driver_app/features/home/presentation/home_screen.dart';
 import 'package:driver_app/features/home/providers/availability_notifier.dart';
+import 'package:driver_app/features/navigation/driver_shell.dart';
 import 'package:driver_app/features/rides/presentation/offer_sheet.dart';
 import 'package:driver_app/features/trip/presentation/trip_screen.dart';
 
@@ -64,8 +65,7 @@ void main() {
       ),
     );
     final mockWs = MockDriverWebSocketService();
-    when(() => mockWs.events)
-        .thenAnswer((_) => const Stream<WsEvent>.empty());
+    when(() => mockWs.events).thenAnswer((_) => const Stream<WsEvent>.empty());
     rideState = RideStateNotifier(mockWs, apiClient: MockApiClient());
 
     container = ProviderContainer(
@@ -73,8 +73,9 @@ void main() {
         apiClientProvider.overrideWithValue(mockApiClient),
         rideStateProvider.overrideWith((ref) => rideState),
         driverProfileProvider.overrideWith((ref) => profile),
-        appPermissionProvider
-            .overrideWith((ref) => const AppPermissionState(granted: true)),
+        appPermissionProvider.overrideWith(
+          (ref) => const AppPermissionState(granted: true),
+        ),
         tripMapTileProvider.overrideWith((ref) => null),
         locationServiceProvider.overrideWith(
           (ref) => FakeLocationService(
@@ -88,22 +89,30 @@ void main() {
   });
 
   void holdRide({String status = 'accepted', String rideId = 'r1'}) {
-    rideState.onWsEvent(WsEvent(
-      type: WsEventType.updated,
-      data: {
-        'ride_id': rideId,
-        'status': status,
-        'pickup': {'lat': 9.93, 'lng': -84.08, 'address': 'Central Park'},
-        'dropoff': {'lat': 9.95, 'lng': -84.1, 'address': 'Airport'},
-      },
-    ));
+    rideState.onWsEvent(
+      WsEvent(
+        type: WsEventType.updated,
+        data: {
+          'ride_id': rideId,
+          'status': status,
+          'pickup': {'lat': 9.93, 'lng': -84.08, 'address': 'Central Park'},
+          'dropoff': {'lat': 9.95, 'lng': -84.1, 'address': 'Airport'},
+        },
+      ),
+    );
   }
 
   Future<void> pumpHome(WidgetTester tester) async {
     final router = GoRouter(
       initialLocation: '/home',
       routes: [
-        GoRoute(path: '/home', builder: (_, _) => const HomeScreen()),
+        // Home runs inside its real shell since bug #10: the screen is
+        // body-only and the shell owns the Scaffold/AppBar/drawer.
+        GoRoute(
+          path: '/home',
+          builder: (_, _) =>
+              const DriverShell(location: '/home', child: HomeScreen()),
+        ),
         GoRoute(path: '/trip', builder: (_, _) => const TripScreen()),
       ],
     );
@@ -166,9 +175,9 @@ void main() {
   });
 
   testWidgets('a failed restore leaves the driver on home', (tester) async {
-    when(() => mockDio.get(ApiEndpoints.driverRidesCurrent)).thenThrow(
-      DioException(requestOptions: RequestOptions(path: '/stub')),
-    );
+    when(
+      () => mockDio.get(ApiEndpoints.driverRidesCurrent),
+    ).thenThrow(DioException(requestOptions: RequestOptions(path: '/stub')));
 
     await pumpHome(tester);
 
@@ -177,8 +186,9 @@ void main() {
     expect(find.text('Offline'), findsOneWidget);
   });
 
-  testWidgets('the banner re-enters the trip without re-pushing in a loop',
-      (tester) async {
+  testWidgets('the banner re-enters the trip without re-pushing in a loop', (
+    tester,
+  ) async {
     holdRide();
     await pumpHome(tester);
     await tester.pumpAndSettle();
@@ -186,7 +196,9 @@ void main() {
 
     // Backing out mid-trip (the PopScope lets non-terminal trips pop) must
     // leave a way back in, and must not bounce the driver into /trip again.
-    final navigator = tester.state<NavigatorState>(find.byType(Navigator).first);
+    final navigator = tester.state<NavigatorState>(
+      find.byType(Navigator).first,
+    );
     navigator.pop();
     await tester.pumpAndSettle();
 
@@ -202,37 +214,40 @@ void main() {
     expect(find.byType(TripScreen), findsOneWidget);
   });
 
-  testWidgets('an offer opens the sheet even when the profile cache says offline',
-      (tester) async {
-    // Regression: the sheet used to be gated on `driverProfileProvider`'s
-    // `isOnline`, and the status toggle never wrote the new status back into
-    // that cache — so a driver who had just gone online (correctly showing
-    // "You're online" and a checked switch) silently dropped every offer the
-    // websocket delivered, and it then expired after 30 s. The gate must read
-    // the offer, not a cache that can be stale or not yet loaded.
-    //
-    // `profile` above is `status: 'offline'`, i.e. exactly that stale state.
-    expect(container.read(driverProfileProvider)?.isOnline, isFalse);
+  testWidgets(
+    'an offer opens the sheet even when the profile cache says offline',
+    (tester) async {
+      // Regression: the sheet used to be gated on `driverProfileProvider`'s
+      // `isOnline`, and the status toggle never wrote the new status back into
+      // that cache — so a driver who had just gone online (correctly showing
+      // "You're online" and a checked switch) silently dropped every offer the
+      // websocket delivered, and it then expired after 30 s. The gate must read
+      // the offer, not a cache that can be stale or not yet loaded.
+      //
+      // `profile` above is `status: 'offline'`, i.e. exactly that stale state.
+      expect(container.read(driverProfileProvider)?.isOnline, isFalse);
 
-    await pumpHome(tester);
-    expect(find.byType(OfferSheet), findsNothing);
+      await pumpHome(tester);
+      expect(find.byType(OfferSheet), findsNothing);
 
-    rideState.onWsEvent(
-      WsEvent(type: WsEventType.offer, data: {'ride_id': 'r7'}),
-    );
-    await tester.pumpAndSettle();
+      rideState.onWsEvent(
+        WsEvent(type: WsEventType.offer, data: {'ride_id': 'r7'}),
+      );
+      await tester.pumpAndSettle();
 
-    expect(find.byType(OfferSheet), findsOneWidget);
-    expect(find.text('New Ride Offer'), findsOneWidget);
+      expect(find.byType(OfferSheet), findsOneWidget);
+      expect(find.text('New Ride Offer'), findsOneWidget);
 
-    // Withdraw the offer: `_onOffer` arms a 30 s expiry timer and flutter_test
-    // fails the test if one is still pending when the tree is torn down.
-    rideState.declineOffer();
-    await tester.pumpAndSettle();
-  });
+      // Withdraw the offer: `_onOffer` arms a 30 s expiry timer and flutter_test
+      // fails the test if one is still pending when the tree is torn down.
+      rideState.declineOffer();
+      await tester.pumpAndSettle();
+    },
+  );
 
-  testWidgets('a later offer still opens after the first is withdrawn',
-      (tester) async {
+  testWidgets('a later offer still opens after the first is withdrawn', (
+    tester,
+  ) async {
     await pumpHome(tester);
 
     rideState.onWsEvent(
@@ -263,8 +278,9 @@ void main() {
     await tester.pumpAndSettle();
   });
 
-  testWidgets('the denial banner renders when permission is permanently denied',
-      (tester) async {
+  testWidgets('the denial banner renders when permission is permanently denied', (
+    tester,
+  ) async {
     // Override the provider to simulate a permanent denial.
     final deniedContainer = ProviderContainer(
       overrides: [
@@ -272,10 +288,8 @@ void main() {
         rideStateProvider.overrideWith((ref) => rideState),
         driverProfileProvider.overrideWith((ref) => profile),
         appPermissionProvider.overrideWith(
-          (ref) => const AppPermissionState(
-            granted: false,
-            deniedPermanently: true,
-          ),
+          (ref) =>
+              const AppPermissionState(granted: false, deniedPermanently: true),
         ),
         tripMapTileProvider.overrideWith((ref) => null),
         locationServiceProvider.overrideWith(
@@ -291,7 +305,11 @@ void main() {
     final router = GoRouter(
       initialLocation: '/home',
       routes: [
-        GoRoute(path: '/home', builder: (_, _) => const HomeScreen()),
+        GoRoute(
+          path: '/home',
+          builder: (_, _) =>
+              const DriverShell(location: '/home', child: HomeScreen()),
+        ),
         GoRoute(path: '/trip', builder: (_, _) => const TripScreen()),
       ],
     );
@@ -306,6 +324,11 @@ void main() {
     await tester.pump();
     await tester.pump();
 
-    expect(find.text('Location access denied. Turn it on in settings to receive ride offers.'), findsOneWidget);
+    expect(
+      find.text(
+        'Location access denied. Turn it on in settings to receive ride offers.',
+      ),
+      findsOneWidget,
+    );
   });
 }

@@ -1,5 +1,6 @@
 import 'dart:async';
 import 'package:dio/dio.dart';
+import 'package:flutter/foundation.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../../../core/api/endpoints.dart';
 import '../../../core/api/api_client.dart';
@@ -83,6 +84,14 @@ class CurrentRideNotifier extends StateNotifier<CurrentRideState> {
     _timer = null;
   }
 
+  @visibleForTesting
+  bool get isPolling => _timer != null;
+
+  bool _isTerminalStatus(String? status) =>
+      status == 'no_driver_available' ||
+      status == 'cancelled' ||
+      status == 'completed';
+
   /// Single immediate poll used at cold start to restore an ongoing ride.
   Future<void> checkOnce() => pollNow();
 
@@ -99,7 +108,9 @@ class CurrentRideNotifier extends StateNotifier<CurrentRideState> {
       state = _deriveState(ride is Map<String, dynamic> ? ride : null);
       _ref.read(rideStatusProvider.notifier)
           .updateFromCurrentRide(ride is Map<String, dynamic> ? ride : null);
-      if (state.noDriverAvailable) stopPolling();
+      if (state.noDriverAvailable || _isTerminalStatus(state.status)) {
+        stopPolling();
+      }
     } on DioException catch (e) {
       state = state.copyWith(
         loading: false,

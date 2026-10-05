@@ -1,12 +1,9 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
-import 'package:ride_hailing_shared/ride_hailing_shared.dart';
 import '../../../core/auth/auth_provider.dart';
 import '../../../core/ride/ride_state_notifier.dart';
 import '../../../core/location/location_service.dart';
-import '../../navigation/driver_nav_items.dart';
-import '../../profile/providers/profile_notifier.dart';
 import '../providers/availability_notifier.dart';
 import '../../rides/data/rides_repository.dart';
 import '../../rides/presentation/offer_sheet.dart';
@@ -76,10 +73,8 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
     final name = driver?.fullName.isNotEmpty == true
         ? driver!.fullName
         : 'Driver';
-    // The sidebar header shows the same rating the profile screen does, so this
-    // read moved out of `profile_screen.dart` rather than being duplicated.
-    final ratingLabel =
-        ref.read(profileNotifierProvider.notifier).ratingSummaryLabel;
+    // The sidebar header shows the same rating the profile screen does; that
+    // read now lives in `DriverShell`, which owns the single `AppSidebar`.
     final availability = ref.watch(availabilityProvider);
     final rideState = ref.watch(rideStateProvider);
     final offerId = rideState.offeredRideId;
@@ -120,229 +115,192 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
       });
     }
 
-    return Scaffold(
-      appBar: AppBar(
-        // The same button widget the rider uses, instead of Flutter's implicit
-        // hamburger, so both apps open the sidebar identically.
-        leading: const AppSidebarToggleButton(),
-        title: Row(
-          children: [
-            const CircleAvatar(
-              child: Icon(Icons.person),
-            ),
-            const SizedBox(width: 12),
-            Expanded(
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  Text(name),
-                  Row(
-                    children: [
-                      Container(
-                        width: 10,
-                        height: 10,
-                        decoration: BoxDecoration(
-                          shape: BoxShape.circle,
-                          color: driver?.isOnline == true
-                              ? Colors.green
-                              : Colors.grey,
-                        ),
-                      ),
-                      const SizedBox(width: 6),
-                      Text(
-                        driver?.status ?? 'offline',
-                        style: Theme.of(context).textTheme.bodySmall,
-                      ),
-                    ],
-                  ),
-                ],
-              ),
-            ),
-          ],
-        ),
-      ),
-      drawer: AppSidebar(
-        items: buildDriverNavItems(),
-        account: AppSidebarAccount(
-          displayName: name,
-          // The status gets a real row instead of being smuggled into the old
-          // header's email slot as the literal `'Status: online'`. No
-          // `secondaryLine`: that is the rider's email line, and passing both
-          // would render the status twice.
-          statusLabel: driver?.status,
-          statusColor: driver?.isOnline == true ? Colors.green : Colors.grey,
-          // Raw on purpose: `DriverProfile.photoUrl` passes JSON straight through
-          // and is `''` for every driver without a photo, and the shared header
-          // treats null and blank identically.
-          photoUrl: driver?.photoUrl,
-          ratingLabel: ratingLabel,
-        ),
-        // The header was inert before — no details affordance, no wrapping tap
-        // target — so this is new behaviour, and it pops before pushing.
-        onAccountPressed: () {
-          closeSidebar(context);
-          context.push('/profile');
-        },
-        onItemSelected: (item) {
-          closeSidebar(context);
-          context.push(item.route);
-        },
-        footer: AppSidebarFooter(
-          message: 'You will need to log in again to accept ride requests.',
-          onSignOut: () => ref.read(authProvider.notifier).logout(),
-          onSignOutCompleted: () => context.go('/login'),
-        ),
-      ),
-      body: Column(
-        children: [
-          if (permission.deniedPermanently)
-            Material(
-              color: Colors.red.shade50,
-              child: Padding(
-                padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
-                child: Row(
+    return Column(
+      children: [
+        // Home's rich header (avatar + name + status dot) used to be the AppBar
+        // title. It now lives at the top of this body because `DriverShell` owns
+        // the only AppBar/drawer; it must NOT grow a second Scaffold.
+        Padding(
+          padding: const EdgeInsets.fromLTRB(16, 8, 16, 8),
+          child: Row(
+            children: [
+              const CircleAvatar(child: Icon(Icons.person)),
+              const SizedBox(width: 12),
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
-                    const Icon(Icons.location_disabled, color: Colors.red),
-                    const SizedBox(width: 8),
-                    Expanded(
-                      child: Text(
-                        'Location access denied. Turn it on in settings to receive ride offers.',
-                        style: Theme.of(context).textTheme.bodySmall,
-                      ),
+                    Text(name),
+                    Row(
+                      children: [
+                        Container(
+                          width: 10,
+                          height: 10,
+                          decoration: BoxDecoration(
+                            shape: BoxShape.circle,
+                            color: driver?.isOnline == true
+                                ? Colors.green
+                                : Colors.grey,
+                          ),
+                        ),
+                        const SizedBox(width: 6),
+                        Text(
+                          driver?.status ?? 'offline',
+                          style: Theme.of(context).textTheme.bodySmall,
+                        ),
+                      ],
                     ),
                   ],
                 ),
               ),
-            ),
-          if (heldRide != null)
-            Material(
-              color: Colors.blue.shade50,
-              child: InkWell(
-                key: const Key('home-active-trip'),
-                onTap: () {
-                  _tripPushed = true;
-                  context.push('/trip');
-                },
-                child: Padding(
-                  padding: const EdgeInsets.symmetric(
-                    horizontal: 16,
-                    vertical: 12,
+            ],
+          ),
+        ),
+        if (permission.deniedPermanently)
+          Material(
+            color: Colors.red.shade50,
+            child: Padding(
+              padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+              child: Row(
+                children: [
+                  const Icon(Icons.location_disabled, color: Colors.red),
+                  const SizedBox(width: 8),
+                  Expanded(
+                    child: Text(
+                      'Location access denied. Turn it on in settings to receive ride offers.',
+                      style: Theme.of(context).textTheme.bodySmall,
+                    ),
                   ),
-                  child: Row(
-                    children: [
-                      const Icon(Icons.local_taxi, color: Colors.blue),
-                      const SizedBox(width: 12),
-                      Expanded(
-                        child: Column(
-                          crossAxisAlignment: CrossAxisAlignment.start,
-                          children: [
-                            Text(
-                              'Active trip (${heldRide.status})',
-                              style: Theme.of(context).textTheme.titleSmall,
-                            ),
-                            Text(
-                              'Tap to return to the trip',
-                              style: Theme.of(context).textTheme.bodySmall,
-                            ),
-                          ],
-                        ),
-                      ),
-                      const Icon(Icons.chevron_right),
-                    ],
-                  ),
-                ),
+                ],
               ),
             ),
-          Expanded(
-            child: Center(
+          ),
+        if (heldRide != null)
+          Material(
+            color: Colors.blue.shade50,
+            child: InkWell(
+              key: const Key('home-active-trip'),
+              onTap: () {
+                _tripPushed = true;
+                context.push('/trip');
+              },
               child: Padding(
-                padding: const EdgeInsets.all(24),
-                child: Column(
-                  mainAxisAlignment: MainAxisAlignment.center,
+                padding: const EdgeInsets.symmetric(
+                  horizontal: 16,
+                  vertical: 12,
+                ),
+                child: Row(
                   children: [
-                    Switch(
-                      value: availability.online,
-                      onChanged: availability.inFlight
-                          ? null
-                          : (value) {
-                              ref
-                                  .read(availabilityProvider.notifier)
-                                  .toggle();
-                              // Going online must publish a position straight
-                              // away. Fixes that arrived while offline were
-                              // dropped, and geolocator does not re-emit while
-                              // the driver is stationary, so without this the
-                              // driver has no `driver_positions` row at all and
-                              // dispatch can never find them — online, waiting,
-                              // never offered a ride, nothing on screen to
-                              // explain why.
-                              if (value) {
-                                ref
-                                    .read(locationServiceProvider)
-                                    .publishLastPosition();
-                              }
-                            },
-                    ),
-                    const SizedBox(height: 16),
-                    Text(
-                      availability.online ? 'Online' : 'Offline',
-                      style: Theme.of(context).textTheme.headlineSmall,
-                    ),
-                    const SizedBox(height: 8),
-                    if (availability.online && offerId == null)
-                      const Text(
-                        "You're online — offers will appear here",
-                        textAlign: TextAlign.center,
-                      )
-                    else if (!availability.online)
-                      const Text(
-                        'Go online to start receiving ride offers.',
-                        textAlign: TextAlign.center,
-                      ),
-                    const SizedBox(height: 24),
-                    // Live location tile for dev verification.
-                    Container(
-                      padding: const EdgeInsets.all(12),
-                      decoration: BoxDecoration(
-                        color: Colors.grey.shade100,
-                        borderRadius: BorderRadius.circular(8),
-                      ),
+                    const Icon(Icons.local_taxi, color: Colors.blue),
+                    const SizedBox(width: 12),
+                    Expanded(
                       child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
                         children: [
-                          const Row(
-                            children: [
-                              Icon(Icons.gps_fixed, size: 18),
-                              SizedBox(width: 4),
-                              Text('Live location'),
-                            ],
-                          ),
-                          const SizedBox(height: 4),
                           Text(
-                            'Status: ${driver?.status ?? 'unknown'}',
-                            style: Theme.of(context).textTheme.bodySmall,
+                            'Active trip (${heldRide.status})',
+                            style: Theme.of(context).textTheme.titleSmall,
                           ),
                           Text(
-                            'Profile online: ${availability.online}',
+                            'Tap to return to the trip',
                             style: Theme.of(context).textTheme.bodySmall,
                           ),
-                          if (availability.error != null)
-                            Text(
-                              'Error: ${availability.error}',
-                              style: TextStyle(
-                                color: Theme.of(context).colorScheme.error,
-                                fontSize: 12,
-                              ),
-                            ),
                         ],
                       ),
                     ),
+                    const Icon(Icons.chevron_right),
                   ],
                 ),
               ),
             ),
           ),
-        ],
-      ),
+        Expanded(
+          child: Center(
+            child: Padding(
+              padding: const EdgeInsets.all(24),
+              child: Column(
+                mainAxisAlignment: MainAxisAlignment.center,
+                children: [
+                  Switch(
+                    value: availability.online,
+                    onChanged: availability.inFlight
+                        ? null
+                        : (value) {
+                            ref.read(availabilityProvider.notifier).toggle();
+                            // Going online must publish a position straight
+                            // away. Fixes that arrived while offline were
+                            // dropped, and geolocator does not re-emit while
+                            // the driver is stationary, so without this the
+                            // driver has no `driver_positions` row at all and
+                            // dispatch can never find them — online, waiting,
+                            // never offered a ride, nothing on screen to
+                            // explain why.
+                            if (value) {
+                              ref
+                                  .read(locationServiceProvider)
+                                  .publishLastPosition();
+                            }
+                          },
+                  ),
+                  const SizedBox(height: 16),
+                  Text(
+                    availability.online ? 'Online' : 'Offline',
+                    style: Theme.of(context).textTheme.headlineSmall,
+                  ),
+                  const SizedBox(height: 8),
+                  if (availability.online && offerId == null)
+                    const Text(
+                      "You're online — offers will appear here",
+                      textAlign: TextAlign.center,
+                    )
+                  else if (!availability.online)
+                    const Text(
+                      'Go online to start receiving ride offers.',
+                      textAlign: TextAlign.center,
+                    ),
+                  const SizedBox(height: 24),
+                  // Live location tile for dev verification.
+                  Container(
+                    padding: const EdgeInsets.all(12),
+                    decoration: BoxDecoration(
+                      color: Colors.grey.shade100,
+                      borderRadius: BorderRadius.circular(8),
+                    ),
+                    child: Column(
+                      children: [
+                        const Row(
+                          children: [
+                            Icon(Icons.gps_fixed, size: 18),
+                            SizedBox(width: 4),
+                            Text('Live location'),
+                          ],
+                        ),
+                        const SizedBox(height: 4),
+                        Text(
+                          'Status: ${driver?.status ?? 'unknown'}',
+                          style: Theme.of(context).textTheme.bodySmall,
+                        ),
+                        Text(
+                          'Profile online: ${availability.online}',
+                          style: Theme.of(context).textTheme.bodySmall,
+                        ),
+                        if (availability.error != null)
+                          Text(
+                            'Error: ${availability.error}',
+                            style: TextStyle(
+                              color: Theme.of(context).colorScheme.error,
+                              fontSize: 12,
+                            ),
+                          ),
+                      ],
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          ),
+        ),
+      ],
     );
   }
 }

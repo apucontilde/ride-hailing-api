@@ -166,6 +166,55 @@
 - `TestMain` closes the test server before `os.Exit` — `tests/setup_test.go:16-18` (the old
   `defer ts.Close()` before `os.Exit(m.Run())` never ran).
 
+### [ratings]
+- `GET /rider/ratings` + `GET /driver/ratings` are real **rater-scoped, newest-first,
+  1-based-paginated** reads (replacing the shared stub): one role-aware `RideHandler.GetRatings`
+  (`internal/handler/ride.go:427`) wired to both routes
+  (`internal/router/router.go:181,203`). Reads `user_id`/`role` from the JWT, maps role →
+  `rater_role` (`driver`→`'driver'`, else `'rider'`, `:441-444`), parses `page`/`per_page`
+  (defaults 1/20, out-of-range resets to 20, `:431-438`), and answers the history envelope
+  `{"ratings":[…],"total","page","per_page","total_pages"}` (`:466-472`); a repo failure goes
+  through `respondRepo` → 500 `INTERNAL` `"failed to load ratings"` (`:447-450`). Query
+  `FindRatingsByRater` filters `rater_id`+`rater_role` and orders `created_at DESC`
+  (`internal/repository/ride_repo.go:24,190-205`), backed by migration
+  `015_ratings_rater_index.up.sql` (`idx_ratings_rater`); DTOs `RatingItem`/`RatingListResponse`
+  (`internal/handler/responses.go:83,94`). Mock in lockstep
+  (`tests/testutil/mock_repos.go:448`); tests `tests/ratings_test.go` +
+  `internal/repository/ratings_integration_test.go`; docs `docs/swagger.json:1604,3112`,
+  `RIDER_API_GUIDE.md:125,165,222-241`.
+
+### [multi]
+- Multi-stop + real `PUT /rides/:id/destination` — migration `016_ride_stops.up.sql:14-34`
+  (`ride_stops`, `UNIQUE(ride_id, sequence)`); `internal/model/ride.go:74-92`
+  (`RideStop`/`StopKind`/`DestinationKind`/`Ride.Stops`); `internal/repository/ride_repo.go:97`
+  (`FindStopsByRideID`, `[]` never `null`), `:118` (`FindStopsByRideIDs`), `:165`
+  (`ReplaceDestination`, scalar dropoff + `kind='destination'` row in one tx);
+  `internal/service/ride.go:165` (`BuildItinerary`), `:408` (`ChangeDestination`),
+  `ErrDestinationLocked`/`ErrNotRideRider`; `internal/handler/ride.go:103` (create w/ stops),
+  `:242` (`GET /:id`), `:285` (real `UpdateDestination`; the `platform.go` stub is gone);
+  routes `internal/router/router.go:232,240`; itineraries on `/rides/current` (handler `:187`)
+  and `/rides/history` (`:355`). Post-review shape recorded: (a) a client stop with
+  `kind:"destination"` is rejected `422` and the top-level `dropoff_*` is always appended as the
+  sole destination row, so `rides.dropoff_* == last kind='destination' row` by construction
+  (`internal/service/ride.go:169-201`); (b) `GetCurrentRide` answers `200 {ride:null}` only for
+  `ErrNotFound` and `5xx` for a real outage (`internal/handler/ride.go:200-215`). Adversarially
+  confirmed.
+
+### [push]
+- Push delivery pipeline + bug #20 — migration `018_push_pipeline.up.sql:28,31`;
+  `internal/repository/device_token_repo.go:49` (upsert/reassign by globally-unique token),
+  `:69` (user-scoped unregister), `:77` (list-active); `internal/repository/feedback_repo.go:30`
+  (`feedback.type` persisted); `internal/service/push/provider.go:40` (`LogProvider` safe no-op),
+  `:60` (`MultiProvider`), `internal/service/push/service.go:43` (void `NotifyUser`); real
+  handlers `Feedback`/`DeviceRegister`/`DeviceUnregister`/`ArrivalNotification` in
+  `internal/handler/platform.go:118,164,198,556`; routes `/devices` + `/device-tokens` alias
+  `internal/router/router.go:271-276`; best-effort non-blocking `PushNotifier` call sites
+  `internal/service/ride.go:46,319,391`, wired `internal/router/router.go:133`. **Follow-up (not
+  a regression):** production delivery is inert — the default `LogProvider` is wired
+  (`internal/router/router.go:97`), `WithPushProvider`/`MultiProvider` have no production caller,
+  there are no FCM/APNs credentials/SDK in this harness, and neither Flutter app registers a
+  device token yet. Adversarially confirmed.
+
 ## Known bugs & issues
 
 | # | Issue | Evidence | Severity | Owner |
@@ -174,13 +223,17 @@
 | 3 | Rider app draws a straight line on **every** error status, so a misclassified 4xx silently renders a wrong route. API must answer an outage as 5xx or 200+`is_estimate`, never 4xx | `rider_app/lib/features/home/presentation/home_screen.dart:157` | high | [errors] |
 | 9 | ~~No unit test at all~~ — **fixed**: `internal/middleware/idempotency_test.go` covers the partial-read re-run, the implausible-status guard, the 200/201-only store rule, the 1 MiB capture cap and the blank-key bypass. The three statements in `sqlIdempotencyStore` are still DB-free-untested (no go-sqlmock, `tests/` runs with `db=nil`) | `internal/middleware/idempotency_test.go` | closed (SQL untested) | [errors] |
 | 10 | ~~`MarkStaleDriversOffline` is never called~~ — **fixed**: `run()` starts a `DriverLivenessSweeper`, which sweeps once at boot and then every `DefaultSweeperInterval` (10 s), so stale `driver_positions.status` rows are reconciled and the 30 s freshness window (`internal/repository/geo_repo.go:39`) is no longer the only bound. Scope is narrow and documented: it writes `driver_positions.status` only — `drivers.status` is untouched, and `GET /drivers/:id/location` is unchanged because its query selects no status column (`internal/repository/geo_repo.go:127-134`) | call site `cmd/server/main.go:82-84`; sweeper `internal/service/driver_liveness.go:36,55,87`; definition `internal/repository/geo_repo.go:172` | closed | [dispatch] |
-| 11 | A DB-fresh online driver whose socket is absent is now **retried before being dropped**: `waitForSocket` polls the hub 4 × 150 ms (~450 ms) and only the give-up is recorded as a skip (`internal/service/dispatch_observability.go:201-219`, backoff consts `:180-181`). Still open: (a) a driver genuinely not connected after that window is dropped (`internal/websocket/hub.go:120-125` is map presence only), and (b) there is no driver-side keep-alive `ping()`, so presence depends on the app reconnecting — cross-app, `driver-planner` | `internal/service/dispatch_observability.go:201-219`; `internal/websocket/hub.go:120-125` | medium | [dispatch] |
-| 12 | `PUT /rides/:id/destination` is a stub: returns `{"message":"destination updated"}` and never mutates state | `internal/handler/platform.go:386-388` | high | [multi] |
-| 15 | Arrival notify over WS exists (`ride.go:193`) but `POST /driver/rides/:id/notify-arrival` is a no-op stub; `device_tokens` table is never written and register/unregister are stubs — no backgrounded push pipeline | `internal/handler/platform.go:466-477,106-128`, `internal/database/migrations/007_create_misc.up.sql:36` | high | [push] |
+| 11 | A DB-fresh online driver whose socket is absent is now **retried before being dropped**: `waitForSocket` polls the hub 4 × 150 ms (~450 ms) and only the give-up is recorded as a skip (`internal/service/dispatch_observability.go:201-219`, backoff consts `:180-181`). Still open: (a) a driver genuinely not connected after that window is dropped (`internal/websocket/hub.go:120-125` is map presence only). **Half (b) fixed 2026-09-30 cross-app** — the retired `driver_app_plans/01_[dispatch]_keepalive_and_offer_reliability.md` landed the driver-side keep-alive `ping()`: opt-in `heartbeatInterval` loop armed on every connect (`shared/lib/src/network/websocket_service.dart:37,54-58,112,148-156`), the driver opts into 25 s and re-arms on `setOnline`/reconnect with an immediate ping (`driver_app/lib/core/network/websocket_service.dart:17,32,45-55,78-86`), wired to presence + `publishLastPosition` (`driver_app/lib/core/location/location_service.dart:245,249`) | `internal/service/dispatch_observability.go:201-219`; `internal/websocket/hub.go:120-125` | medium | [dispatch] (client half landed, `driver-planner`) |
+| 12 | ~~`PUT /rides/:id/destination` is a stub~~ — **fixed**: real `RideHandler.UpdateDestination` mutates `rides.dropoff_*` + the itinerary's `kind='destination'` row in one transaction, with owner/locked checks (`404`/`409`) and a safe-retry `5xx`; the `platform.go` stub is gone | `internal/handler/ride.go:285`; `internal/service/ride.go:408`; `internal/repository/ride_repo.go:165`; route `internal/router/router.go:240` | closed | [multi] |
+| 15 | ~~Arrival notify is a no-op stub; `device_tokens` never written~~ — **fixed**: real backgrounded push pipeline — `ArrivalNotification` sends live WS or a backgrounded push, device register/unregister persist, `feedback.type` stored (see Landed → [push]) | `internal/handler/platform.go:556,164,198`; `internal/service/push/`; migration `018_push_pipeline.up.sql` | closed | [push] |
 | 16 | ~~Replay stored `json.Marshal(gin.H{})` = `{}` regardless of the handler's body~~ — **fixed**: `captureWriter` tees the real body and `replayableBody` normalises it for the `JSONB NOT NULL` column | `internal/middleware/idempotency.go:202-226` | closed | [errors] |
-| 17 | A replay is `AbortWithStatusJSON`, i.e. `json.Marshal` under `application/json`, so a non-JSON original comes back JSON-quoted and HTML-significant bytes come back `\u`-escaped. Only JSON objects/arrays round-trip byte-for-byte. Faithful replay needs the stored `Content-Type` (`c.Data`) and a `response_content_type` column — deliberately not added (a migration would collide with in-flight work) | `internal/middleware/idempotency.go:158` (the replay call), `:210-214` (the documented limitation), `:215` (`replayableBody`); pinned by `TestIdempotencyNonJSONReplayIsJSONQuoted` (`internal/middleware/idempotency_test.go:635`) | low | [errors] |
-| 18 | `idempotency_keys.key` is a bare PRIMARY KEY (migration 007), so it is not user-scoped: a second user reusing a key they do not own gets `Count=0` forever and their INSERT is dropped by `ON CONFLICT DO NOTHING` — idempotency silently off for them, now at least logged. `Count`/`Load` filter on `user_id` already; the fix is a `UNIQUE(key, user_id)` migration | `internal/database/migrations/007_create_misc.up.sql:70-78`; `internal/middleware/idempotency.go:31-33` (the bare-PK note), `:41,49,53` (the user_id filters), `:61` (`ON CONFLICT DO NOTHING`), `:198` (the WARNING); `TestIdempotencyStoreConflictLeavesResponseUnchanged` (`internal/middleware/idempotency_test.go:715`) | medium | [errors] |
-| 19 | The terminal dispatch trace cannot distinguish a failed `no_driver_available` write from a genuinely empty search: `Outcome()` answers `no_candidates` for both, so the one line a support query reads cannot say "was nobody there, or did our write fail?" — the only separating signal is a separate bare `log.Printf` on the failure path. Fix = a recorded terminal-write error on the trace with its own outcome (`dispatch_traces.go` + `finishWithoutDriver`); not done in the doc-honesty pass because it needs `dispatch.go`, which was under a concurrent routing edit | `internal/service/dispatch_observability.go:87-102` (`Outcome`, limitation documented at `:68-86`), `internal/service/dispatch.go:132-136`, pinned as-is by `TestDispatchNoDriverAvailableWhenPersistenceFails` (`internal/service/dispatch_test.go:632-634`) | medium | [dispatch] |
+| 17 | ~~A non-JSON replay comes back JSON-quoted / `\u`-escaped~~ — **fixed**: migration `017` adds `response_content_type` and the middleware replays via `c.Data` keyed on the stored content type (not on parseability); DB-proven by `TestIdempotencyNonJSONReplayIsFaithfulThroughPostgres` (plain text, JSON-string, whitespace, empty, HTML bytes) | `internal/database/migrations/017_idempotency_key_scoping.up.sql:22-30`; `internal/middleware/idempotency.go:172,238,284` | closed (residual #22) | [errors] |
+| 18 | ~~`idempotency_keys.key` is a bare PRIMARY KEY, not user-scoped~~ — **fixed**: migration `017` drops the global PK, dedupes `(key,user_id)` keeping the earliest row, adds `UNIQUE(key,user_id)` (the table now intentionally has no single-column PK); the store uses `ON CONFLICT (key, user_id)`. Proven by `TestMigration017ResolvesIdempotencyDuplicates` + `TestSQLIdempotencyStoreScopesKeysPerUser` against real Postgres | `internal/database/migrations/007_create_misc.up.sql:70-76` (old shape); `internal/database/migrations/017_idempotency_key_scoping.up.sql:34-61`; `internal/middleware/idempotency.go:68` | closed | [errors] |
+| 19 | ~~The terminal dispatch trace cannot distinguish a failed `no_driver_available` write from a genuinely empty search~~ — **fixed**: a `terminal_write_failed` outcome + `noteTerminalError` + `abortIfOpen`; the terminal error rides on the trace and every dispatch exit path records a terminal state | `internal/service/dispatch_observability.go:95`; `internal/service/dispatch_traces.go:106,122`; `internal/service/dispatch.go:142`; pinned `internal/service/dispatch_test.go:649,705` | closed | [dispatch] |
+| 20 | ~~`POST /feedback` ignores the client's `type` field~~ — **fixed**: `feedback.type` is persisted (migration `018`); the handler binds it and the repo inserts it, so `{"type":"app_issue","message":…}` retains the classification | `internal/database/migrations/018_push_pipeline.up.sql:31`; `internal/handler/platform.go:118-145`; `internal/repository/feedback_repo.go:30` | closed | [safety] |
+| 21 | ~~Two pre-existing `make test-integration` failures~~ — **fixed 2026-09-30**: the coverage-gate fix (commit `00b2a5e`) made an out-of-radius pin report `ErrPinUncovered` (wrapped), but two integration tests still expected `ErrNoRoute`. They now assert `errors.Is(err, ErrPinUncovered)` — `TestPGRoutingRepoSnapRadius` (`internal/repository/pgrouting_repo_integration_test.go:179`) and `TestRouteInRegionPGRouting/dropoff_only_in_another_region` (`internal/repository/regions_integration_test.go:359`). The gate was correct; the test expectations were stale. `make test-integration` is green | `go test -tags=integration -run 'TestPGRoutingRepoSnapRadius\|TestRouteInRegionPGRouting' ./internal/repository/` | closed | [routing] |
+| 22 | Idempotency replay residual: the JSON/empty content-type branch trims surrounding whitespace (`bytes.TrimSpace`), and an empty content-type with a non-JSON body replays JSON-quoted. Both are unreachable in production — idempotency is mounted only on `POST /api/v1/rides` and `CreateRide` always writes `application/json; charset=utf-8` | `internal/middleware/idempotency.go:249`; mount `internal/router/router.go:232` | low | [errors] |
+| 23 | `POST /rides` binds the top-level `dropoff_lat`/`dropoff_lng` with `binding:"required"`, so a literal `0` coordinate is rejected `422`; and the top-level dropoff is never range-checked (e.g. `999` is accepted and written to `rides.dropoff_*` verbatim), unlike stop coords, which `BuildItinerary` range-checks | `internal/handler/ride.go:35-36` (`required`), `:136` (no top-level range check); checks only `reqStops` `internal/service/ride.go:178-183`; contrast `PUT` destination `internal/handler/ride.go:292` | medium | [multi] |
 
 ## Open plans
 
@@ -191,15 +244,6 @@
 | `[elevation]_pgrouting_parity.md` | elevation | pgrouting engine + elevation columns (landed) | **deferred**; add `reverse_cost`/`cost_ascent` migration + elevation-aware edges SQL, backfilled by a script referenced from `import-osm` |
 | `[elevation]_review.md` | elevation | — | pre-implementation review of the whole elevation chain (all three landed heads + stage 01); keep dispositioned as the stages move. ⚠️ Its prose still uses the **pre-renumbering** stage numbers — see the mapping note at the top of that file |
 | `[routing]_intercity.md` | routing | routing region resolution (STATUS.md) | **deferred**; holds the archived overlay-ports/planner design |
-| `[multi]_add_stops_change_destination.md` | multi | — | waypoints in DB/model + DTO, service stop handling, real `PUT /rides/:id/destination` (replace stub), rider-app stop surface (cross-app) |
-| `[dispatch]_reliability_and_no_driver_false_negative.md` | dispatch | — | **API side implemented**: presence re-arm (`internal/handler/driver.go:190`), the sweep (`cmd/server/main.go:82`), the socket retry (`internal/service/dispatch_observability.go:201-219`) and the per-skip/terminal trace all landed. Remaining: the cross-app driver keep-alive `ping()` contract, the drop-after-450 ms case (bug #11) and bug #19. Condensation/deletion is the orchestrator's pass, not this one's |
-| `[push]_delivery_pipeline.md` | push | — | persist `device_tokens`, FCM/APNs provider, backgrounded notify-arrival + updates (WS-path stays for connected riders) |
-| `[errors]_route_outage_contract_test.md` | errors | — | **implemented**: `TestRouteCalculationFailureIs500Not4xx` (`tests/error_contract_test.go:171`) injects a failing nav repo through `testutil.NewTestServerWithNav` and pins `500` + `INTERNAL` + the exact message for `/navigation/route` **and** `/geo/eta`. Its last item — the `RIDER_API_GUIDE.md` fallback wording — is now rewritten; nothing remains but condensation/deletion |
-| `[routing]_native_engine_default.md` | routing | — | **implemented**: the config comment states the permanent default (`internal/config/config.go:40-48`), `.env.example:28,34`, the benchmark evidence + closed decision are in Landed → [routing], and `TestRoutingEngineDefaultIsNative` (`internal/config/config_test.go:156`) pins it. Nothing remains but condensation/deletion |
-| `[routing]_estimate_fallback_default.md` | routing | — | **implemented**: default `50000` (`internal/config/config.go:93,141`), reconciled `.env.example:40`, covered by `TestGetRouteBeyondSnapRadiusIsEstimateWithTheDefaultRadius` (`internal/service/regions_test.go:682`) and `TestGetRouteRadiusZeroOptInStillSnapsUnconditionally` (`:755`). Nothing remains but condensation/deletion |
-| `[errors]_idempotency_middleware_tests.md` | errors | — | **implemented**: a DB-free suite over the `idempotencyStore` seam (`internal/middleware/idempotency_test.go`, 21 test functions incl. table-driven ones) covering the partial-read re-run, the implausible-status guard, the 200/201-only store rule, the capture cap and the blank-key bypass. Remaining: the three `sqlIdempotencyStore` statements still have no DB-backed test (no go-sqlmock) — the same gap as row #9 |
-| `[errors]_idempotent_replay_body.md` | errors | — | **implemented**: `captureWriter` tees the real body and `replayableBody` normalises it (`internal/middleware/idempotency.go:89,215`). Remaining: the two follow-ups filed as rows #17 (a `response_content_type` column for faithful replay) and #18 (`UNIQUE(key, user_id)`) |
-| `[ratings]_ratings_list.md` | ratings | — | server half of driver-app bug #5 **plus** the symmetric rider endpoint: replace `GET /driver/ratings` **and** `GET /rider/ratings` stubs with real rater-scoped, paginated lists so each app's "already rated" set is server-backed |
 | `[payout]_driver_earnings_and_withdraw.md` | payout | — | **deferred**: server half of driver-app bug #6 — `driver_earnings` ledger + credit-on-completion + real `GET /driver/me/earnings` and idempotent `POST /driver/earnings/withdraw` (pending debit, no external payout); design settled, no scheduling |
 
 ## Decisions already taken — [errors] (do not re-litigate)
@@ -212,8 +256,8 @@
   documents), not the mock's string.
 - Client straight-line fallback: the plan was corrected to the truth (any-error, not 500-only).
   The app-side fix is now planned in `rider_app_plans/01_[map]_route_fallback_honesty.md` (honest
-  grey-dashed fallback + surface the API `error.message`), gated on the API-contract test
-  `[errors]_route_outage_contract_test.md`. The API keeps answering outages as 5xx.
+  grey-dashed fallback + surface the API `error.message`), gated on the API-contract test that
+  has now landed (STATUS.md Landed → [errors]). The API keeps answering outages as 5xx.
 - The landed write-failure 500s are now constructed via `fail(...)` and their causes attached
   (`c.Error`) — the `respond.go` HTTP contract (STATUS.md `[errors]`) standardised them.
 
@@ -221,11 +265,10 @@
 
 - **`native` (in-process A*) is the permanent production default**; `pgrouting` is opt-in for
   parity/validation. The plan-03 benchmark gate is closed, not pending; the measured numbers (and
-  the hardware they were taken on) are in Landed → [routing] decision on bug #1. See
-  `[routing]_native_engine_default.md`.
+  the hardware they were taken on) are in Landed → [routing] decision on bug #1.
 - **`ROUTING_SNAP_RADIUS_M` default becomes `50000` m** (was `0` = always-snap) so the
   no-coverage `is_estimate` path can fire; `0` stays as an explicit always-snap opt-in. See
-  `[routing]_estimate_fallback_default.md`.
+  Landed → [routing] stage 05.
 
 ## Decisions already taken — [payout] (do not re-litigate)
 
@@ -279,3 +322,8 @@ gofmt -w <files> && go vet ./...   # golangci-lint is NOT on PATH by default: PA
 
 ## Wave-1 condensed 2026-09-30
 - [routing]_estimate_fallback_default (bug #2), [routing]_native_engine_default (bug #1), [errors]_route_outage_contract_test, [dispatch]_reliability_and_no_driver_false_negative, [errors]_idempotency_middleware_tests + [errors]_idempotent_replay_body: landed, files deleted, evidence in STATUS.md Landed sections. Routing regression N1 (native snap gate returns 500 instead of 200 estimate for uncovered pins ~265m band) remains; fix owned by routing planner.
+
+## Wave-2 condensed 2026-10-03
+- [multi]_add_stops_change_destination (closes bug #12), [push]_delivery_pipeline (closes bugs #15/#20): landed, files deleted, evidence in Landed → [multi]/[push]. Also closed by verification this wave: #17 + #18 (idempotency content-type/user-scoping, migrations `017` + middleware/integration tests) and #19 (dispatch terminal-write outcome). New known bug #23 (top-level create `dropoff_*` is `binding:"required"` so `0` is rejected, and is never range-checked); residual idempotency caveat #22. Adversarially confirmed by `antagonistic-reviewer` runs.
+- Push follow-up (not a regression): production delivery is inert — no FCM/APNs provider is wired and neither app registers a device token yet (Landed → [push]).
+

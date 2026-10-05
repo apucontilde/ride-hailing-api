@@ -1,6 +1,9 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
+import 'package:dio/dio.dart';
+import '../../../core/api/api_exceptions.dart';
+import '../../../core/auth/auth_provider.dart';
 import '../../../core/utils/validators.dart';
 import 'widgets/auth_text_field.dart';
 
@@ -16,6 +19,8 @@ class _ForgotPasswordScreenState extends ConsumerState<ForgotPasswordScreen> {
   final _formKey = GlobalKey<FormState>();
   final _emailController = TextEditingController();
   bool _submitted = false;
+  bool _isLoading = false;
+  String? _error;
 
   @override
   void dispose() {
@@ -25,7 +30,38 @@ class _ForgotPasswordScreenState extends ConsumerState<ForgotPasswordScreen> {
 
   Future<void> _submit() async {
     if (!_formKey.currentState!.validate()) return;
-    setState(() => _submitted = true);
+    setState(() {
+      _isLoading = true;
+      _error = null;
+    });
+    try {
+      await ref
+          .read(authProvider.notifier)
+          .forgotPassword(_emailController.text.trim());
+      if (!mounted) return;
+      setState(() {
+        _isLoading = false;
+        _submitted = true;
+      });
+    } on DioException catch (e) {
+      if (!mounted) return;
+      final mapped = e.error is ApiException
+          ? e.error as ApiException
+          : mapStatusCodeToException(
+              e.response?.statusCode ?? 0,
+              'Something went wrong. Try again.',
+            );
+      setState(() {
+        _isLoading = false;
+        _error = mapped.message;
+      });
+    } on ApiException catch (e) {
+      if (!mounted) return;
+      setState(() {
+        _isLoading = false;
+        _error = e.message;
+      });
+    }
   }
 
   @override
@@ -78,10 +114,25 @@ class _ForgotPasswordScreenState extends ConsumerState<ForgotPasswordScreen> {
                       prefixIcon: const Icon(Icons.email_outlined),
                       validator: Validators.validateEmail,
                     ),
+                    if (_error != null) ...[
+                      const SizedBox(height: 12),
+                      Text(
+                        _error!,
+                        style: TextStyle(
+                          color: Theme.of(context).colorScheme.error,
+                        ),
+                      ),
+                    ],
                     const SizedBox(height: 24),
                     ElevatedButton(
-                      onPressed: _submit,
-                      child: const Text('Send Reset Link'),
+                      onPressed: _isLoading ? null : _submit,
+                      child: _isLoading
+                          ? const SizedBox(
+                              height: 20,
+                              width: 20,
+                              child: CircularProgressIndicator(strokeWidth: 2),
+                            )
+                          : const Text('Send Reset Link'),
                     ),
                     const SizedBox(height: 16),
                     TextButton(

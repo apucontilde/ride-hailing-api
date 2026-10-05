@@ -35,6 +35,7 @@ void main() {
     )).thenAnswer((_) async {});
     when(() => mockStorage.clearTokens()).thenAnswer((_) async {});
     when(() => mockStorage.getAccessToken()).thenAnswer((_) async => null);
+    when(() => mockStorage.getRefreshToken()).thenAnswer((_) async => 'refresh');
     when(() => mockStorage.getRememberedEmail()).thenAnswer((_) async => null);
     when(() => mockStorage.saveRememberedEmail(any())).thenAnswer((_) async {});
     when(() => mockWebSocketService.connect(token: any(named: 'token')))
@@ -172,5 +173,113 @@ void main() {
     await tester.pumpAndSettle();
 
     expect(find.text('Forgot Password'), findsOneWidget);
+  });
+
+  testWidgets('asks to switch when logging in as another account',
+      (WidgetTester tester) async {
+    final postPaths = <String>[];
+    when(() => mockDio.post(any(), data: any(named: 'data'))).thenAnswer(
+      (invocation) async {
+        final path = invocation.positionalArguments.first as String;
+        postPaths.add(path);
+        if (path.contains('logout')) {
+          return Response(
+            requestOptions: RequestOptions(path: path),
+            statusCode: 200,
+          );
+        }
+        final data = invocation.namedArguments[#data] as Map<String, dynamic>;
+        final email = data['email'] as String;
+        return Response(
+          requestOptions: RequestOptions(path: path),
+          statusCode: 200,
+          data: {
+            'access_token': 'access-$email',
+            'refresh_token': 'refresh-$email',
+            'user': {'id': email, 'email': email},
+          },
+        );
+      },
+    );
+
+    await tester.pumpWidget(createApp());
+    await tester.pump();
+
+    final container = ProviderScope.containerOf(
+      tester.element(find.byType(LoginScreen)),
+      listen: false,
+    );
+    await container.read(authProvider.notifier).login('current@test.com', 'pw');
+    await tester.pumpAndSettle();
+
+    await tester.enterText(find.byType(TextFormField).at(0), 'other@test.com');
+    await tester.enterText(find.byType(TextFormField).at(1), 'Password1');
+    await tester.tap(find.widgetWithText(ElevatedButton, 'Log In'));
+    await tester.pumpAndSettle();
+
+    expect(
+      find.text('Sign out of current@test.com and sign in as other@test.com?'),
+      findsOneWidget,
+    );
+
+    await tester.tap(find.widgetWithText(TextButton, 'Cancel'));
+    await tester.pumpAndSettle();
+
+    expect(container.read(authProvider).user?.email, 'current@test.com');
+    expect(postPaths.where((path) => path.contains('logout')), isEmpty);
+  });
+
+  testWidgets('confirming the switch cancels the session then logs in',
+      (WidgetTester tester) async {
+    final postPaths = <String>[];
+    when(() => mockDio.post(any(), data: any(named: 'data'))).thenAnswer(
+      (invocation) async {
+        final path = invocation.positionalArguments.first as String;
+        postPaths.add(path);
+        if (path.contains('logout')) {
+          return Response(
+            requestOptions: RequestOptions(path: path),
+            statusCode: 200,
+          );
+        }
+        final data = invocation.namedArguments[#data] as Map<String, dynamic>;
+        final email = data['email'] as String;
+        return Response(
+          requestOptions: RequestOptions(path: path),
+          statusCode: 200,
+          data: {
+            'access_token': 'access-$email',
+            'refresh_token': 'refresh-$email',
+            'user': {'id': email, 'email': email},
+          },
+        );
+      },
+    );
+
+    await tester.pumpWidget(createApp());
+    await tester.pump();
+
+    final container = ProviderScope.containerOf(
+      tester.element(find.byType(LoginScreen)),
+      listen: false,
+    );
+    await container.read(authProvider.notifier).login('current@test.com', 'pw');
+    await tester.pumpAndSettle();
+
+    await tester.enterText(find.byType(TextFormField).at(0), 'other@test.com');
+    await tester.enterText(find.byType(TextFormField).at(1), 'Password1');
+    await tester.tap(find.widgetWithText(ElevatedButton, 'Log In'));
+    await tester.pumpAndSettle();
+
+    await tester.tap(find.widgetWithText(FilledButton, 'Switch account'));
+    await tester.pumpAndSettle();
+
+    final logoutIndex = postPaths.indexWhere((path) => path.contains('logout'));
+    final switchLoginIndex =
+        postPaths.lastIndexWhere((path) => path.contains('login'));
+    expect(logoutIndex, isNonNegative);
+    expect(switchLoginIndex, greaterThan(logoutIndex));
+    expect(container.read(authProvider).user?.email, 'other@test.com');
+    expect(find.text('Home'), findsOneWidget);
   });
 }

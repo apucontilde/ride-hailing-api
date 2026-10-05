@@ -212,7 +212,7 @@ In internal/router/router.go:
 - Tests: add MockPlacesRepo to tests/testutil/mock_repos.go; update every SetupWithRepos(...) call site (tests) to pass the mock; add a unit/integration test asserting GET /api/v1/places/autocomplete?lat&lng&q returns {"places":[...]} and validation errors for missing lat/lng. Run make test.
 Part B — App (rider_app)
 T9. Remove Nominatim geocoding logic
-In lib/features/home/data/home_provider.dart, delete the entire placeSearchProvider (lines 32-107). It will be replaced in T11. Remove now-unused import 'package:dio/dio.dart'; only if no longer referenced (it is still used by Options in RideCreationNotifier, so keep it).
+In lib/features/home/data/home_provider.dart, delete the entire placeSearchProvider (lines 32-107). It will be replaced in T11. Remove now-unused import 'package:dio/dio.dart'; only if no longer referenced (it is still used by Options in RideCreationNotifier, so keep it). *Historical note (2026-09-30): superseded — T11's replacement landed, and `[search]` later added a 350 ms debounce + single 30 km radius; see `rider_app_plans/STATUS.md` `[search]`.*
 T10. Drop unused dependency
 In pubspec.yaml, remove geocoding: ^3.0.0 (line 42) — confirmed unused. Run flutter pub get.
 T11. New backend-backed place search provider with client-side radius escalation

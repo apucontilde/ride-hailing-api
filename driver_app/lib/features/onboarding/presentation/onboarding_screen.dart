@@ -3,14 +3,13 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
 import '../../../core/auth/auth_provider.dart';
 import '../../../core/utils/validators.dart';
+import '../../profile/providers/profile_notifier.dart';
 
 /// US-D1 — driver onboarding. The registered account holds the `rider` role;
-/// this screen promotes it to `driver` via `POST /driver/register`, then routes
-/// to `/home`. ⚠️ The name fields collected below are **not** persisted: nothing
-/// here calls `PUT /driver/me`, so a freshly onboarded driver has an empty name
-/// until they set it on the profile screen (`driver_app_plans/06`, step 5 —
-/// still open). Vehicle/documents onboarding is real backend work and is
-/// feature-gated behind `ApiConfig.vehicleFeatureEnabled`.
+/// this screen promotes it to `driver` via `POST /driver/register`, persists the
+/// collected name via `PUT /driver/me`, then routes to `/home`. Vehicle/documents
+/// onboarding is real backend work and is feature-gated behind
+/// `ApiConfig.vehicleFeatureEnabled`.
 class OnboardingScreen extends ConsumerStatefulWidget {
   const OnboardingScreen({super.key});
 
@@ -40,10 +39,14 @@ class _OnboardingScreenState extends ConsumerState<OnboardingScreen> {
       setState(() => _registering = false);
       return;
     }
-    // ⚠️ The name fields above are collected but never sent: there is no
-    // `PUT /driver/me` call here, so the driver lands on `/home` with an empty
-    // name until the profile screen is used (driver_app_plans/06, step 5).
-    // The router gate already flips to /home once the role becomes `driver`.
+    // Persist the identity the form collected before the driver reaches /home.
+    // Non-fatal: a failure leaves the profile edit form as the retry path, and
+    // the driver still lands on /home either way.
+    await ref.read(profileNotifierProvider.notifier).updateProfile(
+          firstName: _firstNameController.text.trim(),
+          lastName: _lastNameController.text.trim(),
+        );
+    if (!mounted) return;
     context.go('/home');
   }
 

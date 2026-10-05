@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:ride_hailing_shared/ride_hailing_shared.dart';
 
+import '../data/rated_rides_provider.dart';
 import '../providers/history_provider.dart';
 import 'rate_sheet.dart';
 
@@ -41,7 +42,8 @@ class _RidesHistoryScreenState extends ConsumerState<RidesHistoryScreen> {
   /// [HistoryNotifier.loadMore] collapses repeats, so this can fire freely.
   void _onScroll() {
     if (!_scroll.hasClients) return;
-    final remaining = _scroll.position.maxScrollExtent - _scroll.position.pixels;
+    final remaining =
+        _scroll.position.maxScrollExtent - _scroll.position.pixels;
     if (remaining < 300) {
       ref.read(historyProvider.notifier).loadMore();
     }
@@ -51,49 +53,68 @@ class _RidesHistoryScreenState extends ConsumerState<RidesHistoryScreen> {
   Widget build(BuildContext context) {
     final history = ref.watch(historyProvider);
     final earnings = ref.watch(earningsProvider);
+    final ratedRides = ref.watch(ratedRidesProvider);
 
-    return Scaffold(
-      appBar: AppBar(
-        title: const Text('Ride History'),
-        actions: [
-          IconButton(
-            key: const Key('history-refresh'),
-            tooltip: 'Refresh',
-            onPressed: history.loading
-                ? null
-                : () => ref.read(historyProvider.notifier).refresh(silent: true),
-            icon: const Icon(Icons.refresh),
+    // One refresh covers both lists: which rides are completed and which of
+    // them are already rated have to agree, and they arrive from two endpoints.
+    Future<void> refreshAll() => Future.wait([
+          ref.read(historyProvider.notifier).refresh(silent: true),
+          ref.read(ratedRidesProvider.notifier).refresh(),
+        ]);
+
+    // Body-only: `DriverShell` owns the Scaffold/AppBar for the section. The
+    // AppBar's refresh action moves into the body so the control survives the
+    // chrome handover (pull-to-refresh remains as well).
+    return RefreshIndicator(
+      onRefresh: refreshAll,
+      child: ListView(
+        controller: _scroll,
+        physics: const AlwaysScrollableScrollPhysics(),
+        children: [
+          Align(
+            alignment: Alignment.centerRight,
+            child: Padding(
+              padding: const EdgeInsets.only(top: 4, right: 8),
+              child: IconButton(
+                key: const Key('history-refresh'),
+                tooltip: 'Refresh',
+                onPressed: history.loading ? null : refreshAll,
+                icon: const Icon(Icons.refresh),
+              ),
+            ),
           ),
-        ],
-      ),
-      body: RefreshIndicator(
-        onRefresh: () =>
-            ref.read(historyProvider.notifier).refresh(silent: true),
-        child: ListView(
-          controller: _scroll,
-          physics: const AlwaysScrollableScrollPhysics(),
-          children: [
-            _EarningsCard(summary: earnings, total: history.total),
-            if (history.error != null) _ErrorRow(message: history.error!),
-            if (history.loading && history.rides.isEmpty)
+          _EarningsCard(summary: earnings, total: history.total),
+          if (history.error != null)
+            _ErrorRow(
+              message: history.error!,
+              onRetry: () => ref.read(historyProvider.notifier).refresh(),
+            ),
+          // A rated list that failed to load leaves every prompt below in
+          // `unknown`: silently offering them again is the bug this replaces,
+          // so say what happened and let the driver retry instead.
+          if (ratedRides.hasError)
+            _ErrorRow(
+              message: ratedRidesErrorMessage,
+              onRetry: () => ref.read(ratedRidesProvider.notifier).refresh(),
+            ),
+          if (history.loading && history.rides.isEmpty)
+            const Padding(
+              padding: EdgeInsets.symmetric(vertical: 48),
+              child: Center(child: CircularProgressIndicator()),
+            )
+          else if (history.rides.isEmpty)
+            const _EmptyState()
+          else ...[
+            for (final ride in history.rides) _RideTile(ride: ride),
+            if (history.loadingMore)
               const Padding(
-                padding: EdgeInsets.symmetric(vertical: 48),
+                padding: EdgeInsets.symmetric(vertical: 24),
                 child: Center(child: CircularProgressIndicator()),
-              )
-            else if (history.rides.isEmpty)
-              const _EmptyState()
-            else ...[
-              for (final ride in history.rides) _RideTile(ride: ride),
-              if (history.loadingMore)
-                const Padding(
-                  padding: EdgeInsets.symmetric(vertical: 24),
-                  child: Center(child: CircularProgressIndicator()),
-                ),
-              if (!history.hasMore && history.rides.length > 1)
-                const _EndOfList(),
-            ],
+              ),
+            if (!history.hasMore && history.rides.length > 1)
+              const _EndOfList(),
           ],
-        ),
+        ],
       ),
     );
   }
@@ -171,7 +192,11 @@ class _RideTile extends ConsumerWidget {
   Widget build(BuildContext context, WidgetRef ref) {
     final theme = Theme.of(context);
     final completed = ride.status == 'completed';
-    final rated = ref.watch(ratedRideIdsProvider).contains(ride.id);
+    // Tri-state, not a bool: while the list loads — and after a failed load —
+    // this is `unknown`, and the tile shows neither a prompt nor a "Rated"
+    // claim. The server already knows which rides are rated, so a cold start
+    // does not re-prompt for old trips.
+    final status = ref.watch(ratedRideStatusProvider(ride.id));
     final when = _rideDate(ride);
     // A cancelled trip paid nothing; grey it out rather than showing a fare it
     // never earned.
@@ -211,8 +236,9 @@ class _RideTile extends ConsumerWidget {
               color: dimmed ? Colors.grey : null,
             ),
           ),
-          // Only a completed ride can be rated, and only once per session.
-          if (completed && !rated)
+          // Only a completed ride can be rated, and only once — as far as the
+          // server's list says.
+          if (completed && status.canPrompt)
             // Shrink-wrapped: a default Material button is 48px tall, which
             // together with the fare overflows the ListTile's trailing slot.
             TextButton(
@@ -226,7 +252,7 @@ class _RideTile extends ConsumerWidget {
               ),
               child: const Text('Rate'),
             )
-          else if (rated)
+          else if (status == RatingStatus.rated)
             Text(
               'Rated',
               style: theme.textTheme.labelSmall?.copyWith(color: Colors.green),
@@ -269,12 +295,13 @@ class _RideTile extends ConsumerWidget {
   }
 
   static String _statusLabel(Ride ride) => switch (ride.status) {
-        'completed' => 'Completed',
-        'cancelled' => ride.cancelledBy == null
-            ? 'Cancelled'
-            : 'Cancelled by ${ride.cancelledBy == 'rider' ? 'rider' : ride.cancelledBy}',
-        _ => ride.status,
-      };
+    'completed' => 'Completed',
+    'cancelled' =>
+      ride.cancelledBy == null
+          ? 'Cancelled'
+          : 'Cancelled by ${ride.cancelledBy == 'rider' ? 'rider' : ride.cancelledBy}',
+    _ => ride.status,
+  };
 }
 
 class _EmptyState extends StatelessWidget {
@@ -292,10 +319,7 @@ class _EmptyState extends StatelessWidget {
             color: Theme.of(context).colorScheme.outline,
           ),
           const SizedBox(height: 12),
-          Text(
-            'No trips yet',
-            style: Theme.of(context).textTheme.titleMedium,
-          ),
+          Text('No trips yet', style: Theme.of(context).textTheme.titleMedium),
           const SizedBox(height: 4),
           const Text(
             'Completed trips and your fares will show up here.',
@@ -307,13 +331,14 @@ class _EmptyState extends StatelessWidget {
   }
 }
 
-class _ErrorRow extends ConsumerWidget {
+class _ErrorRow extends StatelessWidget {
   final String message;
+  final VoidCallback onRetry;
 
-  const _ErrorRow({required this.message});
+  const _ErrorRow({required this.message, required this.onRetry});
 
   @override
-  Widget build(BuildContext context, WidgetRef ref) {
+  Widget build(BuildContext context) {
     return Padding(
       padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
       child: Row(
@@ -327,7 +352,8 @@ class _ErrorRow extends ConsumerWidget {
             ),
           ),
           TextButton(
-            onPressed: () => ref.read(historyProvider.notifier).refresh(),
+            key: const Key('error-retry'),
+            onPressed: onRetry,
             child: const Text('Retry'),
           ),
         ],

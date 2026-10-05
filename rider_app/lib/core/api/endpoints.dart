@@ -6,6 +6,7 @@ class ApiEndpoints {
   static const String refreshToken = '$prefix/auth/refresh';
   static const String logout = '$prefix/auth/logout';
   static const String nearbyDrivers = '$prefix/geo/nearby-drivers';
+  static const String riderLocation = '$prefix/geo/rider/location';
   static const String eta = '$prefix/geo/eta';
   static const String priceEstimate = '$prefix/estimates/price';
   static const String placesAutocomplete = '$prefix/places/autocomplete';
@@ -22,6 +23,9 @@ class ApiEndpoints {
   static const String riderMe = '$prefix/rider/me';
   static const String riderMeStatus = '$prefix/rider/me/status';
   static const String paymentMethods = '$prefix/rider/payment-methods';
+  // Paginated `{ratings, total, page, per_page, total_pages}` envelope of the
+  // ride ids THIS rider has already rated — the seed for "don't re-prompt".
+  static const String riderRatings = '$prefix/rider/ratings';
   static const String ridesHistory = '$prefix/rides/history';
   static const String navigationRoute = '$prefix/navigation/route';
   static const String sos = '$prefix/sos';

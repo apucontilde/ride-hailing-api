@@ -8,8 +8,11 @@ import 'package:rider_app/features/home/presentation/home_screen.dart';
 import 'package:rider_app/core/auth/auth_provider.dart';
 
 class MockAuthStorage extends Mock implements AuthStorage {}
+
 class MockApiClient extends Mock implements ApiClient {}
+
 class MockDio extends Mock implements Dio {}
+
 class MockWebSocketService extends Mock implements WebSocketService {}
 
 void main() {
@@ -27,8 +30,9 @@ void main() {
     when(() => mockStorage.getAccessToken()).thenAnswer((_) async => 'token');
     when(() => mockStorage.clearTokens()).thenAnswer((_) async {});
     when(() => mockWebSocketService.disconnect()).thenAnswer((_) async {});
-    when(() => mockWebSocketService.connect(token: any(named: 'token')))
-        .thenAnswer((_) async {});
+    when(
+      () => mockWebSocketService.connect(token: any(named: 'token')),
+    ).thenAnswer((_) async {});
   });
 
   Widget createTestWidget() {
@@ -37,20 +41,27 @@ void main() {
         authStorageProvider.overrideWithValue(mockStorage),
         apiClientProvider.overrideWithValue(mockApiClient),
       ],
-      child: const MaterialApp(home: HomeScreen()),
+      // `HomeScreen` is body-only now; the shell's `Scaffold` supplies the
+      // `Material` ancestor its ink widgets need.
+      child: const MaterialApp(home: Material(child: HomeScreen())),
     );
   }
 
-  testWidgets('shows map and bottom sheet on home screen',
-      (WidgetTester tester) async {
+  testWidgets('shows map and bottom sheet on home screen', (
+    WidgetTester tester,
+  ) async {
     await tester.pumpWidget(createTestWidget());
     await tester.pump();
 
-    expect(find.byType(Scaffold), findsOneWidget);
+    // Home is body-only now: the `RiderShell` owns the `Scaffold` + drawer, so
+    // pumping the screen alone must not introduce one.
+    expect(find.byType(Scaffold), findsNothing);
+    expect(find.byType(HomeScreen), findsOneWidget);
   });
 
-  testWidgets('booking flow: shows destination field and request trip button',
-      (WidgetTester tester) async {
+  testWidgets('booking flow: shows destination field and request trip button', (
+    WidgetTester tester,
+  ) async {
     await tester.pumpWidget(createTestWidget());
     await tester.pump();
 
@@ -65,8 +76,9 @@ void main() {
   //     + mapped error.message visible (pins that 4xx is surfaced, not disguised).
   // The provider-level model case (NavigationRoute.fromJson) is covered
   // separately in home_provider_test.dart.
-  testWidgets('honest route fallback renders grey dashed line for estimate',
-      (WidgetTester tester) async {
+  testWidgets('honest route fallback renders grey dashed line for estimate', (
+    WidgetTester tester,
+  ) async {
     // This test verifies the code path exists: when a NavigationRoute
     // with isEstimate=true is watched, the polyline layer produces a grey
     // dashed line (not solid blue). The full integration relies on the

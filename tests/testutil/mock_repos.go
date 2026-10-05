@@ -2,8 +2,10 @@ package testutil
 
 import (
 	crand "crypto/rand"
+	"database/sql"
 	"fmt"
 	"math"
+	"sort"
 	"sync"
 	"time"
 
@@ -311,10 +313,15 @@ type MockRideRepo struct {
 	events   []*model.RideEvent
 	ratings  []*model.Rating
 	vehicles map[string]*model.DriverVehicle
+	// stops is the per-ride itinerary, mirroring ride_stops: one entry per
+	// (ride_id, sequence), replaced wholesale by ReplaceDestination.
+	stops map[string][]model.RideStop
 
-	// FailNext, when non-nil, is returned by the next write operation and then
-	// cleared. It makes the write-failure branches in CreateEvent/CreateRating
-	// reachable: the real repositories return a driver error from Exec.
+	// FailNext, when non-nil, is returned by the next operation that checks it
+	// (CreateEvent/CreateRating write branches, and the FindRatingsByRater read
+	// used by the GET .../ratings error-contract test) and then cleared. It
+	// makes those branches reachable: the real repositories return a driver
+	// error from Exec/Query.
 	FailNext error
 }
 
@@ -324,9 +331,12 @@ func NewMockRideRepo() *MockRideRepo {
 		events:   make([]*model.RideEvent, 0),
 		ratings:  make([]*model.Rating, 0),
 		vehicles: make(map[string]*model.DriverVehicle),
+		stops:    make(map[string][]model.RideStop),
 	}
 }
 
+// CreateRide mirrors the real repository's single-transaction write: the ride
+// and its itinerary land together or not at all.
 func (m *MockRideRepo) CreateRide(ride *model.Ride) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -338,6 +348,15 @@ func (m *MockRideRepo) CreateRide(ride *model.Ride) error {
 	ride.CreatedAt = now
 	ride.UpdatedAt = now
 	m.rides[id] = ride
+	for i := range ride.Stops {
+		ride.Stops[i].ID = newID()
+		ride.Stops[i].RideID = id
+		ride.Stops[i].CreatedAt = now
+		ride.Stops[i].UpdatedAt = now
+	}
+	if len(ride.Stops) > 0 {
+		m.stops[id] = append([]model.RideStop(nil), ride.Stops...)
+	}
 	return nil
 }
 
@@ -352,9 +371,108 @@ func (m *MockRideRepo) FindByID(id string) (*model.Ride, error) {
 	return &cp, nil
 }
 
+// FindStopsByRideID returns the itinerary in visit order, never nil, so callers
+// can range over it and the JSON encodes [] rather than null.
+func (m *MockRideRepo) FindStopsByRideID(rideID string) ([]model.RideStop, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if err := failNext(&m.FailNext); err != nil {
+		return nil, err
+	}
+	stops := append([]model.RideStop(nil), m.stops[rideID]...)
+	sort.Slice(stops, func(i, j int) bool { return stops[i].Sequence < stops[j].Sequence })
+	if stops == nil {
+		return []model.RideStop{}, nil
+	}
+	return stops, nil
+}
+
+// FindStopsByRideIDs is the batched form used by GET /rides/history. Every
+// requested ride gets an entry, empty slice included, mirroring the real
+// repository's contract so a caller cannot accidentally rely on a missing key.
+func (m *MockRideRepo) FindStopsByRideIDs(rideIDs []string) (map[string][]model.RideStop, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if err := failNext(&m.FailNext); err != nil {
+		return nil, err
+	}
+	byRide := make(map[string][]model.RideStop, len(rideIDs))
+	for _, id := range rideIDs {
+		byRide[id] = []model.RideStop{}
+	}
+	for _, id := range rideIDs {
+		stops := append([]model.RideStop(nil), m.stops[id]...)
+		sort.Slice(stops, func(i, j int) bool { return stops[i].Sequence < stops[j].Sequence })
+		if stops != nil {
+			byRide[id] = stops
+		}
+	}
+	return byRide, nil
+}
+
+// ReplaceDestination mirrors the real transaction: dropoff_* scalars and the
+// kind='destination' row move together, and a ride with no destination row yet
+// gets one appended after the current last stop.
+func (m *MockRideRepo) ReplaceDestination(rideID string, dest model.RideStop) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	// A real destination write can fail (dead database, lock timeout), so this
+	// one consumes FailNext too. Without it a handler that wrongly swallows
+	// write errors would look healthy against the mock.
+	if err := failNext(&m.FailNext); err != nil {
+		return err
+	}
+	r, ok := m.rides[rideID]
+	if !ok {
+		return fmt.Errorf("update ride destination: %w: %w", repository.ErrNotFound, sql.ErrNoRows)
+	}
+	r.DropoffLat = dest.Lat
+	r.DropoffLng = dest.Lng
+	r.DropoffAddress = dest.Address
+	r.UpdatedAt = time.Now()
+
+	now := time.Now()
+	stops := m.stops[rideID]
+	found := false
+	for i := range stops {
+		if stops[i].Kind == model.DestinationKind {
+			stops[i].Lat = dest.Lat
+			stops[i].Lng = dest.Lng
+			stops[i].Address = dest.Address
+			stops[i].UpdatedAt = now
+			found = true
+		}
+	}
+	if !found {
+		next := 1
+		if len(stops) > 0 {
+			next = stops[len(stops)-1].Sequence + 1
+		}
+		stops = append(stops, model.RideStop{
+			ID:        newID(),
+			RideID:    rideID,
+			Sequence:  next,
+			Kind:      model.DestinationKind,
+			Lat:       dest.Lat,
+			Lng:       dest.Lng,
+			Address:   dest.Address,
+			CreatedAt: now,
+			UpdatedAt: now,
+		})
+	}
+	m.stops[rideID] = stops
+	return nil
+}
+
 func (m *MockRideRepo) FindCurrentRideByRider(riderID string) (*model.Ride, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	// A real load can fail for reasons other than "no active ride" (dead
+	// database, timeout). Consume FailNext so the handler's outage path is
+	// testable; with no injection the behaviour below is unchanged.
+	if err := failNext(&m.FailNext); err != nil {
+		return nil, err
+	}
 	var latest *model.Ride
 	for _, r := range m.rides {
 		if r.RiderID == riderID && (r.Status == "pending" || r.Status == "accepted" || r.Status == "driver_arrived" || r.Status == "in_progress") {
@@ -373,6 +491,11 @@ func (m *MockRideRepo) FindCurrentRideByRider(riderID string) (*model.Ride, erro
 func (m *MockRideRepo) FindCurrentRideByDriver(driverID string) (*model.Ride, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	// See FindCurrentRideByRider: let an outage be injected so the handler's
+	// 5xx branch is testable.
+	if err := failNext(&m.FailNext); err != nil {
+		return nil, err
+	}
 	var latest *model.Ride
 	for _, r := range m.rides {
 		if r.DriverID != nil && *r.DriverID == driverID && (r.Status == "accepted" || r.Status == "driver_arrived" || r.Status == "in_progress") {
@@ -422,6 +545,36 @@ func (m *MockRideRepo) FindRidesByDriver(driverID string, limit, offset int) ([]
 	var matched []model.Ride
 	for _, r := range m.rides {
 		if r.DriverID != nil && *r.DriverID == driverID {
+			matched = append(matched, *r)
+		}
+	}
+	total := len(matched)
+	for i := 0; i < len(matched); i++ {
+		for j := i + 1; j < len(matched); j++ {
+			if matched[j].CreatedAt.After(matched[i].CreatedAt) {
+				matched[i], matched[j] = matched[j], matched[i]
+			}
+		}
+	}
+	if offset >= len(matched) {
+		return nil, total, nil
+	}
+	end := offset + limit
+	if end > len(matched) {
+		end = len(matched)
+	}
+	return matched[offset:end], total, nil
+}
+
+func (m *MockRideRepo) FindRatingsByRater(raterID, raterRole string, limit, offset int) ([]model.Rating, int, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if err := failNext(&m.FailNext); err != nil {
+		return nil, 0, err
+	}
+	var matched []model.Rating
+	for _, r := range m.ratings {
+		if r.RaterID == raterID && r.RaterRole == raterRole {
 			matched = append(matched, *r)
 		}
 	}
@@ -787,4 +940,110 @@ func haversine(lat1, lng1, lat2, lng2 float64) float64 {
 			math.Sin(dLng/2)*math.Sin(dLng/2)
 	c := 2 * math.Atan2(math.Sqrt(a), math.Sqrt(1-a))
 	return R * c
+}
+
+// --- MockDeviceTokenRepo ---
+
+// MockDeviceTokenRepo mirrors the production repository's defining property:
+// `token` is globally unique, so Register MOVES a token to its new user. That
+// is what makes "a token registered for A stops delivering to A once B
+// registers it" testable without a database.
+type MockDeviceTokenRepo struct {
+	mu     sync.Mutex
+	tokens map[string]*model.DeviceToken // keyed by token
+	// FailNext makes a read/unregister failure reachable. FailNextRegister is
+	// separate so a background push lookup cannot consume the injected failure
+	// meant for a register call (the push fan-out is async).
+	FailNext         error
+	FailNextRegister error
+}
+
+func NewMockDeviceTokenRepo() *MockDeviceTokenRepo {
+	return &MockDeviceTokenRepo{tokens: make(map[string]*model.DeviceToken)}
+}
+
+func (m *MockDeviceTokenRepo) Register(userID, token, platform string) (*model.DeviceToken, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if err := failNext(&m.FailNextRegister); err != nil {
+		return nil, err
+	}
+	now := time.Now()
+	dt, ok := m.tokens[token]
+	if !ok {
+		dt = &model.DeviceToken{ID: newID(), Token: token, CreatedAt: now}
+		m.tokens[token] = dt
+	}
+	dt.UserID = userID
+	dt.Platform = platform
+	dt.IsActive = true
+	dt.UpdatedAt = now
+	cp := *dt
+	return &cp, nil
+}
+
+func (m *MockDeviceTokenRepo) Unregister(userID, token string) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if err := failNext(&m.FailNext); err != nil {
+		return err
+	}
+	if dt, ok := m.tokens[token]; ok && dt.UserID == userID {
+		dt.IsActive = false
+		dt.UpdatedAt = time.Now()
+	}
+	return nil
+}
+
+func (m *MockDeviceTokenRepo) ListActiveTokens(userID string) ([]model.DeviceToken, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if err := failNext(&m.FailNext); err != nil {
+		return nil, err
+	}
+	out := []model.DeviceToken{}
+	for _, dt := range m.tokens {
+		if dt.UserID == userID && dt.IsActive {
+			out = append(out, *dt)
+		}
+	}
+	return out, nil
+}
+
+// --- MockFeedbackRepo ---
+
+// MockFeedbackRepo records persisted feedback so the type round-trip is
+// observable in tests. CreateFeedback fills the generated id/created_at the
+// way the real INSERT ... RETURNING does.
+type MockFeedbackRepo struct {
+	mu       sync.Mutex
+	items    []*model.Feedback
+	FailNext error
+}
+
+func NewMockFeedbackRepo() *MockFeedbackRepo {
+	return &MockFeedbackRepo{items: make([]*model.Feedback, 0)}
+}
+
+func (m *MockFeedbackRepo) CreateFeedback(feedback *model.Feedback) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if err := failNext(&m.FailNext); err != nil {
+		return err
+	}
+	feedback.ID = newID()
+	feedback.CreatedAt = time.Now()
+	m.items = append(m.items, feedback)
+	return nil
+}
+
+// Last returns the most recently persisted feedback, or nil.
+func (m *MockFeedbackRepo) Last() *model.Feedback {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if len(m.items) == 0 {
+		return nil
+	}
+	cp := *m.items[len(m.items)-1]
+	return &cp
 }

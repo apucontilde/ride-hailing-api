@@ -94,6 +94,8 @@ type fakeRideRepo struct {
 	updateErr error
 	// assignErr fails AssignDriver (the accept-race case).
 	assignErr error
+	// findErr fails FindByID (the post-offer status-read outage case).
+	findErr error
 
 	statusUpdates []string
 	assignments   []string
@@ -112,8 +114,18 @@ func (r *fakeRideRepo) FindRidesByRider(string, int, int) ([]model.Ride, int, er
 func (r *fakeRideRepo) FindRidesByDriver(string, int, int) ([]model.Ride, int, error) {
 	return nil, 0, nil
 }
+func (r *fakeRideRepo) FindRatingsByRater(string, string, int, int) ([]model.Rating, int, error) {
+	return nil, 0, nil
+}
 func (r *fakeRideRepo) CreateEvent(*model.RideEvent) error { return nil }
 func (r *fakeRideRepo) CreateRating(*model.Rating) error   { return nil }
+func (r *fakeRideRepo) FindStopsByRideID(string) ([]model.RideStop, error) {
+	return nil, nil
+}
+func (r *fakeRideRepo) FindStopsByRideIDs([]string) (map[string][]model.RideStop, error) {
+	return nil, nil
+}
+func (r *fakeRideRepo) ReplaceDestination(string, model.RideStop) error { return nil }
 func (r *fakeRideRepo) FindVehicleByDriverID(string) (*model.DriverVehicle, error) {
 	return nil, repository.ErrNotFound
 }
@@ -139,6 +151,9 @@ func (r *fakeRideRepo) AssignDriver(rideID, driverID string) error {
 func (r *fakeRideRepo) FindByID(id string) (*model.Ride, error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
+	if r.findErr != nil {
+		return nil, r.findErr
+	}
 	status := r.status
 	if status == "" {
 		status = "pending"
@@ -616,7 +631,8 @@ func TestDispatchSocketRetrySucceedsWhenDriverConnectsDuringBackoff(t *testing.T
 // TestDispatchNoDriverAvailableWhenPersistenceFails pins "a failed write never
 // answers success": when the terminal no_driver_available write fails, the ride
 // must NOT be left claiming a status it did not persist, and the failure must
-// not be reported as a clean outcome.
+// be reported as its OWN outcome — not as the honest no_candidates a genuinely
+// empty search produces (bug #19).
 func TestDispatchNoDriverAvailableWhenPersistenceFails(t *testing.T) {
 	geo := &fakeGeoRepo{}
 	ride := &fakeRideRepo{updateErr: errors.New("db down")}
@@ -628,12 +644,105 @@ func TestDispatchNoDriverAvailableWhenPersistenceFails(t *testing.T) {
 	}
 	tr := awaitTrace(t, traces)
 	// The trace is published even though the write failed, so support can see
-	// the ride really was empty rather than wondering where it went.
-	if tr.Outcome() != "no_candidates" {
-		t.Errorf("Outcome = %q, want %q", tr.Outcome(), "no_candidates")
+	// the ride really was empty rather than wondering where it went — and the
+	// failed write is distinguishable from a clean empty search.
+	if tr.Outcome() != "terminal_write_failed" {
+		t.Errorf("Outcome = %q, want %q", tr.Outcome(), "terminal_write_failed")
+	}
+	if tr.TerminalErr == nil {
+		t.Error("TerminalErr must be recorded so the failed write is not mistaken for no_candidates")
 	}
 	if got := ride.statusUpdateLog(); len(got) != 0 {
 		t.Errorf("status updates = %v, want none recorded (the write failed)", got)
+	}
+}
+
+// TestDispatchStatusReadFailureIsNotReportedAsNotPending covers the other
+// unexpected exit: after the candidates were exhausted, FindByID (the check
+// that decides between retrying and not_pending) fails. The old code recorded
+// not_pending, claiming the ride was taken elsewhere when in fact we could not
+// tell. It must instead publish a terminal_write_failed trace carrying the
+// cause, so no exit path is left without an honest terminal outcome (bug #19).
+func TestDispatchStatusReadFailureIsNotReportedAsNotPending(t *testing.T) {
+	geo := &fakeGeoRepo{drivers: []model.NearbyDriverResult{{DriverID: "driver-a"}}}
+	ride := &fakeRideRepo{findErr: errors.New("read timeout")}
+	hub := newFakeHub("driver-a")
+	svc := newTestDispatch(geo, ride, hub)
+	traces := collectTraces(svc, 1)
+
+	if err := svc.Dispatch(pendingRide("ride-readfail")); err != nil {
+		t.Fatalf("Dispatch: %v", err)
+	}
+	// The candidate declines, so the loop reaches the status check.
+	go func() {
+		deadline := time.Now().Add(5 * time.Second)
+		for time.Now().Before(deadline) {
+			svc.offerChannelsMu.Lock()
+			ch, ok := svc.offerChannels["ride-readfail"]
+			svc.offerChannelsMu.Unlock()
+			if ok {
+				ch <- false
+				return
+			}
+			time.Sleep(5 * time.Millisecond)
+		}
+	}()
+
+	tr := awaitTrace(t, traces)
+	if tr.Outcome() != "terminal_write_failed" {
+		t.Errorf("Outcome = %q, want %q: a failed status read must not be reported as not_pending",
+			tr.Outcome(), "terminal_write_failed")
+	}
+	if tr.TerminalErr == nil {
+		t.Error("TerminalErr must carry the status-read failure")
+	}
+}
+
+// TestDispatchEveryExitPathHasATerminalOutcome is the bug #19 property:
+// whatever way an attempt ends, the published trace names an explicit terminal
+// outcome. "candidates_unprocessed" is the one value that means "this attempt
+// was recorded without a terminal outcome"; no real exit path may produce it.
+func TestDispatchEveryExitPathHasATerminalOutcome(t *testing.T) {
+	terminal := map[string]bool{
+		"search_failed":          true,
+		"accepted":               true,
+		"not_pending":            true,
+		"terminal_write_failed":  true,
+		"no_candidates":          true,
+		"candidates_skipped":     true,
+		"candidates_unprocessed": false,
+	}
+	cases := []struct {
+		name   string
+		geo    *fakeGeoRepo
+		ride   *fakeRideRepo
+		hub    *fakeHub
+		accept bool
+	}{
+		{"search error", &fakeGeoRepo{findErr: errors.New("search down")}, &fakeRideRepo{}, newFakeHub(), false},
+		{"no candidates, clean write", &fakeGeoRepo{}, &fakeRideRepo{}, newFakeHub(), false},
+		{"no candidates, failed write", &fakeGeoRepo{}, &fakeRideRepo{updateErr: errors.New("db down")}, newFakeHub(), false},
+		{"candidate dropped, clean write", &fakeGeoRepo{drivers: []model.NearbyDriverResult{{DriverID: "d"}}}, &fakeRideRepo{}, newFakeHub(), false},
+		{"candidate dropped, failed write", &fakeGeoRepo{drivers: []model.NearbyDriverResult{{DriverID: "d"}}}, &fakeRideRepo{updateErr: errors.New("db down")}, newFakeHub(), false},
+		{"candidate accepted", &fakeGeoRepo{drivers: []model.NearbyDriverResult{{DriverID: "d"}}}, &fakeRideRepo{}, newFakeHub("d"), true},
+	}
+	for i, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			rideID := fmt.Sprintf("ride-exit-%d", i)
+			svc := newTestDispatch(tc.geo, tc.ride, tc.hub)
+			traces := collectTraces(svc, 1)
+			// A search failure is the one path Dispatch returns an error on; the
+			// trace is still published, so await it rather than aborting.
+			_ = svc.Dispatch(pendingRide(rideID))
+			if tc.accept {
+				go awaitOfferAndAccept(t, svc, rideID, "d")
+			}
+			tr := awaitTrace(t, traces)
+			if !terminal[tr.Outcome()] {
+				t.Errorf("Outcome = %q, want a terminal outcome; %q means the attempt was "+
+					"recorded with no terminal state", tr.Outcome(), "candidates_unprocessed")
+			}
+		})
 	}
 }
 
@@ -798,6 +907,34 @@ func TestDispatchTraceRecorderIsIdempotentAndLeaksNothing(t *testing.T) {
 	}
 }
 
+// TestDispatchTraceRecorderAbortClosesAnOpenAttempt pins the safety net: an
+// attempt that unwinds without a terminal state (a panic, or a future early
+// return) is closed and published with a terminal outcome, and no attempt is
+// left open. A second abort is inert.
+func TestDispatchTraceRecorderAbortClosesAnOpenAttempt(t *testing.T) {
+	var published []dispatchTrace
+	r := newDispatchTraceRecorder(func(tr dispatchTrace) { published = append(published, tr) })
+	r.begin("ride-abandoned", 2)
+	r.abortIfOpen("ride-abandoned", errDispatchAborted)
+
+	if len(published) != 1 {
+		t.Fatalf("published = %d traces, want 1", len(published))
+	}
+	if got := published[0].Outcome(); got != "terminal_write_failed" {
+		t.Errorf("Outcome = %q, want %q for an abandoned attempt", got, "terminal_write_failed")
+	}
+	if published[0].TerminalErr == nil {
+		t.Error("TerminalErr must carry the abandonment cause")
+	}
+	if r.pending() != 0 {
+		t.Errorf("pending = %d, want 0: an aborted attempt must not leak", r.pending())
+	}
+	r.abortIfOpen("ride-abandoned", errDispatchAborted)
+	if len(published) != 1 {
+		t.Errorf("published = %d traces after a second abort, want 1", len(published))
+	}
+}
+
 // TestDispatchTraceStringIsStableAndComplete pins the log line a support query
 // greps for. The exact wording is part of the contract, so it is asserted
 // rather than eyeballed.
@@ -839,6 +976,11 @@ func TestDispatchTraceStringIsStableAndComplete(t *testing.T) {
 			}},
 			want: "[dispatch] ride=r5 outcome=not_pending candidates=2 skipped=1 reasons={socket_not_connected=1}",
 		},
+		{
+			name: "failed terminal write carries the cause",
+			tr:   dispatchTrace{RideID: "r6", TerminalErr: errors.New("db down")},
+			want: "[dispatch] ride=r6 outcome=terminal_write_failed candidates=0 skipped=0 reasons={} terminal_err=db down",
+		},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -860,6 +1002,7 @@ func TestDispatchOutcomeNamesAreDistinct(t *testing.T) {
 		{RideID: "d", Candidates: 2},
 		{RideID: "e", Candidates: 2, Accepted: true},
 		{RideID: "f", Candidates: 2, NotPending: true},
+		{RideID: "g", TerminalErr: errors.New("write failed")},
 	}
 	seen := map[string]string{}
 	for _, tr := range traces {

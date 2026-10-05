@@ -15,6 +15,7 @@ import '../../features/home/presentation/history_screen.dart';
 import '../../features/home/presentation/payment_screen.dart';
 import '../../features/home/presentation/security_screen.dart';
 import '../../features/settings/presentation/settings_screen.dart';
+import '../../features/navigation/rider_shell.dart';
 
 final _shellKey = GlobalKey<NavigatorState>();
 
@@ -26,7 +27,8 @@ final routerProvider = Provider<GoRouter>((ref) {
       final authState = ref.read(authProvider);
       final isAuthenticated = authState.isAuthenticated;
       final isSplash = state.matchedLocation == '/splash';
-      final isAuthRoute = state.matchedLocation.startsWith('/login') ||
+      final isAuthRoute =
+          state.matchedLocation.startsWith('/login') ||
           state.matchedLocation.startsWith('/register') ||
           state.matchedLocation.startsWith('/forgot-password');
 
@@ -40,10 +42,7 @@ final routerProvider = Provider<GoRouter>((ref) {
         path: '/splash',
         builder: (context, state) => const SplashScreen(),
       ),
-      GoRoute(
-        path: '/login',
-        builder: (context, state) => const LoginScreen(),
-      ),
+      GoRoute(path: '/login', builder: (context, state) => const LoginScreen()),
       GoRoute(
         path: '/register',
         builder: (context, state) => const RegisterScreen(),
@@ -52,9 +51,38 @@ final routerProvider = Provider<GoRouter>((ref) {
         path: '/forgot-password',
         builder: (context, state) => const ForgotPasswordScreen(),
       ),
-      GoRoute(
-        path: '/home',
-        builder: (context, state) => const HomeScreen(),
+      // The six top-level sections share one shell: one `Scaffold`, one
+      // `AppSidebar`, one toggle. Flow routes below stay outside it.
+      ShellRoute(
+        builder: (context, state, child) =>
+            RiderShell(state: state, child: child),
+        routes: [
+          GoRoute(
+            path: '/home',
+            builder: (context, state) => const HomeScreen(),
+          ),
+          GoRoute(
+            path: '/profile',
+            builder: (context, state) => const ProfileScreen(),
+          ),
+          GoRoute(
+            path: '/history',
+            builder: (context, state) => const HistoryScreen(),
+          ),
+          GoRoute(
+            path: '/payment',
+            builder: (context, state) => const PaymentScreen(),
+          ),
+          GoRoute(
+            path: '/security',
+            builder: (context, state) => const SecurityScreen(),
+          ),
+          // Absorbs the old `/about` stub; see settings_screen.dart.
+          GoRoute(
+            path: '/settings',
+            builder: (context, state) => const SettingsScreen(),
+          ),
+        ],
       ),
       GoRoute(
         path: '/location-search',
@@ -74,27 +102,6 @@ final routerProvider = Provider<GoRouter>((ref) {
       GoRoute(
         path: '/active-ride',
         builder: (context, state) => const ActiveRideScreen(),
-      ),
-      GoRoute(
-        path: '/profile',
-        builder: (context, state) => const ProfileScreen(),
-      ),
-      GoRoute(
-        path: '/history',
-        builder: (context, state) => const HistoryScreen(),
-      ),
-      GoRoute(
-        path: '/payment',
-        builder: (context, state) => const PaymentScreen(),
-      ),
-      GoRoute(
-        path: '/security',
-        builder: (context, state) => const SecurityScreen(),
-      ),
-      // Absorbs the old `/about` stub; see settings_screen.dart.
-      GoRoute(
-        path: '/settings',
-        builder: (context, state) => const SettingsScreen(),
       ),
     ],
   );

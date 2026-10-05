@@ -28,7 +28,10 @@ type dispatchAttempt struct {
 	searchErr  error
 	accepted   bool
 	notPending bool
-	ended      bool
+	// terminalErr records an exit that reached no clean terminal state (a
+	// failed terminal write, a failed status check, or an abandoned attempt).
+	terminalErr error
+	ended       bool
 }
 
 func newDispatchTraceRecorder(observer func(dispatchTrace)) *dispatchTraceRecorder {
@@ -96,6 +99,46 @@ func (r *dispatchTraceRecorder) noteNotPending(rideID string) {
 	}
 }
 
+// noteTerminalError records an exit that could not reach a clean terminal state
+// — most importantly a failed no_driver_available write — so the published
+// outcome names the failure instead of masquerading as "nobody was there". The
+// first error wins: a later one must not erase the cause of the exit.
+func (r *dispatchTraceRecorder) noteTerminalError(rideID string, err error) {
+	if r == nil || err == nil {
+		return
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if a, ok := r.attempts[rideID]; ok && a.terminalErr == nil {
+		a.terminalErr = err
+	}
+}
+
+// abortIfOpen is the panic/early-return safety net: if an attempt is still open
+// when its goroutine unwinds, it records err as the terminal state and
+// publishes the trace, so no exit path can leave an attempt open (a support
+// query waiting forever) or publish a terminal line with no outcome. It is a
+// no-op once end has already published.
+func (r *dispatchTraceRecorder) abortIfOpen(rideID string, err error) {
+	if r == nil {
+		return
+	}
+	r.mu.Lock()
+	a, ok := r.attempts[rideID]
+	if !ok || a.ended {
+		r.mu.Unlock()
+		return
+	}
+	if a.terminalErr == nil {
+		a.terminalErr = err
+	}
+	r.mu.Unlock()
+	// end locks again and publishes outside that lock; calling it here (rather
+	// than duplicating its logic) keeps the "publish exactly once" rule in one
+	// place.
+	r.end(rideID)
+}
+
 // end closes the attempt and returns the completed trace, publishing it to the
 // observer exactly once — the observer is the ONLY publisher of the terminal
 // line, so the line can be neither duplicated nor contradicted by a second
@@ -118,12 +161,13 @@ func (r *dispatchTraceRecorder) end(rideID string) (dispatchTrace, bool) {
 	a.ended = true
 	delete(r.attempts, rideID)
 	trace := dispatchTrace{
-		RideID:     rideID,
-		Candidates: a.candidates,
-		Skips:      a.skips,
-		SearchErr:  a.searchErr,
-		Accepted:   a.accepted,
-		NotPending: a.notPending,
+		RideID:      rideID,
+		Candidates:  a.candidates,
+		Skips:       a.skips,
+		SearchErr:   a.searchErr,
+		Accepted:    a.accepted,
+		NotPending:  a.notPending,
+		TerminalErr: a.terminalErr,
 	}
 	observer := r.observer
 	r.mu.Unlock()

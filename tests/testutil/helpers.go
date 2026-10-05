@@ -30,6 +30,10 @@ type TestServer struct {
 	RideRepo   *MockRideRepo
 	GeoRepo    *MockGeoRepo
 	PlacesRepo *MockPlacesRepo
+	// DeviceRepo/FeedbackRepo are the in-memory stores behind the device-token
+	// and feedback endpoints (api_plans/[push]).
+	DeviceRepo   *MockDeviceTokenRepo
+	FeedbackRepo *MockFeedbackRepo
 }
 
 type TestResponse struct {
@@ -95,17 +99,24 @@ func newTestServerE(geoRepo *MockGeoRepo, navRepo *MockNavigationRepo) (*TestSer
 	userRepo := NewMockUserRepo()
 	rideRepo := NewMockRideRepo()
 	placesRepo := NewMockPlacesRepo()
+	deviceRepo := NewMockDeviceTokenRepo()
+	feedbackRepo := NewMockFeedbackRepo()
 
-	r := router.SetupWithRepos(cfg, userRepo, rideRepo, geoRepo, navRepo, placesRepo, nil)
+	r := router.SetupWithRepos(cfg, userRepo, rideRepo, geoRepo, navRepo, placesRepo, nil,
+		router.WithDeviceTokenRepository(deviceRepo),
+		router.WithFeedbackRepository(feedbackRepo),
+	)
 
 	return &TestServer{
-		Server:     httptest.NewServer(r),
-		Config:     cfg,
-		AuthTokens: make(map[string]string),
-		UserRepo:   userRepo,
-		RideRepo:   rideRepo,
-		GeoRepo:    geoRepo,
-		PlacesRepo: placesRepo,
+		Server:       httptest.NewServer(r),
+		Config:       cfg,
+		AuthTokens:   make(map[string]string),
+		UserRepo:     userRepo,
+		RideRepo:     rideRepo,
+		GeoRepo:      geoRepo,
+		PlacesRepo:   placesRepo,
+		DeviceRepo:   deviceRepo,
+		FeedbackRepo: feedbackRepo,
 	}, nil
 }
 

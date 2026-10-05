@@ -28,6 +28,60 @@ class RideHistoryPage {
   });
 }
 
+/// A rating the driver submitted (or received) as returned by
+/// `GET /driver/ratings` / `GET /rider/ratings`.
+class DriverRating {
+  final String id;
+  final String rideId;
+  final String raterRole;
+  final int score;
+  final String? comment;
+  final DateTime createdAt;
+
+  const DriverRating({
+    required this.id,
+    required this.rideId,
+    required this.raterRole,
+    required this.score,
+    required this.comment,
+    required this.createdAt,
+  });
+
+  factory DriverRating.fromJson(Map<String, dynamic> json) {
+    final id = json['id'] as String? ?? '';
+    final rideId = json['ride_id'] as String? ?? json['rideId'] as String? ?? '';
+    final raterRole = json['rater_role'] as String? ?? json['raterRole'] as String? ?? 'rider';
+    final score = (json['score'] as num?)?.toInt() ?? 0;
+    final comment = json['comment'] as String?;
+    final createdAtStr = json['created_at'] as String? ?? json['createdAt'] as String?;
+    return DriverRating(
+      id: id,
+      rideId: rideId,
+      raterRole: raterRole,
+      score: score,
+      comment: comment,
+      createdAt: createdAtStr != null ? DateTime.parse(createdAtStr) : DateTime.now(),
+    );
+  }
+}
+
+/// One page of `GET /driver/ratings`.
+class DriverRatingPage {
+  final List<DriverRating> ratings;
+  final int total;
+  final int page;
+  final int perPage;
+  final int totalPages;
+
+  const DriverRatingPage({
+    required this.ratings,
+    required this.total,
+    required this.page,
+    required this.perPage,
+    required this.totalPages,
+  });
+}
+
 class RidesRepository {
   final ApiClient apiClient;
 
@@ -112,6 +166,38 @@ class RidesRepository {
         'score': score,
         if (text != null && text.isNotEmpty) 'comment': text,
       },
+    );
+  }
+
+  /// Fetch the list of ratings the driver has submitted.
+  ///
+  /// Every row is one the driver submitted: the handler pins `rater_role` to
+  /// the caller's role (`internal/handler/ride.go:430-435`), so the response is
+  /// already the "rides I rated" set and needs no client-side filter.
+  ///
+  /// [cancelToken] lets a caller that goes away (a disposed provider) release
+  /// the request — and its Dio timeout timers — instead of leaving them pending.
+  Future<DriverRatingPage> fetchMyRatings({
+    int page = 1,
+    int perPage = 20,
+    CancelToken? cancelToken,
+  }) async {
+    final response = await apiClient.dio.get(
+      ApiEndpoints.driverRatings,
+      queryParameters: {'page': page, 'per_page': perPage},
+      cancelToken: cancelToken,
+    );
+    final data = response.data as Map<String, dynamic>;
+    final ratings = (data['ratings'] as List<dynamic>? ?? const [])
+        .whereType<Map<String, dynamic>>()
+        .map((json) => DriverRating.fromJson(json))
+        .toList();
+    return DriverRatingPage(
+      ratings: ratings,
+      total: (data['total'] as num?)?.toInt() ?? ratings.length,
+      page: (data['page'] as num?)?.toInt() ?? page,
+      perPage: (data['per_page'] as num?)?.toInt() ?? perPage,
+      totalPages: (data['total_pages'] as num?)?.toInt() ?? 1,
     );
   }
 }

@@ -4,6 +4,7 @@ import 'package:ride_hailing_shared/ride_hailing_shared.dart';
 import 'package:geolocator/geolocator.dart';
 import '../auth/auth_provider.dart';
 import '../api/endpoints.dart';
+import '../network/websocket_service.dart';
 import '../../features/home/providers/availability_notifier.dart';
 
 /// Permission state for the location service.
@@ -221,9 +222,11 @@ class LocationService {
 }
 
 final locationServiceProvider = Provider<LocationService>((ref) {
-  return LocationService(
+  final availability = ref.read(availabilityProvider.notifier);
+  final websocket = ref.read(driverWebSocketServiceProvider);
+  final service = LocationService(
     apiClient: ref.read(apiClientProvider),
-    availabilityNotifier: ref.read(availabilityProvider.notifier),
+    availabilityNotifier: availability,
     onPermission: ({bool granted = false, bool deniedPermanently = false}) {
       ref.read(appPermissionProvider.notifier).state = AppPermissionState(
         granted: granted,
@@ -235,4 +238,14 @@ final locationServiceProvider = Provider<LocationService>((ref) {
           GeoPoint(position.latitude, position.longitude);
     },
   );
+  // Keep the websocket keep-alive in lockstep with availability: online pings,
+  // offline stops. Without this the socket can die silently on a NAT timeout
+  // while dispatch still sees the driver as online, and every offer is skipped
+  // as "no live socket" (false negative).
+  availability.onOnlineChanged = websocket.setOnline;
+  // A (re)connected socket must re-publish the last fix immediately, or the
+  // driver's `driver_positions` row ages past dispatch's 30 s window and they
+  // are skipped again.
+  websocket.onReconnected = () => service.publishLastPosition();
+  return service;
 });

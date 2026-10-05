@@ -46,6 +46,12 @@ type offerSkip struct {
 	Detail string
 }
 
+// errDispatchAborted is recorded when an attempt is abandoned before it reaches
+// a clean terminal state (a panic unwinding the offer goroutine, or a future
+// early return). It exists so no exit path can leave an attempt open or leave
+// the terminal line with no outcome at all.
+var errDispatchAborted = errors.New("dispatch attempt abandoned before a terminal outcome")
+
 // dispatchTrace is everything one Dispatch attempt learned, and the single
 // object the terminal log line and the tests are both built from. Candidate
 // count is the load-bearing number: 0 means the search really found nobody; a
@@ -63,27 +69,21 @@ type dispatchTrace struct {
 	// published outcome can never contradict what the loop actually did.
 	Accepted   bool
 	NotPending bool
+	// TerminalErr is set when an attempt left no clean terminal state: the
+	// terminal no_driver_available write failed, the post-offer status check
+	// failed, or the attempt was abandoned. It gets its own outcome so a
+	// support query can tell "the write failed" from "nobody was there".
+	TerminalErr error
 }
 
 // Outcome names the terminal result for a trace, and is what a support query
 // groups by.
 //
-// KNOWN LIMITATION — "no_candidates" is NOT proof that nobody was there. It is
-// returned both for a search that really found no driver at any radius AND for
-// an attempt whose terminal no_driver_available write failed; finishWithoutDriver
-// tells the two apart only by the log.Printf it emits on the failure path
-// (internal/service/dispatch.go), which is a separate line a support query has
-// to go and find. So this field alone cannot answer "was the service area
-// empty, or did our write fail?", which is a question this file exists to make
-// answerable. Every other terminal state is recorded EXPLICITLY rather than
-// inferred from the skip tally (SearchErr, Accepted, NotPending); the failed
-// terminal write is the one exception.
-//
-// Closing it needs a fourth recorded terminal state — the write error itself —
-// carried on the trace and given its own outcome. That is a code change in
-// dispatch_traces.go + finishWithoutDriver, deliberately NOT made here: this
-// pass is comments/docs only, and dispatch.go is being edited concurrently for
-// an unrelated routing fix. Filed as api_plans/STATUS.md known bug #19.
+// Every exit path records an explicit terminal state — SearchErr, Accepted,
+// NotPending, or TerminalErr — rather than one inferred from the skip tally, so
+// "nobody was there" (no_candidates) is never confused with a failed terminal
+// write, a failed status check, or an abandoned attempt (terminal_write_failed,
+// carrying the cause in the log line).
 func (t dispatchTrace) Outcome() string {
 	switch {
 	case t.SearchErr != nil:
@@ -92,6 +92,8 @@ func (t dispatchTrace) Outcome() string {
 		return "accepted"
 	case t.NotPending:
 		return "not_pending"
+	case t.TerminalErr != nil:
+		return "terminal_write_failed"
 	case t.Candidates == 0:
 		return "no_candidates"
 	case len(t.Skips) == 0:
@@ -130,6 +132,11 @@ func (t dispatchTrace) String() string {
 	if t.SearchErr != nil {
 		// The cause is logged here and nowhere a client can see it.
 		line += fmt.Sprintf(" search_err=%v", t.SearchErr)
+	}
+	if t.TerminalErr != nil {
+		// The failure the outcome names, so one line answers "did our write
+		// fail?" instead of making support go find a separate log line.
+		line += fmt.Sprintf(" terminal_err=%v", t.TerminalErr)
 	}
 	return line
 }

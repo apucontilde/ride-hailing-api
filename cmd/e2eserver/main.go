@@ -67,7 +67,10 @@ func main() {
 		)
 	}
 
-	r := router.SetupWithRepos(cfg, userRepo, rideRepo, geoRepo, navRepo, placesRepo, nil)
+	r := router.SetupWithRepos(cfg, userRepo, rideRepo, geoRepo, navRepo, placesRepo, nil,
+		router.WithDeviceTokenRepository(testutil.NewMockDeviceTokenRepo()),
+		router.WithFeedbackRepository(testutil.NewMockFeedbackRepo()),
+	)
 
 	srv := &http.Server{
 		Addr:              *addr,

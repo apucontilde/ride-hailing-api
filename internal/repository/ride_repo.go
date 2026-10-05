@@ -1,11 +1,13 @@
 package repository
 
 import (
+	"context"
 	"database/sql"
 	"fmt"
 	"time"
 
 	"github.com/jmoiron/sqlx"
+	"github.com/lib/pq"
 
 	"ride-hailing-api/internal/model"
 )
@@ -13,6 +15,9 @@ import (
 type RideRepository interface {
 	CreateRide(ride *model.Ride) error
 	FindByID(id string) (*model.Ride, error)
+	FindStopsByRideID(rideID string) ([]model.RideStop, error)
+	FindStopsByRideIDs(rideIDs []string) (map[string][]model.RideStop, error)
+	ReplaceDestination(rideID string, dest model.RideStop) error
 	FindCurrentRideByRider(riderID string) (*model.Ride, error)
 	FindCurrentRideByDriver(driverID string) (*model.Ride, error)
 	FindRidesByRider(riderID string, limit, offset int) ([]model.Ride, int, error)
@@ -21,6 +26,7 @@ type RideRepository interface {
 	AssignDriver(rideID, driverID string) error
 	CreateEvent(event *model.RideEvent) error
 	CreateRating(rating *model.Rating) error
+	FindRatingsByRater(raterID, raterRole string, limit, offset int) ([]model.Rating, int, error)
 	FindVehicleByDriverID(driverID string) (*model.DriverVehicle, error)
 }
 
@@ -34,16 +40,175 @@ func NewRideRepo(db *sqlx.DB) *RideRepo {
 	return &RideRepo{db: db}
 }
 
+// CreateRide inserts the ride and its itinerary (ride.Stops, migration 016) in
+// ONE transaction.
+//
+// The stops are not an audit row: a ride whose itinerary failed to persist
+// would route and bill a trip the rider never asked for, so a stop failure has
+// to undo the ride rather than be logged and forgotten. An empty Stops is the
+// pre-016 shape and writes only the rides row.
+// CreateRide inserts the ride and its itinerary as ONE unit.
+//
+// There is deliberately no "no stops, no transaction" shortcut: a ride row and
+// its ride_stops rows must never disagree, and a second code path would also
+// mean a second error taxonomy (the bare insert returns the raw driver error
+// while this one classifies it through wrapDB), so the same logical failure
+// could answer 500 without stops and 409 with them.
 func (r *RideRepo) CreateRide(ride *model.Ride) error {
+	tx, err := r.db.BeginTxx(context.Background(), nil)
+	if err != nil {
+		return wrapDB("begin ride transaction", err)
+	}
+	defer func() { _ = tx.Rollback() }() // no-op once Commit has succeeded
+
 	query := `
 		INSERT INTO rides (rider_id, pickup_lat, pickup_lng, dropoff_lat, dropoff_lng,
 			pickup_address, dropoff_address, vehicle_type, idempotency_key, status, requested_at)
 		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, 'pending', NOW())
 		RETURNING id, status, created_at, updated_at`
-	return r.db.QueryRow(query, ride.RiderID, ride.PickupLat, ride.PickupLng,
+	if err := tx.QueryRow(query, ride.RiderID, ride.PickupLat, ride.PickupLng,
 		ride.DropoffLat, ride.DropoffLng, ride.PickupAddress, ride.DropoffAddress,
 		ride.VehicleType, ride.IdempotencyKey).
-		Scan(&ride.ID, &ride.Status, &ride.CreatedAt, &ride.UpdatedAt)
+		Scan(&ride.ID, &ride.Status, &ride.CreatedAt, &ride.UpdatedAt); err != nil {
+		return wrapDB("create ride", err)
+	}
+
+	for i := range ride.Stops {
+		stop := &ride.Stops[i]
+		stop.RideID = ride.ID
+		if err := tx.QueryRow(`
+			INSERT INTO ride_stops (ride_id, sequence, kind, lat, lng, address)
+			VALUES ($1, $2, $3, $4, $5, $6)
+			RETURNING id, created_at, updated_at`,
+			stop.RideID, stop.Sequence, stop.Kind, stop.Lat, stop.Lng, stop.Address).
+			Scan(&stop.ID, &stop.CreatedAt, &stop.UpdatedAt); err != nil {
+			return wrapDB("create ride stop", err)
+		}
+	}
+
+	if err := tx.Commit(); err != nil {
+		return wrapDB("commit ride transaction", err)
+	}
+	return nil
+}
+
+// FindStopsByRideID returns the ride's itinerary in visit order. A ride with no
+// stops yields an empty slice, never nil, so callers can range over it.
+func (r *RideRepo) FindStopsByRideID(rideID string) ([]model.RideStop, error) {
+	// Initialized, never nil: a ride with no itinerary must still encode as
+	// "stops": [] and not "stops": null, or every client needs a nil check to
+	// tell "no stops" from "not loaded".
+	stops := []model.RideStop{}
+	if err := r.db.Select(&stops, `
+		SELECT id, ride_id, sequence, kind, lat, lng, address, created_at, updated_at
+		FROM ride_stops WHERE ride_id = $1 ORDER BY sequence`, rideID); err != nil {
+		return nil, wrapDB("load ride stops", err)
+	}
+	return stops, nil
+}
+
+// FindStopsByRideIDs is the batched form used by GET /rides/history, so a page
+// of rides costs ONE query instead of one per ride (an N+1 on a 50-row page is
+// 50 round-trips on the rider's most-polled screen).
+//
+// Every requested ride gets an entry, empty slice included, so a caller can
+// index the map without a presence check. An empty input answers an empty map
+// without touching the database — sqlx would otherwise build an invalid
+// `IN ()` statement.
+func (r *RideRepo) FindStopsByRideIDs(rideIDs []string) (map[string][]model.RideStop, error) {
+	byRide := make(map[string][]model.RideStop, len(rideIDs))
+	if len(rideIDs) == 0 {
+		return byRide, nil
+	}
+	for _, id := range rideIDs {
+		byRide[id] = []model.RideStop{}
+	}
+
+	query := `SELECT id, ride_id, sequence, kind, lat, lng, address, created_at, updated_at
+		FROM ride_stops WHERE ride_id = ANY($1) ORDER BY ride_id, sequence`
+
+	var rows []struct {
+		ID        string    `db:"id"`
+		RideID    string    `db:"ride_id"`
+		Sequence  int       `db:"sequence"`
+		Kind      string    `db:"kind"`
+		Lat       float64   `db:"lat"`
+		Lng       float64   `db:"lng"`
+		Address   string    `db:"address"`
+		CreatedAt time.Time `db:"created_at"`
+		UpdatedAt time.Time `db:"updated_at"`
+	}
+	if err := r.db.Select(&rows, query, pq.Array(rideIDs)); err != nil {
+		return nil, wrapDB("load ride stops", err)
+	}
+	for _, row := range rows {
+		byRide[row.RideID] = append(byRide[row.RideID], model.RideStop{
+			ID: row.ID, RideID: row.RideID, Sequence: row.Sequence, Kind: row.Kind,
+			Lat: row.Lat, Lng: row.Lng, Address: row.Address,
+			CreatedAt: row.CreatedAt, UpdatedAt: row.UpdatedAt,
+		})
+	}
+	return byRide, nil
+}
+
+// ReplaceDestination changes a ride's final destination: the rides.dropoff_*
+// scalars (authoritative for routing, fare and receipt) and the itinerary's
+// kind='destination' row move together or not at all.
+//
+// dest.Sequence and dest.Kind are ignored — the destination is always the last
+// waypoint and always kind='destination'. A ride whose itinerary has no
+// destination row yet (one created before 016, or with only intermediate
+// stops) gets one appended after the current last stop.
+//
+// The rides row is written FIRST so a missing ride answers ErrNotFound instead
+// of tripping the ride_id foreign key, which wrapDB would report as a conflict.
+func (r *RideRepo) ReplaceDestination(rideID string, dest model.RideStop) error {
+	tx, err := r.db.BeginTxx(context.Background(), nil)
+	if err != nil {
+		return wrapDB("begin destination transaction", err)
+	}
+	defer func() { _ = tx.Rollback() }()
+
+	res, err := tx.Exec(`
+		UPDATE rides SET dropoff_lat=$1, dropoff_lng=$2, dropoff_address=$3, updated_at=NOW()
+		WHERE id=$4`, dest.Lat, dest.Lng, dest.Address, rideID)
+	if err != nil {
+		return wrapDB("update ride destination", err)
+	}
+	rows, err := res.RowsAffected()
+	if err != nil {
+		return wrapDB("update ride destination", err)
+	}
+	if rows == 0 {
+		return fmt.Errorf("update ride destination: %w: %w", ErrNotFound, sql.ErrNoRows)
+	}
+
+	res, err = tx.Exec(`
+		UPDATE ride_stops SET lat=$1, lng=$2, address=$3, updated_at=NOW()
+		WHERE ride_id=$4 AND kind='destination'`, dest.Lat, dest.Lng, dest.Address, rideID)
+	if err != nil {
+		return wrapDB("update destination stop", err)
+	}
+	rows, err = res.RowsAffected()
+	if err != nil {
+		return wrapDB("update destination stop", err)
+	}
+	if rows == 0 {
+		// COALESCE keeps the append correct for a ride with no stops at all:
+		// the aggregate still yields exactly one row.
+		if _, err := tx.Exec(`
+			INSERT INTO ride_stops (ride_id, sequence, kind, lat, lng, address)
+			SELECT $1, COALESCE(MAX(sequence), 0) + 1, 'destination', $2, $3, $4
+			FROM ride_stops WHERE ride_id = $1`,
+			rideID, dest.Lat, dest.Lng, dest.Address); err != nil {
+			return wrapDB("append destination stop", err)
+		}
+	}
+
+	if err := tx.Commit(); err != nil {
+		return wrapDB("commit destination transaction", err)
+	}
+	return nil
 }
 
 func (r *RideRepo) FindByID(id string) (*model.Ride, error) {
@@ -181,4 +346,25 @@ func (r *RideRepo) CreateRating(rating *model.Rating) error {
 		VALUES ($1, $2, $3, $4, $5, $6)`,
 		rating.RideID, rating.RaterRole, rating.RaterID, rating.RateeID, rating.Score, rating.Comment)
 	return wrapDB("create rating", err)
+}
+
+// FindRatingsByRater returns the ratings a single actor submitted (rater_role
+// disambiguates the UNIQUE(ride_id, rater_role) row pair), newest first, with
+// the total row count for pagination. Backed by idx_ratings_rater (015).
+func (r *RideRepo) FindRatingsByRater(raterID, raterRole string, limit, offset int) ([]model.Rating, int, error) {
+	var total int
+	if err := r.db.Get(&total,
+		"SELECT COUNT(*) FROM ratings WHERE rater_id = $1 AND rater_role = $2",
+		raterID, raterRole); err != nil {
+		return nil, 0, wrapDB("load ratings by rater", err)
+	}
+
+	var ratings []model.Rating
+	err := r.db.Select(&ratings, `
+		SELECT * FROM ratings WHERE rater_id = $1 AND rater_role = $2
+		ORDER BY created_at DESC LIMIT $3 OFFSET $4`, raterID, raterRole, limit, offset)
+	if err != nil {
+		return nil, 0, wrapDB("load ratings by rater", err)
+	}
+	return ratings, total, nil
 }

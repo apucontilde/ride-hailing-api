@@ -3,6 +3,7 @@ import 'package:dio/dio.dart';
 import 'package:http_mock_adapter/http_mock_adapter.dart';
 import 'package:driver_app/core/api/api_client.dart';
 import 'package:driver_app/core/api/api_exceptions.dart';
+import 'package:driver_app/core/api/endpoints.dart';
 import 'package:driver_app/config.dart';
 
 void main() {
@@ -156,6 +157,49 @@ void main() {
       } on DioException catch (e) {
         expect(e.error, isA<BadRequestException>());
       }
+    });
+  });
+
+  group('safety endpoints', () {
+    late ApiClient apiClient;
+    late DioAdapter dioAdapter;
+
+    setUp(() {
+      apiClient = ApiClient(baseUrl: ApiConfig.baseUrl);
+      dioAdapter = DioAdapter(dio: apiClient.dio);
+    });
+
+    test('POST /api/v1/sos sends the position body', () async {
+      dioAdapter.onPost(
+        ApiEndpoints.sos,
+        (server) => server.reply(201, {'message': 'SOS alert received'}),
+        data: {'lat': 9.9333, 'lng': -84.0833},
+      );
+
+      final response = await apiClient.dio.post(
+        ApiEndpoints.sos,
+        data: {'lat': 9.9333, 'lng': -84.0833},
+      );
+
+      expect(response.statusCode, 201);
+      expect(ApiEndpoints.sos, '/api/v1/sos');
+    });
+
+    test('POST /api/v1/feedback sends the app_issue type and message',
+        () async {
+      dioAdapter.onPost(
+        ApiEndpoints.feedback,
+        (server) => server.reply(201, {'message': 'feedback submitted'}),
+        data: {'type': 'app_issue', 'message': 'App crashed'},
+      );
+
+      final response = await apiClient.dio.post(
+        ApiEndpoints.feedback,
+        data: {'type': 'app_issue', 'message': 'App crashed'},
+      );
+
+      expect(response.statusCode, 201);
+      expect(ApiEndpoints.feedback, '/api/v1/feedback');
     });
   });
 }

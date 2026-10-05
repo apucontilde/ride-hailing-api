@@ -15,6 +15,7 @@ import 'package:driver_app/core/network/ws_event.dart';
 import 'package:driver_app/core/ride/ride_state_notifier.dart';
 import 'package:driver_app/features/driver/model/driver_profile.dart';
 import 'package:driver_app/features/home/presentation/home_screen.dart';
+import 'package:driver_app/features/navigation/driver_shell.dart';
 import 'package:driver_app/features/home/providers/availability_notifier.dart';
 
 class MockApiClient extends Mock implements ApiClient {}
@@ -76,8 +77,9 @@ void main() {
     mockWebSocketService = MockWebSocketService();
     when(() => mockApiClient.dio).thenReturn(mockDio);
     when(() => mockWebSocketService.disconnect()).thenAnswer((_) async {});
-    when(() => mockWebSocketService.connect(token: any(named: 'token')))
-        .thenAnswer((_) async {});
+    when(
+      () => mockWebSocketService.connect(token: any(named: 'token')),
+    ).thenAnswer((_) async {});
     when(() => mockStorage.getAccessToken()).thenAnswer((_) async => 'token');
     // No stored refresh token, so logout() skips `POST /auth/logout` and only the
     // local cleanup path runs.
@@ -99,24 +101,27 @@ void main() {
   /// fails with "Tried to use RideStateNotifier after `dispose` was called".
   RideStateNotifier freshRideState() {
     final mockDriverWs = MockDriverWebSocketService();
-    when(() => mockDriverWs.events).thenAnswer((_) => const Stream<WsEvent>.empty());
+    when(
+      () => mockDriverWs.events,
+    ).thenAnswer((_) => const Stream<WsEvent>.empty());
     return RideStateNotifier(mockDriverWs, apiClient: mockApiClient);
   }
 
   /// Everything `HomeScreen` needs that is not auth: no geolocator channel, no
   /// launch restore, no trip tiles.
   List<Override> baseOverrides() => [
-        apiClientProvider.overrideWithValue(mockApiClient),
-        rideStateProvider.overrideWith((ref) => freshRideState()),
-        appPermissionProvider
-            .overrideWith((ref) => const AppPermissionState(granted: true)),
-        locationServiceProvider.overrideWith(
-          (ref) => FakeLocationService(
-            apiClient: mockApiClient,
-            availabilityNotifier: ref.read(availabilityProvider.notifier),
-          ),
-        ),
-      ];
+    apiClientProvider.overrideWithValue(mockApiClient),
+    rideStateProvider.overrideWith((ref) => freshRideState()),
+    appPermissionProvider.overrideWith(
+      (ref) => const AppPermissionState(granted: true),
+    ),
+    locationServiceProvider.overrideWith(
+      (ref) => FakeLocationService(
+        apiClient: mockApiClient,
+        availabilityNotifier: ref.read(availabilityProvider.notifier),
+      ),
+    ),
+  ];
 
   /// Container for the structural and navigation cases, where the profile just
   /// has to be there.
@@ -157,24 +162,42 @@ void main() {
   }
 
   /// A **bespoke** router, not `routerProvider` (the app router starts at
-  /// `/splash`). This is the existing `home_screen_test.dart` harness extended
-  /// with a stub for every route the sidebar can push, plus `/login` for
+  /// `/splash`). `/home` runs inside the real [DriverShell] because that is
+  /// where the single [AppSidebar] lives since bug #10; the other sidebar
+  /// destinations stay stubs (they are pushed outside the shell in this
+  /// harness, which is enough to assert the tap routed), plus `/login` for
   /// sign-out — without them each tap throws instead of navigating.
-  Future<void> pumpHome(WidgetTester tester, ProviderContainer container) async {
+  Future<void> pumpHome(
+    WidgetTester tester,
+    ProviderContainer container,
+  ) async {
     tester.view.physicalSize = const Size(1000, 1600);
     tester.view.devicePixelRatio = 1.0;
     addTearDown(tester.view.reset);
     final router = GoRouter(
       initialLocation: '/home',
       routes: [
-        GoRoute(path: '/home', builder: (_, _) => const HomeScreen()),
-        GoRoute(path: '/profile', builder: (_, _) => const _Stub('Profile Page')),
-        GoRoute(path: '/vehicle', builder: (_, _) => const _Stub('Vehicle Page')),
+        GoRoute(
+          path: '/home',
+          builder: (_, _) =>
+              const DriverShell(location: '/home', child: HomeScreen()),
+        ),
+        GoRoute(
+          path: '/profile',
+          builder: (_, _) => const _Stub('Profile Page'),
+        ),
+        GoRoute(
+          path: '/vehicle',
+          builder: (_, _) => const _Stub('Vehicle Page'),
+        ),
         GoRoute(
           path: '/rides-history',
           builder: (_, _) => const _Stub('Rides History Page'),
         ),
-        GoRoute(path: '/settings', builder: (_, _) => const _Stub('Settings Page')),
+        GoRoute(
+          path: '/settings',
+          builder: (_, _) => const _Stub('Settings Page'),
+        ),
         GoRoute(path: '/login', builder: (_, _) => const _Stub('Log In')),
       ],
     );
@@ -197,13 +220,13 @@ void main() {
   /// The AppBar title `Row` keeps rendering the name and the status while the
   /// drawer is open, so a bare `find.text` matches twice. Scope to the *widget*:
   /// `AppSidebarAccount` is a plain value object and never becomes an `Element`.
-  Finder inHeader(Finder matching) => find.descendant(
-        of: find.byType(AppSidebarHeader),
-        matching: matching,
-      );
+  Finder inHeader(Finder matching) =>
+      find.descendant(of: find.byType(AppSidebarHeader), matching: matching);
 
   group('driver sidebar structure', () {
-    testWidgets('opens from the shared toggle button in the AppBar', (tester) async {
+    testWidgets('opens from the shared toggle button in the AppBar', (
+      tester,
+    ) async {
       await pumpHome(tester, profileContainer());
 
       expect(find.byType(AppSidebarToggleButton), findsOneWidget);
@@ -213,7 +236,9 @@ void main() {
       expect(find.byType(AppSidebar), findsOneWidget);
     });
 
-    testWidgets('the section headings appear in enum order, and SAFETY is absent', (tester) async {
+    testWidgets('the section headings appear in enum order, and SAFETY is absent', (
+      tester,
+    ) async {
       await pumpHome(tester, profileContainer());
       await openSidebar(tester);
 
@@ -231,7 +256,9 @@ void main() {
       expect(find.text('SAFETY'), findsNothing);
     });
 
-    testWidgets('every destination is findable by its sidebar key', (tester) async {
+    testWidgets('every destination is findable by its sidebar key', (
+      tester,
+    ) async {
       await pumpHome(tester, profileContainer());
       await openSidebar(tester);
 
@@ -240,7 +267,9 @@ void main() {
       }
     });
 
-    testWidgets('the overridden label renders and the others stay canonical', (tester) async {
+    testWidgets('the overridden label renders and the others stay canonical', (
+      tester,
+    ) async {
       await pumpHome(tester, profileContainer());
       await openSidebar(tester);
 
@@ -254,7 +283,9 @@ void main() {
       expect(find.text('Ride history'), findsNothing);
     });
 
-    testWidgets('no /vehicle row while the vehicle backend is a stub', (tester) async {
+    testWidgets('no /vehicle row while the vehicle backend is a stub', (
+      tester,
+    ) async {
       await pumpHome(tester, profileContainer());
       await openSidebar(tester);
 
@@ -285,23 +316,30 @@ void main() {
       expect(inHeader(find.text('online')), findsOneWidget);
       expect(inHeader(find.byKey(const Key('status-dot'))), findsOneWidget);
 
-      final dot = tester.widget<Container>(inHeader(find.byKey(const Key('status-dot'))));
+      final dot = tester.widget<Container>(
+        inHeader(find.byKey(const Key('status-dot'))),
+      );
       expect((dot.decoration! as BoxDecoration).color, Colors.green);
     });
 
-    testWidgets("the old 'Status: …' email-slot string is gone from the header", (tester) async {
-      await pumpHome(tester, profileContainer());
-      await openSidebar(tester);
+    testWidgets(
+      "the old 'Status: …' email-slot string is gone from the header",
+      (tester) async {
+        await pumpHome(tester, profileContainer());
+        await openSidebar(tester);
 
-      // The home screen's dev tile still prints 'Status: online', so this is
-      // scoped: what must disappear is the header's abuse of the email slot.
-      expect(inHeader(find.text('Status: online')), findsNothing);
-      expect(inHeader(find.text('Status: unknown')), findsNothing);
-      // And no email line was substituted for it.
-      expect(inHeader(find.textContaining('@')), findsNothing);
-    });
+        // The home screen's dev tile still prints 'Status: online', so this is
+        // scoped: what must disappear is the header's abuse of the email slot.
+        expect(inHeader(find.text('Status: online')), findsNothing);
+        expect(inHeader(find.text('Status: unknown')), findsNothing);
+        // And no email line was substituted for it.
+        expect(inHeader(find.textContaining('@')), findsNothing);
+      },
+    );
 
-    testWidgets('honours photoUrl by falling back to initials when it is blank', (tester) async {
+    testWidgets('honours photoUrl by falling back to initials when it is blank', (
+      tester,
+    ) async {
       await pumpHome(tester, profileContainer());
       await openSidebar(tester);
 
@@ -309,7 +347,10 @@ void main() {
       // driver with no photo. `NetworkImage('')` would paint a red error box.
       expect(inHeader(find.text('AL')), findsOneWidget);
       final avatar = tester.widget<CircleAvatar>(
-        find.descendant(of: find.byType(AppSidebarHeader), matching: find.byType(CircleAvatar)),
+        find.descendant(
+          of: find.byType(AppSidebarHeader),
+          matching: find.byType(CircleAvatar),
+        ),
       );
       expect(avatar.backgroundImage, isNull);
     });
@@ -321,14 +362,18 @@ void main() {
       expect(inHeader(find.text('★ 4.9')), findsOneWidget);
     });
 
-    testWidgets("a nameless driver shows 'Driver' and a 'D' avatar", (tester) async {
+    testWidgets("a nameless driver shows 'Driver' and a 'D' avatar", (
+      tester,
+    ) async {
       // Known bug #3: onboarding never `PUT`s /driver/me, so a fresh driver's
       // fullName really is empty. The `'Driver'` fallback is app-side and the
       // shared rule derives the initial from it.
       final container = ProviderContainer(
         overrides: [
           ...baseOverrides(),
-          driverProfileProvider.overrideWith((ref) => const DriverProfile(userId: 'd2')),
+          driverProfileProvider.overrideWith(
+            (ref) => const DriverProfile(userId: 'd2'),
+          ),
         ],
       );
       addTearDown(container.dispose);
@@ -358,23 +403,28 @@ void main() {
       }
     });
 
-    testWidgets('tapping the header navigates to /profile — the behaviour the driver never had', (tester) async {
-      await pumpHome(tester, profileContainer());
-      await openSidebar(tester);
+    testWidgets(
+      'tapping the header navigates to /profile — the behaviour the driver never had',
+      (tester) async {
+        await pumpHome(tester, profileContainer());
+        await openSidebar(tester);
 
-      // The old header had no details affordance and no wrapping tap target, so
-      // tapping it did nothing at all.
-      await tester.tap(inHeader(find.text('Ada Lovelace')));
-      await tester.pumpAndSettle();
+        // The old header had no details affordance and no wrapping tap target, so
+        // tapping it did nothing at all.
+        await tester.tap(inHeader(find.text('Ada Lovelace')));
+        await tester.pumpAndSettle();
 
-      expect(find.text('Profile Page'), findsOneWidget);
-      // …and it lands there with the drawer closed: pop-then-push is what makes
-      // the "same widget as the rider" claim true at both call sites.
-      expect(find.byType(AppSidebar), findsNothing);
-      expect(find.byKey(const Key('sidebar-item-profile')), findsNothing);
-    });
+        expect(find.text('Profile Page'), findsOneWidget);
+        // …and it lands there with the drawer closed: close-then-go is what
+        // makes the "same widget as the rider" claim true at both call sites.
+        expect(find.byType(AppSidebar), findsNothing);
+        expect(find.byKey(const Key('sidebar-item-profile')), findsNothing);
+      },
+    );
 
-    testWidgets('a destination row also closes the drawer before pushing', (tester) async {
+    testWidgets('a destination row also closes the drawer before pushing', (
+      tester,
+    ) async {
       await pumpHome(tester, profileContainer());
       await openSidebar(tester);
 
@@ -387,32 +437,37 @@ void main() {
   });
 
   group('driver sidebar sign-out', () {
-    testWidgets('confirming clears the session, the profile cache, and returns to /login', (tester) async {
-      final container = signOutContainer();
-      // Asserted pre-condition: without a seeded profile this test cannot fail.
-      expect(container.read(driverProfileProvider), isNotNull);
+    testWidgets(
+      'confirming clears the session, the profile cache, and returns to /login',
+      (tester) async {
+        final container = signOutContainer();
+        // Asserted pre-condition: without a seeded profile this test cannot fail.
+        expect(container.read(driverProfileProvider), isNotNull);
 
-      await pumpHome(tester, container);
-      await openSidebar(tester);
+        await pumpHome(tester, container);
+        await openSidebar(tester);
 
-      await tester.tap(find.byKey(const Key('sidebar-sign-out')));
-      await tester.pumpAndSettle();
-      expect(find.text('Sign out?'), findsOneWidget);
-      expect(
-        find.text('You will need to log in again to accept ride requests.'),
-        findsOneWidget,
-      );
+        await tester.tap(find.byKey(const Key('sidebar-sign-out')));
+        await tester.pumpAndSettle();
+        expect(find.text('Sign out?'), findsOneWidget);
+        expect(
+          find.text('You will need to log in again to accept ride requests.'),
+          findsOneWidget,
+        );
 
-      await tester.tap(find.widgetWithText(FilledButton, 'Sign out'));
-      await tester.pumpAndSettle();
+        await tester.tap(find.widgetWithText(FilledButton, 'Sign out'));
+        await tester.pumpAndSettle();
 
-      expect(find.text('Log In'), findsOneWidget);
-      expect(container.read(driverProfileProvider), isNull);
-      verify(() => mockWebSocketService.disconnect()).called(1);
-      verify(() => mockStorage.clearTokens()).called(1);
-    });
+        expect(find.text('Log In'), findsOneWidget);
+        expect(container.read(driverProfileProvider), isNull);
+        verify(() => mockWebSocketService.disconnect()).called(1);
+        verify(() => mockStorage.clearTokens()).called(1);
+      },
+    );
 
-    testWidgets('cancelling keeps the session and stays on /home', (tester) async {
+    testWidgets('cancelling keeps the session and stays on /home', (
+      tester,
+    ) async {
       final container = signOutContainer();
       await pumpHome(tester, container);
       await openSidebar(tester);

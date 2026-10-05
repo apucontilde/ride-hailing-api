@@ -16,6 +16,7 @@ import (
 	"ride-hailing-api/internal/middleware"
 	"ride-hailing-api/internal/repository"
 	"ride-hailing-api/internal/service"
+	"ride-hailing-api/internal/service/push"
 	"ride-hailing-api/internal/websocket"
 )
 
@@ -23,6 +24,34 @@ import (
 type swaggerDoc string
 
 func (d swaggerDoc) ReadDoc() string { return string(d) }
+
+// wiring carries the store/provider overrides a db-less harness injects.
+type wiring struct {
+	deviceTokens repository.DeviceTokenRepository
+	feedback     repository.FeedbackRepository
+	pushProvider push.Provider
+}
+
+// Option customises SetupWithRepos for the harnesses that boot the real router
+// against in-memory storage (tests/testutil, cmd/e2eserver) without changing
+// the production call shape. Production passes none and the stores are built
+// from the database pool.
+type Option func(*wiring)
+
+// WithDeviceTokenRepository injects the device-token store.
+func WithDeviceTokenRepository(r repository.DeviceTokenRepository) Option {
+	return func(w *wiring) { w.deviceTokens = r }
+}
+
+// WithFeedbackRepository injects the feedback store.
+func WithFeedbackRepository(r repository.FeedbackRepository) Option {
+	return func(w *wiring) { w.feedback = r }
+}
+
+// WithPushProvider injects the delivery provider (a recording mock under test).
+func WithPushProvider(p push.Provider) Option {
+	return func(w *wiring) { w.pushProvider = p }
+}
 
 func Setup(cfg *config.Config, db *sqlx.DB) *gin.Engine {
 	// Per-city datasource pools (api_plans/06), built alongside the local db.
@@ -44,7 +73,33 @@ func Setup(cfg *config.Config, db *sqlx.DB) *gin.Engine {
 	)
 }
 
-func SetupWithRepos(cfg *config.Config, userRepo repository.UserRepository, rideRepo repository.RideRepository, geoRepo repository.GeoRepository, navRepo repository.NavigationRepository, placesRepo repository.PlacesRepository, db *sqlx.DB) *gin.Engine {
+func SetupWithRepos(cfg *config.Config, userRepo repository.UserRepository, rideRepo repository.RideRepository, geoRepo repository.GeoRepository, navRepo repository.NavigationRepository, placesRepo repository.PlacesRepository, db *sqlx.DB, opts ...Option) *gin.Engine {
+	var configured wiring
+	for _, opt := range opts {
+		opt(&configured)
+	}
+
+	// DB-backed stores are built from the pool in production. The db-less
+	// harnesses (tests/testutil, cmd/e2eserver) inject their own through
+	// Options; cmd/openapi and router_test pass neither and never invoke these
+	// handlers, so a nil store there is inert.
+	deviceRepo := configured.deviceTokens
+	if deviceRepo == nil && db != nil {
+		deviceRepo = repository.NewDeviceTokenRepo(db)
+	}
+	feedbackRepo := configured.feedback
+	if feedbackRepo == nil && db != nil {
+		feedbackRepo = repository.NewFeedbackRepo(db)
+	}
+
+	// Push is ancillary: with no credentials configured this is the
+	// log-and-continue no-op, so delivery can never fail a ride transition.
+	pushProvider := configured.pushProvider
+	if pushProvider == nil {
+		pushProvider = push.NewLogProvider()
+	}
+	pushService := push.NewService(deviceRepo, pushProvider)
+
 	r := gin.Default()
 
 	// Allow all origins for dev and explicitly permit the Authorization header,
@@ -73,6 +128,9 @@ func SetupWithRepos(cfg *config.Config, userRepo repository.UserRepository, ride
 	authService := service.NewAuthService(cfg, userRepo)
 	riderService := service.NewRiderService(userRepo)
 	rideService := service.NewRideService(rideRepo, userRepo, wsHub, fareService)
+	// Backgrounded push for ride status transitions; the WS path stays
+	// authoritative for a connected client (see RideService.notifyOffline).
+	rideService.SetPushNotifier(pushService)
 	dispatchService := service.NewDispatchService(rideRepo, geoRepo, userRepo, wsHub, navService)
 	wsHub.SetDispatchHandler(dispatchService)
 
@@ -83,7 +141,8 @@ func SetupWithRepos(cfg *config.Config, userRepo repository.UserRepository, ride
 	driverHandler := handler.NewDriverHandlerWithGeo(userRepo, geoRepo)
 	geoHandler := handler.NewGeoHandler(geoRepo, rideRepo, wsHub)
 	rideHandler := handler.NewRideHandler(rideService, dispatchService, rideRepo)
-	platformHandler := handler.NewPlatformHandler(navService, fareService, placesRepo, cfg.PlacesMaxRadiusM, cfg.PlacesDefaultLimit)
+	platformHandler := handler.NewPlatformHandler(navService, fareService, placesRepo,
+		deviceRepo, feedbackRepo, rideRepo, wsHub, pushService, cfg.PlacesMaxRadiusM, cfg.PlacesDefaultLimit)
 
 	// Middleware
 	authMw := middleware.AuthRequired(authService)
@@ -119,7 +178,7 @@ func SetupWithRepos(cfg *config.Config, userRepo repository.UserRepository, ride
 	rider.DELETE("/me", riderHandler.DeleteAccount)
 	rider.GET("/me/preferences", platformHandler.StubPayment)
 	rider.PUT("/me/preferences", platformHandler.StubPayment)
-	rider.GET("/ratings", platformHandler.StubPayment)
+	rider.GET("/ratings", rideHandler.GetRatings)
 	rider.GET("/favorites", platformHandler.StubPayment)
 	rider.POST("/favorites", platformHandler.StubPayment)
 	rider.DELETE("/favorites/:id", platformHandler.StubPayment)
@@ -141,7 +200,7 @@ func SetupWithRepos(cfg *config.Config, userRepo repository.UserRepository, ride
 	driver.GET("/me/vehicle", platformHandler.StubPayment)
 	driver.PUT("/me/vehicle", platformHandler.StubPayment)
 	driver.GET("/me/earnings", platformHandler.StubPayment)
-	driver.GET("/ratings", platformHandler.StubPayment)
+	driver.GET("/ratings", rideHandler.GetRatings)
 
 	// Driver rides
 	driverRides := r.Group("/api/v1/driver/rides")
@@ -178,7 +237,7 @@ func SetupWithRepos(cfg *config.Config, userRepo repository.UserRepository, ride
 	rides.POST("/:id/cancel", rideHandler.CancelRide)
 	rides.POST("/:id/rate", rideHandler.RateRide)
 	rides.POST("/:id/tip", rideHandler.TipDriver)
-	rides.PUT("/:id/destination", platformHandler.UpdateDestination)
+	rides.PUT("/:id/destination", middleware.RequireRole("rider"), rideHandler.UpdateDestination)
 
 	// Navigation
 	nav := r.Group("/api/v1/navigation")
@@ -211,6 +270,10 @@ func SetupWithRepos(cfg *config.Config, userRepo repository.UserRepository, ride
 	platform.POST("/feedback", platformHandler.Feedback)
 	platform.POST("/devices", platformHandler.DeviceRegister)
 	platform.DELETE("/devices/:token", platformHandler.DeviceUnregister)
+	// Alias for the same handlers, so the resource can be addressed by its
+	// real name (/device-tokens) without breaking the historical /devices path.
+	platform.POST("/device-tokens", platformHandler.DeviceRegister)
+	platform.DELETE("/device-tokens/:token", platformHandler.DeviceUnregister)
 
 	// Heatmap
 	r.GET("/api/v1/heatmap", authMw, platformHandler.Heatmap)

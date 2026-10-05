@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
@@ -23,11 +25,21 @@ class LocationSearchScreen extends ConsumerStatefulWidget {
 class _LocationSearchScreenState extends ConsumerState<LocationSearchScreen> {
   final _searchController = TextEditingController();
   String _query = '';
+  Timer? _debounceTimer;
 
   @override
   void dispose() {
+    _debounceTimer?.cancel();
     _searchController.dispose();
     super.dispose();
+  }
+
+  void _onQueryChanged(String value) {
+    _debounceTimer?.cancel();
+    _debounceTimer = Timer(ref.read(placeSearchDebounceProvider), () {
+      if (!mounted) return;
+      setState(() => _query = value);
+    });
   }
 
   @override
@@ -47,9 +59,7 @@ class _LocationSearchScreenState extends ConsumerState<LocationSearchScreen> {
             hintText: widget.hint,
             border: InputBorder.none,
           ),
-          onChanged: (value) {
-            setState(() => _query = value);
-          },
+          onChanged: _onQueryChanged,
         ),
       ),
       body: (lat == null || lng == null)

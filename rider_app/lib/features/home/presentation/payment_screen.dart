@@ -6,13 +6,11 @@ class PaymentScreen extends ConsumerWidget {
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
-    return Scaffold(
-      appBar: AppBar(title: const Text('Payment')),
-      body: const Center(
-        child: Text(
-          'Payment methods coming soon',
-          style: TextStyle(color: Colors.grey),
-        ),
+    // Body-only: `RiderShell` owns the `Scaffold` + `AppBar` + drawer.
+    return const Center(
+      child: Text(
+        'Payment methods coming soon',
+        style: TextStyle(color: Colors.grey),
       ),
     );
   }

@@ -1,6 +1,17 @@
 {
   "basePath": "/",
   "definitions": {
+    "handler.DeviceResponse": {
+      "properties": {
+        "device": {
+          "$ref": "#/definitions/model.DeviceToken"
+        },
+        "message": {
+          "type": "string"
+        }
+      },
+      "type": "object"
+    },
     "handler.DriverLocationResponse": {
       "properties": {
         "driver_id": {
@@ -124,6 +135,17 @@
       },
       "type": "object"
     },
+    "handler.FeedbackResponse": {
+      "properties": {
+        "feedback": {
+          "$ref": "#/definitions/model.Feedback"
+        },
+        "message": {
+          "type": "string"
+        }
+      },
+      "type": "object"
+    },
     "handler.GeocodeResponse": {
       "properties": {
         "place": {}
@@ -232,6 +254,52 @@
       },
       "type": "object"
     },
+    "handler.RatingItem": {
+      "properties": {
+        "comment": {
+          "type": "string"
+        },
+        "created_at": {
+          "type": "string"
+        },
+        "id": {
+          "type": "string"
+        },
+        "rater_role": {
+          "type": "string"
+        },
+        "ride_id": {
+          "type": "string"
+        },
+        "score": {
+          "type": "integer"
+        }
+      },
+      "type": "object"
+    },
+    "handler.RatingListResponse": {
+      "properties": {
+        "page": {
+          "type": "integer"
+        },
+        "per_page": {
+          "type": "integer"
+        },
+        "ratings": {
+          "items": {
+            "$ref": "#/definitions/handler.RatingItem"
+          },
+          "type": "array"
+        },
+        "total": {
+          "type": "integer"
+        },
+        "total_pages": {
+          "type": "integer"
+        }
+      },
+      "type": "object"
+    },
     "handler.ReadinessResponse": {
       "properties": {
         "checks": {
@@ -263,6 +331,16 @@
           "type": "integer"
         },
         "rides": {},
+        "stops": {
+          "additionalProperties": {
+            "items": {
+              "$ref": "#/definitions/model.RideStop"
+            },
+            "type": "array"
+          },
+          "description": "Stops is the itinerary of every ride on the page, keyed by ride id and\nfetched in ONE query. It is a sibling of `rides`, so `rides` stays the flat\narray an older client already parses. A ride with no itinerary maps to an\nempty array, never a missing key.",
+          "type": "object"
+        },
         "total": {
           "type": "integer"
         },
@@ -301,6 +379,20 @@
       "properties": {
         "ride": {
           "$ref": "#/definitions/model.Ride"
+        }
+      },
+      "type": "object"
+    },
+    "handler.RideWithStopsResponse": {
+      "properties": {
+        "ride": {
+          "$ref": "#/definitions/model.Ride"
+        },
+        "stops": {
+          "items": {
+            "$ref": "#/definitions/model.RideStop"
+          },
+          "type": "array"
         }
       },
       "type": "object"
@@ -402,9 +494,33 @@
       },
       "type": "object"
     },
+    "handler.changeDestinationRequest": {
+      "properties": {
+        "address": {
+          "description": "Address is optional; omitting it clears the stored address rather than\nkeeping a stale one, because the coordinates no longer match it.",
+          "type": "string"
+        },
+        "lat": {
+          "type": "number"
+        },
+        "lng": {
+          "type": "number"
+        }
+      },
+      "required": [
+        "lat",
+        "lng"
+      ],
+      "type": "object"
+    },
     "handler.deviceRegisterRequest": {
       "properties": {
         "platform": {
+          "enum": [
+            "ios",
+            "android",
+            "web"
+          ],
           "type": "string"
         },
         "token": {
@@ -423,6 +539,9 @@
           "type": "string"
         },
         "ride_id": {
+          "type": "string"
+        },
+        "type": {
           "type": "string"
         }
       },
@@ -570,6 +689,13 @@
         "pickup_lng": {
           "type": "number"
         },
+        "stops": {
+          "description": "Stops is the ordered list of INTERMEDIATE waypoints, pickup excluded.\nOptional, so a body without it is byte-identical to the pre-016 request.\nOrder in the array IS the visit order; no sequence is accepted. The final\ndestination is never sent here — it is dropoff_lat/dropoff_lng/\ndropoff_address. See service.BuildItinerary for the rules.",
+          "items": {
+            "$ref": "#/definitions/handler.stopRequest"
+          },
+          "type": "array"
+        },
         "vehicle_type": {
           "type": "string"
         }
@@ -610,6 +736,25 @@
         "lat",
         "lng"
       ],
+      "type": "object"
+    },
+    "handler.stopRequest": {
+      "properties": {
+        "address": {
+          "type": "string"
+        },
+        "kind": {
+          "description": "Kind is optional and, when present, must be \"stop\". A \"destination\" stop\nis rejected: the final destination is defined solely by the top-level\ndropoff_lat/dropoff_lng/dropoff_address, so no client stop may claim it.",
+          "type": "string"
+        },
+        "lat": {
+          "description": "Lat and Lng are REQUIRED on every stop: an absent coordinate is a 422, and\n0 is a legitimate value, so presence cannot be inferred from the number.",
+          "type": "number"
+        },
+        "lng": {
+          "type": "number"
+        }
+      },
       "type": "object"
     },
     "handler.updateDriverRequest": {
@@ -676,6 +821,32 @@
       ],
       "type": "object"
     },
+    "model.DeviceToken": {
+      "properties": {
+        "created_at": {
+          "type": "string"
+        },
+        "id": {
+          "type": "string"
+        },
+        "is_active": {
+          "type": "boolean"
+        },
+        "platform": {
+          "type": "string"
+        },
+        "token": {
+          "type": "string"
+        },
+        "updated_at": {
+          "type": "string"
+        },
+        "user_id": {
+          "type": "string"
+        }
+      },
+      "type": "object"
+    },
     "model.Driver": {
       "properties": {
         "created_at": {
@@ -700,6 +871,30 @@
           "type": "string"
         },
         "updated_at": {
+          "type": "string"
+        },
+        "user_id": {
+          "type": "string"
+        }
+      },
+      "type": "object"
+    },
+    "model.Feedback": {
+      "properties": {
+        "created_at": {
+          "type": "string"
+        },
+        "id": {
+          "type": "string"
+        },
+        "message": {
+          "type": "string"
+        },
+        "ride_id": {
+          "type": "string"
+        },
+        "type": {
+          "description": "Type is the client-supplied classification (e.g. \"app_issue\"). Optional:\na body without it stores \"\" so pre-existing clients keep working.",
           "type": "string"
         },
         "user_id": {
@@ -783,6 +978,38 @@
           "type": "string"
         },
         "vehicle_type": {
+          "type": "string"
+        }
+      },
+      "type": "object"
+    },
+    "model.RideStop": {
+      "properties": {
+        "address": {
+          "type": "string"
+        },
+        "created_at": {
+          "type": "string"
+        },
+        "id": {
+          "type": "string"
+        },
+        "kind": {
+          "type": "string"
+        },
+        "lat": {
+          "type": "number"
+        },
+        "lng": {
+          "type": "number"
+        },
+        "ride_id": {
+          "type": "string"
+        },
+        "sequence": {
+          "type": "integer"
+        },
+        "updated_at": {
           "type": "string"
         }
       },
@@ -1253,11 +1480,99 @@
         ]
       }
     },
+    "/api/v1/device-tokens": {
+      "post": {
+        "consumes": [
+          "application/json"
+        ],
+        "description": "Upserts the authenticated user's device token. A token is\nglobally unique: registering a token that another user holds\nREASSIGNS it, so the previous user stops receiving pushes to\nit. Re-registering the same token does not duplicate.",
+        "operationId": "postDevice-tokens",
+        "parameters": [
+          {
+            "description": "Device registration request",
+            "in": "body",
+            "name": "body",
+            "required": true,
+            "schema": {
+              "$ref": "#/definitions/handler.deviceRegisterRequest"
+            }
+          }
+        ],
+        "produces": [
+          "application/json"
+        ],
+        "responses": {
+          "201": {
+            "description": "Created",
+            "schema": {
+              "$ref": "#/definitions/handler.DeviceResponse"
+            }
+          },
+          "422": {
+            "description": "Validation error",
+            "schema": {
+              "$ref": "#/definitions/handler.ErrorResponse"
+            }
+          },
+          "500": {
+            "description": "Device could not be stored",
+            "schema": {
+              "$ref": "#/definitions/handler.ErrorResponse"
+            }
+          }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          }
+        ],
+        "summary": "Register a push notification device",
+        "tags": [
+          "platform"
+        ]
+      }
+    },
+    "/api/v1/device-tokens/{token}": {
+      "delete": {
+        "description": "Deactivates the authenticated user's token. Idempotent: an\nunknown, already-inactive, or another user's token is a no-op.",
+        "operationId": "deleteDevice-tokens-ByID",
+        "parameters": [
+          {
+            "description": "Device token",
+            "in": "path",
+            "name": "token",
+            "required": true,
+            "type": "string"
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "No content"
+          },
+          "500": {
+            "description": "Device could not be updated",
+            "schema": {
+              "$ref": "#/definitions/handler.ErrorResponse"
+            }
+          }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          }
+        ],
+        "summary": "Unregister a push notification device",
+        "tags": [
+          "platform"
+        ]
+      }
+    },
     "/api/v1/devices": {
       "post": {
         "consumes": [
           "application/json"
         ],
+        "description": "Upserts the authenticated user's device token. A token is\nglobally unique: registering a token that another user holds\nREASSIGNS it, so the previous user stops receiving pushes to\nit. Re-registering the same token does not duplicate.",
         "operationId": "postDevices",
         "parameters": [
           {
@@ -1277,11 +1592,17 @@
           "201": {
             "description": "Created",
             "schema": {
-              "$ref": "#/definitions/handler.MessageResponse"
+              "$ref": "#/definitions/handler.DeviceResponse"
             }
           },
           "422": {
             "description": "Validation error",
+            "schema": {
+              "$ref": "#/definitions/handler.ErrorResponse"
+            }
+          },
+          "500": {
+            "description": "Device could not be stored",
             "schema": {
               "$ref": "#/definitions/handler.ErrorResponse"
             }
@@ -1300,6 +1621,7 @@
     },
     "/api/v1/devices/{token}": {
       "delete": {
+        "description": "Deactivates the authenticated user's token. Idempotent: an\nunknown, already-inactive, or another user's token is a no-op.",
         "operationId": "deleteDevices-ByID",
         "parameters": [
           {
@@ -1313,6 +1635,12 @@
         "responses": {
           "204": {
             "description": "No content"
+          },
+          "500": {
+            "description": "Device could not be updated",
+            "schema": {
+              "$ref": "#/definitions/handler.ErrorResponse"
+            }
           }
         },
         "security": [
@@ -1557,10 +1885,39 @@
     },
     "/api/v1/driver/ratings": {
       "get": {
+        "description": "Returns a paginated list of ratings the current rider or driver submitted.",
         "operationId": "getDriver-ratings",
+        "parameters": [
+          {
+            "default": 1,
+            "description": "Page number",
+            "in": "query",
+            "name": "page",
+            "type": "integer"
+          },
+          {
+            "default": 20,
+            "description": "Items per page (max 50)",
+            "in": "query",
+            "name": "per_page",
+            "type": "integer"
+          }
+        ],
+        "produces": [
+          "application/json"
+        ],
         "responses": {
           "200": {
-            "description": "OK"
+            "description": "OK",
+            "schema": {
+              "$ref": "#/definitions/handler.RatingListResponse"
+            }
+          },
+          "500": {
+            "description": "Query failed",
+            "schema": {
+              "$ref": "#/definitions/handler.ErrorResponse"
+            }
           }
         },
         "security": [
@@ -1568,9 +1925,9 @@
             "BearerAuth": []
           }
         ],
-        "summary": "GET /api/v1/driver/ratings",
+        "summary": "List submitted ratings",
         "tags": [
-          "driver"
+          "rides"
         ]
       }
     },
@@ -1781,6 +2138,7 @@
     },
     "/api/v1/driver/rides/{id}/notify-arrival": {
       "post": {
+        "description": "Sends the live `ride.updated` update to a connected rider, or\na backgrounded push when the rider is not connected.\nAncillary: it never changes the ride's stored status.",
         "operationId": "postDriver-rides-ByID-notify-arrival",
         "parameters": [
           {
@@ -1799,6 +2157,18 @@
             "description": "OK",
             "schema": {
               "$ref": "#/definitions/handler.MessageResponse"
+            }
+          },
+          "404": {
+            "description": "Ride not found for this driver",
+            "schema": {
+              "$ref": "#/definitions/handler.ErrorResponse"
+            }
+          },
+          "500": {
+            "description": "Notification could not be sent",
+            "schema": {
+              "$ref": "#/definitions/handler.ErrorResponse"
             }
           }
         },
@@ -2111,11 +2481,17 @@
           "201": {
             "description": "Created",
             "schema": {
-              "$ref": "#/definitions/handler.MessageResponse"
+              "$ref": "#/definitions/handler.FeedbackResponse"
             }
           },
           "422": {
             "description": "Validation error",
+            "schema": {
+              "$ref": "#/definitions/handler.ErrorResponse"
+            }
+          },
+          "500": {
+            "description": "Feedback could not be stored",
             "schema": {
               "$ref": "#/definitions/handler.ErrorResponse"
             }
@@ -3036,10 +3412,39 @@
     },
     "/api/v1/rider/ratings": {
       "get": {
+        "description": "Returns a paginated list of ratings the current rider or driver submitted.",
         "operationId": "getRider-ratings",
+        "parameters": [
+          {
+            "default": 1,
+            "description": "Page number",
+            "in": "query",
+            "name": "page",
+            "type": "integer"
+          },
+          {
+            "default": 20,
+            "description": "Items per page (max 50)",
+            "in": "query",
+            "name": "per_page",
+            "type": "integer"
+          }
+        ],
+        "produces": [
+          "application/json"
+        ],
         "responses": {
           "200": {
-            "description": "OK"
+            "description": "OK",
+            "schema": {
+              "$ref": "#/definitions/handler.RatingListResponse"
+            }
+          },
+          "500": {
+            "description": "Query failed",
+            "schema": {
+              "$ref": "#/definitions/handler.ErrorResponse"
+            }
           }
         },
         "security": [
@@ -3047,9 +3452,9 @@
             "BearerAuth": []
           }
         ],
-        "summary": "GET /api/v1/rider/ratings",
+        "summary": "List submitted ratings",
         "tags": [
-          "rider"
+          "rides"
         ]
       }
     },
@@ -3078,7 +3483,7 @@
           "201": {
             "description": "Created",
             "schema": {
-              "$ref": "#/definitions/handler.RideResponse"
+              "$ref": "#/definitions/handler.RideWithStopsResponse"
             }
           },
           "422": {
@@ -3107,7 +3512,7 @@
     },
     "/api/v1/rides/current": {
       "get": {
-        "description": "Returns the active ride for the current rider or driver, or `null`.",
+        "description": "Returns the active ride for the current rider or driver, or `null`.\nThe ordered `stops` itinerary is a sibling of `ride` and is\nalways present (`[]` when there is no current ride).",
         "operationId": "getRides-current",
         "produces": [
           "application/json"
@@ -3116,7 +3521,13 @@
           "200": {
             "description": "OK",
             "schema": {
-              "$ref": "#/definitions/handler.RideResponse"
+              "$ref": "#/definitions/handler.RideWithStopsResponse"
+            }
+          },
+          "500": {
+            "description": "Failed to load ride stops",
+            "schema": {
+              "$ref": "#/definitions/handler.ErrorResponse"
             }
           }
         },
@@ -3133,7 +3544,7 @@
     },
     "/api/v1/rides/history": {
       "get": {
-        "description": "Returns a paginated list of past rides for the current rider or driver.",
+        "description": "Returns a paginated list of past rides for the current rider or driver.\n`stops` is a sibling map of ride id to that ride's ordered\nitinerary, loaded in one query; `rides` is unchanged.",
         "operationId": "getRides-history",
         "parameters": [
           {
@@ -3198,7 +3609,7 @@
           "200": {
             "description": "OK",
             "schema": {
-              "$ref": "#/definitions/handler.RideResponse"
+              "$ref": "#/definitions/handler.RideWithStopsResponse"
             }
           },
           "404": {
@@ -3261,6 +3672,10 @@
     },
     "/api/v1/rides/{id}/destination": {
       "put": {
+        "consumes": [
+          "application/json"
+        ],
+        "description": "Changes the final destination of a ride that is still open\n(pending, accepted, driver_arrived or in_progress).\nOnly the ride's own rider may do this, and only the ride's own\nrider. The booking-time fare is unchanged and no status transition\noccurs: this is a data mutation. Re-request\n`GET /api/v1/navigation/route` for the new leg.",
         "operationId": "putRides-ByID-destination",
         "parameters": [
           {
@@ -3269,6 +3684,15 @@
             "name": "id",
             "required": true,
             "type": "string"
+          },
+          {
+            "description": "New destination",
+            "in": "body",
+            "name": "body",
+            "required": true,
+            "schema": {
+              "$ref": "#/definitions/handler.changeDestinationRequest"
+            }
           }
         ],
         "produces": [
@@ -3278,7 +3702,37 @@
           "200": {
             "description": "OK",
             "schema": {
-              "$ref": "#/definitions/handler.MessageResponse"
+              "$ref": "#/definitions/handler.RideWithStopsResponse"
+            }
+          },
+          "400": {
+            "description": "Malformed request body",
+            "schema": {
+              "$ref": "#/definitions/handler.ErrorResponse"
+            }
+          },
+          "404": {
+            "description": "Ride not found",
+            "schema": {
+              "$ref": "#/definitions/handler.ErrorResponse"
+            }
+          },
+          "409": {
+            "description": "Ride destination can no longer be changed",
+            "schema": {
+              "$ref": "#/definitions/handler.ErrorResponse"
+            }
+          },
+          "422": {
+            "description": "Validation error",
+            "schema": {
+              "$ref": "#/definitions/handler.ErrorResponse"
+            }
+          },
+          "500": {
+            "description": "Failed to update ride destination",
+            "schema": {
+              "$ref": "#/definitions/handler.ErrorResponse"
             }
           }
         },
@@ -3287,7 +3741,7 @@
             "BearerAuth": []
           }
         ],
-        "summary": "Update a ride's destination (stub)",
+        "summary": "Change a ride's destination",
         "tags": [
           "rides"
         ]

@@ -51,12 +51,12 @@ Two tiers are tracked side by side. A feature can be real at one tier and missin
 | US-5 Request the trip | [IMPLEMENTED] create + dispatch; idempotency partial | 🟢 create ride + idempotency-key reuse wired | — n/a |
 | US-6 Wait for a driver | [IMPLEMENTED] dispatch loop + `no_driver_available` push | 🟢 WS `ride.updated` + current-poll wired; contract realigned | — n/a |
 | US-7 Track the matched driver | [IMPLEMENTED] driver.location streaming + polling real; ETA real | 🟡 WS parses typed driver/location but never renders; card reads invented keys | — n/a |
-| US-8 Ride in progress | [IMPLEMENTED] A\* nav real; destination-update stub | 🟢 route polyline fetched + rendered (zoom-to-fit) | — n/a |
+| US-8 Ride in progress | [IMPLEMENTED] A\* nav real; destination-update real | 🟢 route polyline fetched + rendered (zoom-to-fit) | — n/a |
 | US-9 Trip complete & fare | [IMPLEMENTED] receipt real; completion fare is 1.1× | ⚪ receipt endpoint unused | — n/a |
 | US-10 Rate the driver | [IMPLEMENTED] rating persisted; read-back stub | ⚪ rate endpoint unused | — n/a |
 | US-11 Cancel a ride | [IMPLEMENTED] rider + driver cancel | 🟢 real `POST /rides/:id/cancel`; no 1 s mock | — n/a |
 | US-12 Send an SOS | [STUB] ack only | ⚪ sos endpoint unused | — n/a |
-| US-13 Profile & devices | [PARTIAL] rider profile real; devices stub | 🟡 GET /rider/me used for auth; profile screen hardcoded; PUT/devices ⚪ | — n/a |
+| US-13 Profile & devices | [PARTIAL] rider profile real; devices **persist** (server), app registration ⚪ | 🟡 GET /rider/me used for auth; profile screen hardcoded; device registration not wired in-app | — n/a |
 | US-14 Ride history | [IMPLEMENTED] paginated DB query | ❌ fake "No rides yet" screen; ridesHistory unused | — n/a |
 | US-15 View the fare receipt | [IMPLEMENTED] receipt real; completion fare 1.1× | ⚪ receipt unused (plan 03) | — n/a |
 | US-16 No driver available | [IMPLEMENTED] `no_driver_available` pushed + poll reliable | 🟢 current-poll wired + surfaces "no drivers" | — n/a |
@@ -73,16 +73,16 @@ Two tiers are tracked side by side. A feature can be real at one tier and missin
 | US-D5 Receive a ride request | [IMPLEMENTED] `ride.offer` real but carries `ride_id` only | — n/a | 🟢 `ride.offer` → offer sheet (WS `RideStateNotifier` + `GET /driver/rides/:id` detail); single-offer policy (plan 03) |
 | US-D6 Accept the ride | [PARTIAL] WS accept/decline real; HTTP decline **stub** | — n/a | 🟢 accept via WS `ride.accept` when connected, HTTP `POST /driver/rides/:id/accept` fallback (409 → "trip no longer available"); decline via WS `ride.decline` (plan 03) |
 | US-D7 Navigate to the pickup | [IMPLEMENTED] A\* routing | — n/a | 🟢 `GET /navigation/route` is called on trip-screen mount and refetched past a 200 m driver move, drawing the road polyline (+ driver/pickup/dropoff markers, dashed fallback). No turn-by-turn guidance |
-| US-D8 Arrived at pickup | [PARTIAL] status transition real; notify-arrival **stub** | — n/a | 🟡 "Arrived at pickup" → `PUT /driver/rides/:id/status` `driver_arrived` on its own stage (the old merged stage made the server 400); notify-arrival ⚪ (backend stub) |
+| US-D8 Arrived at pickup | [IMPLEMENTED] status transition + real notify-arrival (WS or push) | — n/a | 🟡 "Arrived at pickup" → `PUT /driver/rides/:id/status` `driver_arrived` on its own stage; `POST /notify-arrival` is real server-side (live WS to a connected rider, backgrounded push otherwise); the app skips it because the status transition already notifies |
 | US-D9 Start and complete the trip | [IMPLEMENTED] state machine enforced | — n/a | 🟢 one stage per server status driven by a single primary button, `ride.updated` merged patch-style, cancel confirm → `POST /driver/rides/:id/cancel`, `GET /driver/rides/current` launch restore, terminal fare card + `clearRide()` |
 | US-D10 Rate the rider | [IMPLEMENTED] rating persisted | — n/a | 🟢 `RateSheet` (1–5 stars + optional comment) from the post-trip receipt and per completed trip in the history list → `POST /driver/rides/:id/rate`; in-session "already rated" guard, no double submit (plan 05) |
 | US-D11 View history & earnings | [PARTIAL] history + current real; earnings/withdraw **stub** | — n/a | 🟢 real `RidesHistoryScreen` (paged `GET /driver/rides/history`, pull-to-refresh, infinite scroll) with a **client-side** earnings header bucketed by completion month; withdraw stays hidden because the endpoint is a stub (plan 05) |
 
 ### Endpoint counts (whole API, from `internal/router/router.go`)
 
-- **79 HTTP routes** registered (incl. the `/docs` redirect + `/docs/*any`); WS at `/ws`. One emblem of the state: the single `StubPayment` handler (`handler/platform.go:497`) backs **18** of them.
-- Per-route status: **42 [IMPLEMENTED]** · **3 [PARTIAL]** (`auth/verify-email`, `auth/verify-phone`, `estimates/price`) · **32 [STUB]** — the 2 `/docs` routes just serve the spec. `places/geocode` went real since v2 (reverse geocode); `estimates/price` picked up a [PARTIAL] flag because its `distance_rate`/`time_rate` response fields echo the fare totals instead of the rate card.
-- **7 [PARTIAL] stories** (US-3, US-4, US-13, US-D3, US-D6, US-D8, US-D11): real endpoints with a stubbed sub-resource or a misreported field. **1 [STUB] story:** US-12 (SOS ack only). **20 [IMPLEMENTED].**
+- **81 HTTP routes** registered (incl. the `/docs` redirect + `/docs/*any`); WS at `/ws`. The push wave added the `/api/v1/device-tokens` alias pair for `POST`/`DELETE`. One emblem of the state: the single `StubPayment` handler still backs many of them.
+- Per-route status (push wave applied): **48 [IMPLEMENTED]** · **3 [PARTIAL]** (`auth/verify-email`, `auth/verify-phone`, `estimates/price`) · **28 [STUB]** — the 2 `/docs` routes just serve the spec. The push wave flipped `feedback`, `devices` POST/DELETE and `notify-arrival` from [STUB] to [IMPLEMENTED] and added the 2 aliases. `places/geocode` went real since v2 (reverse geocode); `estimates/price` picked up a [PARTIAL] flag because its `distance_rate`/`time_rate` response fields echo the fare totals instead of the rate card. (Rows outside the push scope were not re-audited on this pass.)
+- **6 [PARTIAL] stories** (US-3, US-4, US-13, US-D3, US-D6, US-D11): real endpoints with a stubbed sub-resource or a misreported field. **1 [STUB] story:** US-12 (SOS ack only). **21 [IMPLEMENTED]** (US-D8 moved to implemented with the real `notify-arrival`).
 - **App tier:** the rider app now wires **13** endpoint targets (see Appendix) — auth (incl. auto-refresh), price, autocomplete, create/cancel rides, current-ride poll, and the server route polyline; the rest are declared-but-unused or fake screens. The driver app now wires **21 of the 31 declared** endpoints (20 HTTP + `/ws`) — auth (incl. auto-refresh), onboarding, profile read + `PUT /driver/me` edit, the online/location loop, the ride offer (WS + HTTP fallback accept, decline), the `driver_arrived → in_progress → completed` journey, driver cancel, the `GET /driver/rides/current` launch restore, the paged ride history, the post-trip rating, and the server route polyline. Nothing is code-referenced-but-unreachable any more. The vehicle/safety surface stays unused or feature-gated, and the earnings endpoints stay uncalled stubs. (⚠️ an earlier audit said "18 of 31" and was off by one — it omitted `GET /driver/rides/:id`, a function-style endpoint; the count before plan 05 was 19.)
 - Full per-route matrix (API + Rider app + Driver app) in the **Appendix**.
 
@@ -213,9 +213,9 @@ Two tiers are tracked side by side. A feature can be real at one tier and missin
   - `GET /api/v1/rides/:id` → full ride object (authoritative state)
 - **Notes:**
   - Route duration is approximated as `distance / 11` (≈ 40 km/h constant), not true travel-time routing (`service/navigation.go:42-43`).
-  - `PUT /api/v1/rides/:id/destination` (change destination / add a stop mid-trip) is **[STUB]** — returns `"destination updated"` but never touches the ride row.
+  - `PUT /api/v1/rides/:id/destination` (change destination / add a stop mid-trip) is **[IMPLEMENTED]** — rider-only and owner-only, allowed while the ride is `pending`/`accepted`/`driver_arrived`/`in_progress`; moves `rides.dropoff_*` and the itinerary's destination stop in one transaction. It does not transition status, does not reprice, and does not re-route (re-request `GET /navigation/route`). `POST /api/v1/rides` and `GET /api/v1/rides/:id` accept and return the ordered `stops` itinerary.
   - Before a road network is imported, `/navigation/route` returns 500 `"road network not imported"` and the app renders its straight-line fallback.
-- **Code state:** route `handler/platform.go:402` (+ strict coord validation `:520-539`), `repository/navigation_repo.go:56-79,116-143` (A\* graph), `internal/routing/routing.go:101-149`; destination stub `handler/platform.go:261-263`. App: `home_provider.dart:122-135`, polyline render + `_fitBounds` `home_screen.dart:31-39,110-137`. Covered by `tests/navigation_test.go`.
+- **Code state:** route `handler/platform.go:402` (+ strict coord validation `:520-539`), `repository/navigation_repo.go:56-79,116-143` (A\* graph), `internal/routing/routing.go:101-149`; multi-stop + destination change `handler/ride.go:103` (create w/ `stops`), `:172`/`:229` (`{ride, stops}`), `:285` (`UpdateDestination`), `service/ride.go:165` (`BuildItinerary`), `:408` (`ChangeDestination`), `repository/ride_repo.go:97` (`FindStopsByRideID`), `:165` (`ReplaceDestination`), migration `016_ride_stops`, route `router/router.go:240`. App: `home_provider.dart:122-135`, polyline render + `_fitBounds` `home_screen.dart:31-39,110-137`. Covered by `tests/navigation_test.go`.
 - **Acceptance:** the active trip renders the route polyline from `GET /navigation/route` and tracks `driver.location` while in progress (LC-4).
 
 ## US-9 Trip complete & fare **[IMPLEMENTED]**
@@ -241,7 +241,7 @@ Two tiers are tracked side by side. A feature can be real at one tier and missin
 - **Notes / gaps [PARTIAL]:**
   - Rating rows are **persisted** in the `ratings` table.
   - No check that the ride is `completed`, and no check that the rater is a party to the ride.
-  - The read-back endpoints `GET /api/v1/rider/ratings` / `GET /api/v1/driver/ratings` are **[STUB]**.
+  - The read-back endpoints `GET /api/v1/rider/ratings` / `GET /api/v1/driver/ratings` are **[IMPLEMENTED]** — rater-scoped, newest-first, 1-based paginated (`RideHandler.GetRatings`, `handler/ride.go:427`; routes `router/router.go:181,203`).
   - `drivers.rating_summary` is **never recalculated**, so aggregate ratings never reflect new ratings.
 - **Code state:** `handler/ride.go:258-293` → `service/ride.go:192-207` → `repository/ride_repo.go:177-183`.
 - **Acceptance:** rating posts `POST /rides/:id/rate` with a double-submit guard (LC-3).
@@ -273,7 +273,7 @@ Two tiers are tracked side by side. A feature can be real at one tier and missin
 - **Acceptance:** SOS posts with the last known position; the UI states "acknowledged only" (SAF-1, plan 07).
 
 ## US-13 Profile & devices **[PARTIAL]**
-- **App status:** Rider app 🟡 partial (GET /rider/me used for auth check; ProfileScreen is hardcoded "Rider"/"rider@example.com"; PUT /rider/me + devices ⚪) · Driver app — n/a
+- **App status:** Rider app 🟡 partial (GET /rider/me used for auth check; ProfileScreen is hardcoded "Rider"/"rider@example.com"; PUT /rider/me + device registration ⚪ in-app) · Driver app — n/a
 **As a** rider, **I want** to view/edit my profile and register my device, **so that** my details and push notifications are correct.
 
 - **Screens:** Profile / Settings
@@ -282,11 +282,11 @@ Two tiers are tracked side by side. A feature can be real at one tier and missin
   - `PUT /api/v1/rider/me` — body `{first_name, last_name, photo_url, phone?}` **[IMPLEMENTED]**
   - `PUT /api/v1/rider/me/status` — body `{status}` **[IMPLEMENTED]**
   - `DELETE /api/v1/rider/me` — soft-deletes the account **[IMPLEMENTED]**
-  - `POST /api/v1/devices` — body `{token, platform}` — **[STUB]**: validates the body and replies `"device registered"` but **never writes to `device_tokens`**
-  - `DELETE /api/v1/devices/:token` on app uninstall — **[STUB]**: returns 204, does nothing
-- **Notes:** The profile half is fully real. Push-specific work (persist device rows, and especially a **delivery pipeline**) is all missing — see Part C.
-- **Code state:** profiles `handler/rider.go:41-124`; device stubs `handler/platform.go:99-118`.
-- **Acceptance:** profile renders `GET /rider/me` and persists edits via `PUT /rider/me` (AC-2); devices stay ⚪ until the push pipeline is real.
+  - `POST /api/v1/devices` (alias `POST /api/v1/device-tokens`) — body `{token, platform}` — **[IMPLEMENTED]**: upserts `device_tokens`; `token` is globally unique, so a token that moves to another account is reassigned and stops delivering to the previous owner
+  - `DELETE /api/v1/devices/:token` (alias `/api/v1/device-tokens/:token`) on app uninstall — **[IMPLEMENTED]**: deactivates the caller's own token; idempotent
+- **Notes:** The profile half is fully real. The API-side push pipeline is landed (`api_plans/STATUS.md` → Landed `[push]`): device persistence, an injectable FCM/APNs/web provider seam whose credential-free default is a log-and-continue no-op, and backgrounded ride notifications. What remains is **app-side**: neither Flutter app calls `POST /devices` yet, so no token is registered in practice.
+- **Code state:** profiles `handler/rider.go`; devices `handler/platform.go` (`DeviceRegister`/`DeviceUnregister`), `repository/device_token_repo.go`, migration `018_push_pipeline.up.sql`; push `service/push/{provider,service}.go`.
+- **Acceptance:** profile renders `GET /rider/me` and persists edits via `PUT /rider/me` (AC-2); the device endpoints persist and reassign tokens; the apps still need to call them (follow-up).
 
 ## US-14 Ride history **[IMPLEMENTED]**
 - **App status:** Rider app ❌ stubbed (HistoryScreen shows a fake "No rides yet"; ridesHistory declared-but-unused) · Driver app — n/a
@@ -321,7 +321,7 @@ Two tiers are tracked side by side. A feature can be real at one tier and missin
 - **Acceptance:** when dispatch gives up, the matching UI shows "no drivers found" + a retry, driven by the `GET /rides/current` poll (LC-2) and the `no_driver_available` push.
 
 ## US-17 Re-book from history **[IMPLEMENTED]**
-- **App status:** Rider app ⚪ not implemented (ridesHistory unused; plan `rider_app_plans/[history]_ride_history.md`) · Driver app — n/a
+- **App status:** Rider app 🟡 history list landed (`[history]` — STATUS.md); one-tap re-book (LC-5) not implemented · Driver app — n/a
 **As a** rider, **I want** to repeat a past trip with one tap, **so that** I don't re-enter addresses.
 
 - **Screen:** History
@@ -344,7 +344,7 @@ Two tiers are tracked side by side. A feature can be real at one tier and missin
   - `POST /api/v1/driver/register` (auth) → `201 {driver:{status:"offline", onboarding_status:"documents_submitted"}}` promotes the user to `driver`
 - **Notes:** After promotion the account holds the `driver` role, so the driver app uses the driver endpoints. Document *upload/verification* endpoints are [STUB] (US-D3 / Part C).
 - **Code state:** `handler/driver.go:34-49`; driver-app `auth_provider.dart:169-188` (`registerAsDriver`). Covered by `tests/dispatch_test.go`.
-- **Acceptance:** onboarding performs `POST /driver/register` and the account then holds the `driver` role (M2); transmit the onboarding names (plan `driver_app_plans/[profile]_profile_settings_tests.md`).
+- **Acceptance:** onboarding performs `POST /driver/register` and the account then holds the `driver` role (M2); the collected names persist via `PUT /driver/me` — **landed**, `[profile]` in `driver_app_plans/STATUS.md`.
 
 ## US-D2 Log in **[IMPLEMENTED]**
 - **App status:** Rider app — n/a (same auth stack, see US-2) · Driver app 🟢 wired (bootstrap: login/register/logout + refresh wired incl. 401 single-flight auto-refresh; forgot/reset-password are real HTTP)
@@ -419,17 +419,17 @@ Two tiers are tracked side by side. A feature can be real at one tier and missin
 - **Code state:** `handler/platform.go:402`, `internal/routing/routing.go:101-149`.
 - **Acceptance:** the nav screen renders the polyline from `GET /navigation/route` (done, plan `driver_app_plans/STATUS.md` `[trip]`; turn-by-turn guidance remains open).
 
-## US-D8 Arrived at pickup **[PARTIAL]**
-- **App status:** Rider app — n/a · Driver app 🟡 partial (the trip screen's "Arrived at pickup" button sends `PUT /driver/rides/:id/status` with `driver_arrived` via `TripNotifier.advance`, and `TripStage.arrived` is now a distinct stage — merging it into `enrouteToPickup` made the first press send `in_progress` from `accepted`, which the server rejects with 400. The notify-arrival step stays ⚪ — the endpoint is a backend stub)
+## US-D8 Arrived at pickup **[IMPLEMENTED]**
+- **App status:** Rider app — n/a · Driver app 🟡 partial (the trip screen's "Arrived at pickup" button sends `PUT /driver/rides/:id/status` with `driver_arrived` via `TripNotifier.advance`, and `TripStage.arrived` is now a distinct stage — merging it into `enrouteToPickup` made the first press send `in_progress` from `accepted`, which the server rejects with 400. The app skips `POST /notify-arrival` because the status transition already notifies)
 **As a** driver, **I want** to mark that I arrived and notify the rider, **so that** the rider comes out.
 
 - **Screen:** Arrival
 - **API:**
   - `PUT /api/v1/driver/rides/:id/status` — body `{status:"driver_arrived"}` — **[IMPLEMENTED]**, state machine enforced, echoed as `ride.updated`
-  - `POST /api/v1/driver/rides/:id/notify-arrival` → `200 {message}` — **[STUB]**: no push is actually sent
-- **Notes:** A real "notify the rider" push depends on the missing push-delivery pipeline (Part C).
-- **Code state:** status advance `handler/ride.go:225-242` → `service/ride.go:133-190`; notify-arrival stub `handler/platform.go:352-364`.
-- **Acceptance:** arrival sets `driver_arrived` via `PUT /driver/rides/:id/status` (done, plan `driver_app_plans/STATUS.md` `[trip]`); notify-arrival shown as push-gated.
+  - `POST /api/v1/driver/rides/:id/notify-arrival` → `200 {message}` — **[IMPLEMENTED]**: sends a live `ride.updated` (`driver_arrived`) to a connected rider, or a backgrounded push when the rider is offline; ancillary (no status write); 404 for another driver's / an unknown ride
+- **Notes:** The endpoint no longer depends on a missing pipeline — the API-side push delivery pipeline landed (`api_plans/STATUS.md` → Landed `[push]`). The credential-free default provider logs and continues.
+- **Code state:** status advance `handler/ride.go` → `service/ride.go`; notify-arrival `handler/platform.go` (`ArrivalNotification`), push `service/push/`.
+- **Acceptance:** arrival sets `driver_arrived` via `PUT /driver/rides/:id/status` (done); `notify-arrival` is a real send when called, and a no-op failure path that never changes the ride.
 
 ## US-D9 Start and complete the trip **[IMPLEMENTED]**
 - **App status:** Rider app — n/a · Driver app 🟢 implemented (`RideStateNotifier` (plan 01) merges the WS `ride.updated` patch — the wire shape is `ride_id` + **nested** `pickup`/`dropoff`/`fare`, so parsing it as a flat `Ride` used to blank the id and coordinates — and `TripNotifier` derives one stage per server status (`pre → enrouteToPickup → arrived → driving → post`); `TripScreen`'s primary button advances `driver_arrived → in_progress → completed` via `PUT /driver/rides/:id/status`, the cancel button is a confirm dialog wired to `POST /driver/rides/:id/cancel`, the terminal screen shows the fare card and clears the ride, and a cold start restores the ride from `GET /driver/rides/current` because the WS has no replay — plan `driver_app_plans/STATUS.md` `[trip]` landed)
@@ -455,7 +455,7 @@ Two tiers are tracked side by side. A feature can be real at one tier and missin
 - **Notes:** Same rating persistence + gaps as US-10 (no `completed`/party check; read-back stub; summary never updated). ⚠️ The body field is **`score`**, not `rating` — `rateRideRequest.Score` is `json:"score" binding:"required"`, so a `rating` key binds to zero and the call 400s. `driver_app_plans/STATUS.md` `[history]` originally specified `rating` and was corrected against the handler.
 - **Code state:** `handler/ride.go:258-293`; `service/ride.go:192-206` only range-checks the score, so the app enforces the "only a completed ride" rule itself.
 - **Acceptance:** rating posts `POST /driver/rides/:id/rate` (M8, plan `driver_app_plans/STATUS.md` `[history]` — done).
-- **App notes:** 1–5 stars + an optional 280-char comment; submit stays disabled while in flight (no double submit) and a failure keeps the sheet open with an inline error, because the driver has no server-side way to notice a rating was dropped. "Already rated" is guarded by an **in-session** `Set<String>`: `GET /driver/ratings` is a `StubPayment` and the history rows carry no rated-by-driver flag, so there is nothing to read back and a relaunch forgets the set.
+- **App notes:** 1–5 stars + an optional 280-char comment; submit stays disabled while in flight (no double submit) and a failure keeps the sheet open with an inline error, because the driver has no server-side way to notice a rating was dropped. "Already rated" is seeded from the real paginated `GET /driver/ratings` read (`handler/ride.go:427`); the history rows carry no rated-by-driver flag, so the set comes from that endpoint rather than the ride rows.
 
 ## US-D11 View history & earnings **[PARTIAL]**
 - **App status:** Rider app — n/a · Driver app 🟢 wired for history + derived earnings (`RidesHistoryScreen` with the earnings header, infinite scroll and a rating action per completed trip; `GET /driver/rides/history`). The **earnings and withdraw endpoints remain `[STUB]`** and are deliberately not called — the app sums fares client-side instead. Done, plan `driver_app_plans/STATUS.md` `[history]`)
@@ -487,9 +487,9 @@ Everything here was re-verified against the working tree (HEAD `8a3a13f`, 2026-0
 | `GET /api/v1/places/details?id=` | [STUB] | ⚪ | — n/a | Address/place details for a search result (US-3) |
 | `GET /api/v1/estimates/price` + `GET /api/v1/estimates/eta` + `GET /api/v1/geo/eta` | price [IMPLEMENTED] (rate fields now real); eta/geo-eta [IMPLEMENTED] | 🟢 price wired (real totals); eta endpoints ⚪ unused | ⚪ | Render the live price/ETA responses anywhere they are surfaced (US-4, US-6); accept-payload ETA falls back to `300` only when driver location/routing is unavailable |
 | `GET /api/v1/driver/rides/:id/rider` | [STUB] | — n/a | ⚪ (planned: placeholder gated, M4) | Real rider name/rating/photo for the driver after accepting (US-D6); today returns hardcoded `{"name":"Rider","rating":5.0}` |
-| `PUT /api/v1/rides/:id/destination` | [STUB] | ⚪ | ⚪ | Change destination / add a stop mid-trip (US-8); returns ack but never mutates the ride |
+| `PUT /api/v1/rides/:id/destination` | [IMPLEMENTED] | ⚪ | ⚪ | Change destination / add a stop mid-trip (US-8); persists the new destination, status and fare unchanged |
 | `POST /api/v1/sos` | [STUB] | ⚪ declared-but-unused | ⚪ (`sos` declared-but-unused) | Persist to the existing `sos_alerts` table and dispatch to emergency contacts/support (US-12) |
-| `POST /api/v1/feedback` | [STUB] | ⚪ | ⚪ (`feedback` declared) | Persist to the existing `feedback` table so it can be triaged |
+| `POST /api/v1/feedback` | [IMPLEMENTED] | ⚪ | ⚪ (driver safety screen sends `{type, message}`) | Persisted to the `feedback` table, `type` included (migration 018); admin triage tooling still missing |
 
 ### Payment & post-trip money
 
@@ -508,7 +508,7 @@ Everything here was re-verified against the working tree (HEAD `8a3a13f`, 2026-0
 | `GET/POST /api/v1/driver/me/documents` | [STUB] | — n/a | ⚪ declared-but-unused (planned: feature-gated, M10) | Document upload + verification/approval workflow for onboarding |
 | `GET /api/v1/driver/me/earnings` | [STUB] | — n/a | ⚪ declared-but-unused (planned: derived client-side, M9) | Earnings dashboard |
 | `POST /api/v1/driver/earnings/withdraw` | [STUB] | — n/a | ⚪ declared-but-unused (planned: entry hidden, M9) | Payout requests |
-| `GET /api/v1/driver/ratings` and `GET /api/v1/rider/ratings` | [STUB] | ⚪ | ⚪ declared-but-unused | Rating breakdown screens (ratings *writes* persist; reads are stubbed and `rating_summary` is never recalculated) |
+| `GET /api/v1/driver/ratings` and `GET /api/v1/rider/ratings` | [IMPLEMENTED] | ⚪ | ⚪ | Rating reads are real: rater-scoped, newest-first, paginated (`handler/ride.go:427`); `rating_summary` is still never recalculated |
 
 ### Offers & dispatch UX
 
@@ -528,7 +528,7 @@ Everything here was re-verified against the working tree (HEAD `8a3a13f`, 2026-0
 | `POST /api/v1/auth/social` | [STUB] | ⚪ | ⚪ | Google/Apple OAuth sign-in (US-1/US-D1) |
 | `POST /api/v1/auth/verify-email` / `verify-phone` | [PARTIAL] | ⚪ | ⚪ | Actually validate the submitted code instead of ignoring it |
 | `GET /api/v1/geo/isochrone`, `GET /api/v1/heatmap` | [STUB] | — n/a | ⚪ | Demand analytics for drivers |
-| Push delivery pipeline | [MISSING] (device register/unregister are also [STUB]) | ⚪ devices not wired | ⚪ (offers only while `/ws` open) | Actually delivering `notify-arrival` and ride updates when the app is backgrounded |
+| Push delivery pipeline | [IMPLEMENTED] server-side (device register/unregister real) | ⚪ app does not call `POST /devices` yet | ⚪ (offers only while `/ws` open) | API delivers `notify-arrival` and ride status updates when the app is backgrounded; the apps' token registration is the remaining follow-up |
 
 ### Cross-cutting gaps
 
@@ -548,19 +548,19 @@ are not re-filed.
 
 | Item | Owner plan | Note |
 | --- | --- | --- |
-| Multi-stop / change destination (add stops) | `api_plans/[multi]_add_stops_change_destination.md` | `PUT /rides/:id/destination` is a stub (`handler/platform.go:386`); model/DB/DTO/state machine are single pickup→dropoff |
-| "Cancel session & new login" / switch account | head `rider_app_plans/[session]_switch_account.md` → `driver_app_plans/01_[session]_switch_and_cancel_session.md` | No such error exists today: `login()` silently overwrites (`shared/.../app_auth_controller.dart:126`); backend mints a new token without revoking the old (`service/auth.go:72`) |
-| Rider gets `no_driver_available` while a driver is online | head `api_plans/[dispatch]_reliability_and_no_driver_false_negative.md` → `driver_app_plans/01_[dispatch]_keepalive_and_offer_reliability.md` | 30 s position window + never-called `MarkStaleDriversOffline` + WS `isConnected` offer skip + no driver keep-alive `ping()` |
-| Autocomplete sends too many requests | `rider_app_plans/[search]_throttle_place_autocomplete.md` | no debounce (`location_search_screen.dart:50`) + up-to-4-request radius upscaling (`home_provider.dart:51,58`) |
-| Rider live route + ETA on-trip | `rider_app_plans/[ontrip]_live_route_and_eta.md` | `active_ride_screen.dart:135` draws a straight line, no road route, no ETA; typed `etaSeconds`/`driverLocation` already in state |
+| Multi-stop / change destination (add stops) | **landed** — `api_plans/STATUS.md` → Landed `[multi]` | API half landed: `ride_stops` (migration 016), ordered `stops` on create/read, and a real `PUT /rides/:id/destination` (`handler/ride.go:285`). App half still pending |
+| "Cancel session & new login" / switch account | **both sides landed** — `[session]` in `rider_app_plans/STATUS.md` and `driver_app_plans/STATUS.md` | Guarded `needsAccountSwitch`/`switchAccount` cancels the stored refresh token before re-login; `login()` no longer silently overwrites (`shared/lib/src/auth/app_auth_controller.dart:135-185`) |
+| Rider gets `no_driver_available` while a driver is online | **landed** — `[dispatch]` in `api_plans/STATUS.md` + `driver_app_plans/STATUS.md` | 30 s position window + never-called `MarkStaleDriversOffline` + WS `isConnected` offer skip + no driver keep-alive `ping()` |
+| Autocomplete sends too many requests | **landed** — `[search]` (STATUS.md) | 350 ms debounce + single 30 km-radius request (`home_provider.dart:51-54`, `location_search_screen.dart:37-43`); was no debounce (`location_search_screen.dart:50`) + up-to-4-request radius upscaling (`home_provider.dart:51,58`) |
+| Rider live route + ETA on-trip | `rider_app_plans/01_[ontrip]_live_route_and_eta.md` | `active_ride_screen.dart:135` draws a straight line, no road route, no ETA; typed `etaSeconds`/`driverLocation` already in state |
 | Fare "stubbed" on both apps | **landed** — `[fare]` (STATUS.md): 1.1× replaced with the real booked estimate; `distance_rate`/`time_rate` now carry real per-km/per-min rates |
-| Rider notified on driver arrival (backgrounded) | `api_plans/[push]_delivery_pipeline.md` | already pushed over open WS (`ride.go:193`); real gap is backgrounded push — device + notify-arrival are stubs |
+| Rider notified on driver arrival (backgrounded) | **landed** — `api_plans/STATUS.md` → Landed `[push]` | live `ride.updated` over an open WS; backgrounded push when offline — `notify-arrival` and ride status transitions push via `service/push/`; device register/unregister persist |
 
 **Already-implemented (do not re-open):** the driver's route-to-pickup → route-to-destination is
 landed (`driver_app/.../trip_screen.dart` `_targetFor`, real polyline), so review notes "on accept,
 render route to pickup" / "on start, render route to destination" are stale. The driver marker on the
 rider map is the tracked known-bug #1 + open `[tracking]` LC-4, not a new plan. `[auth]_forgot_password`,
-`[history]`, `[geo]`, `[safety]` remain unchanged.
+`[history]`, `[geo]`, `[safety]` and `[session]` have since landed (see STATUS.md).
 
 ---
 
@@ -596,7 +596,7 @@ Matrix of every story (Part A + Part B) against the three tiers. API — ✅ `[I
 | US-D5 Receive a ride request | ✅ | — | 🟢 WS offer → sheet + ride detail |
 | US-D6 Accept the ride | 🟡 | — | 🟢 accept (WS + HTTP fallback) / WS decline |
 | US-D7 Navigate to the pickup | ✅ | — | 🟢 road polyline + 200 m refetch + dashed fallback; no turn-by-turn |
-| US-D8 Arrived at pickup | 🟡 | — | 🟡 arrival button wired on its own stage; notify-arrival ⚪ (backend stub) |
+| US-D8 Arrived at pickup | ✅ | — | 🟡 arrival button wired on its own stage; `notify-arrival` real server-side (app skips it; status transition already notifies) |
 | US-D9 Start and complete the trip | ✅ | — | 🟢 full single-button journey, cancel, launch restore, 46 new tests |
 | US-D10 Rate the rider | ✅ | — | 🟢 1–5 stars + optional comment from the trip receipt or the history list; session-local "already rated" guard |
 | US-D11 View history & earnings | 🟡 | — | 🟢 paged history + client-side earnings by month; withdraw hidden (the endpoint is a stub) |
@@ -625,7 +625,7 @@ Legend — API tier: ✅ `[IMPLEMENTED]` · 🟡 `[PARTIAL]` · ❌ `[STUB]`. Ap
 | DELETE | `/api/v1/rider/me` | ✅ | ⚪ | — | Rider.DeleteAccount (soft) | `handler/rider.go:120` |
 | GET | `/api/v1/rider/me/preferences` | ❌ | ⚪ | — | StubPayment | `handler/platform.go:497` |
 | PUT | `/api/v1/rider/me/preferences` | ❌ | ⚪ | — | StubPayment | `handler/platform.go:497` |
-| GET | `/api/v1/rider/ratings` | ❌ | ⚪ | — | StubPayment | `handler/platform.go:497` |
+| GET | `/api/v1/rider/ratings` | ✅ | ⚪ | — | Ride.GetRatings (rater-scoped, paginated) | `handler/ride.go:427` |
 | GET | `/api/v1/rider/favorites` | ❌ | ⚪ | — | StubPayment | `handler/platform.go:497` |
 | POST | `/api/v1/rider/favorites` | ❌ | ⚪ | — | StubPayment | `handler/platform.go:497` |
 | DELETE | `/api/v1/rider/favorites/:id` | ❌ | ⚪ | — | StubPayment | `handler/platform.go:497` |
@@ -641,7 +641,7 @@ Legend — API tier: ✅ `[IMPLEMENTED]` · 🟡 `[PARTIAL]` · ❌ `[STUB]`. Ap
 | GET | `/api/v1/driver/me/vehicle` | ❌ | — | ⚪ feature-gated off (`vehicleFeatureEnabled=false`) | StubPayment | `handler/platform.go:497` |
 | PUT | `/api/v1/driver/me/vehicle` | ❌ | — | ⚪ declared-but-unused | StubPayment | `handler/platform.go:497` |
 | GET | `/api/v1/driver/me/earnings` | ❌ | — | ⚪ declared-but-unused | StubPayment | `handler/platform.go:497` |
-| GET | `/api/v1/driver/ratings` | ❌ | — | ⚪ declared-but-unused | StubPayment | `handler/platform.go:497` |
+| GET | `/api/v1/driver/ratings` | ✅ | — | ⚪ | Ride.GetRatings (rater-scoped, paginated) | `handler/ride.go:427` |
 | GET | `/api/v1/driver/rides/current` | ✅ | — | ⚪ declared-but-unused | Ride.GetCurrentRide | `handler/ride.go:100` |
 | GET | `/api/v1/driver/rides/history` | ✅ | — | 🟢 paged `page`/`per_page` list + client-side earnings by month | Ride.GetRideHistory | `handler/ride.go:151` |
 | GET | `/api/v1/driver/rides/queue` | ❌ | — | ⚪ declared-but-unused | Platform.DriverRideQueue | `handler/platform.go:447` |
@@ -652,7 +652,7 @@ Legend — API tier: ✅ `[IMPLEMENTED]` · 🟡 `[PARTIAL]` · ❌ `[STUB]`. Ap
 | PUT | `/api/v1/driver/rides/:id/status` | ✅ | — | 🟢 trip journey (plan 04) | Ride.AdvanceStatus | `handler/ride.go:225` |
 | POST | `/api/v1/driver/rides/:id/cancel` | ✅ | — | ⚪ `TripNotifier.cancelTrip` exists; Cancel button is a no-op stub | Ride.CancelRide | `handler/ride.go:200` |
 | POST | `/api/v1/driver/rides/:id/rate` | ✅ | — | 🟢 `RateSheet` from the trip receipt / history list (`{score, comment}`) | Ride.RateRide | `handler/ride.go:258` |
-| POST | `/api/v1/driver/rides/:id/notify-arrival` | ❌ | — | ⚪ declared-but-unused | Platform.ArrivalNotification | `handler/platform.go:473` |
+| POST | `/api/v1/driver/rides/:id/notify-arrival` | ✅ | — | ⚪ app skips it (status transition already notifies) | Platform.ArrivalNotification (WS or backgrounded push; 404 for another driver's ride) | `handler/platform.go` |
 | PUT | `/api/v1/geo/driver/location` | ✅ | — | 🟢 throttled push while online (plan 02) | Geo.UpdateDriverLocation | `handler/geo.go:42` |
 | PUT | `/api/v1/geo/driver/location/batch` | ✅ | — | 🟢 buffered flush (plan 02) | Geo.UpdateDriverLocationBatch | `handler/geo.go:88` |
 | PUT | `/api/v1/geo/rider/location` | ✅ | ⚪ never declared | — | Geo.UpdateRiderLocation | `handler/geo.go:117` |
@@ -667,7 +667,7 @@ Legend — API tier: ✅ `[IMPLEMENTED]` · 🟡 `[PARTIAL]` · ❌ `[STUB]`. Ap
 | POST | `/api/v1/rides/:id/cancel` | ✅ | 🟢 real call on 2 screens | ⚪ | Ride.CancelRide (`cancelled_by`) | `handler/ride.go:200` |
 | POST | `/api/v1/rides/:id/rate` | ✅ | ⚪ declared-but-unused | — | Ride.RateRide | `handler/ride.go:258` |
 | POST | `/api/v1/rides/:id/tip` | ❌ | ⚪ declared-but-unused | — | Ride.TipDriver | `handler/ride.go:357` |
-| PUT | `/api/v1/rides/:id/destination` | ❌ | ⚪ | ⚪ | Platform.UpdateDestination | `handler/platform.go:385` |
+| PUT | `/api/v1/rides/:id/destination` | ✅ | ⚪ | ⚪ | Ride.UpdateDestination (owner-only; 404/409/422/5xx) | `handler/ride.go:285` |
 | GET | `/api/v1/navigation/route` | ✅ | 🟢 polyline rendered + zoom-to-fit | 🟡 trip polyline fetch + cache (plan 04 partial) | Platform.NavigationRoute (A\* road routing, 422 validation) | `handler/platform.go:402` |
 | GET | `/api/v1/places/autocomplete` | ✅ | 🟢 | ⚪ | Platform.PlacesAutocomplete (PostGIS+FTS) | `handler/platform.go:169` |
 | GET | `/api/v1/places/geocode` | ✅ | ⚪ not declared (manual address entry) | ⚪ | Platform.PlacesGeocode (real reverse geocode) | `handler/platform.go:235` |
@@ -677,9 +677,11 @@ Legend — API tier: ✅ `[IMPLEMENTED]` · 🟡 `[PARTIAL]` · ❌ `[STUB]`. Ap
 | GET | `/api/v1/promotions` | ❌ | ⚪ | ⚪ | Platform.PromotionsList (empty) | `handler/platform.go:138` |
 | POST | `/api/v1/promotions/apply` | ❌ | ⚪ | ⚪ | Platform.ApplyPromotion | `handler/platform.go:150` |
 | POST | `/api/v1/sos` | ❌ | ⚪ declared-but-unused | ⚪ declared-but-unused | Platform.SOS (ack only) | `handler/platform.go:52` |
-| POST | `/api/v1/feedback` | ❌ | ⚪ | ⚪ declared-but-unused | Platform.Feedback (ack only) | `handler/platform.go:83` |
-| POST | `/api/v1/devices` | ❌ | ⚪ | ⚪ | Platform.DeviceRegister (no persistence) | `handler/platform.go:106` |
-| DELETE | `/api/v1/devices/:token` | ❌ | ⚪ | ⚪ | Platform.DeviceUnregister | `handler/platform.go:126` |
+| POST | `/api/v1/feedback` | ✅ | ⚪ | ⚪ driver safety screen sends `{type, message}` | Platform.Feedback (persists, echoes `type`) | `handler/platform.go` |
+| POST | `/api/v1/devices` | ✅ | ⚪ app does not register a token yet | ⚪ app does not register a token yet | Platform.DeviceRegister (upsert; reassigns a globally-unique token) | `handler/platform.go` |
+| DELETE | `/api/v1/devices/:token` | ✅ | ⚪ | ⚪ | Platform.DeviceUnregister (idempotent, user-scoped) | `handler/platform.go` |
+| POST | `/api/v1/device-tokens` | ✅ | ⚪ | ⚪ | alias of Platform.DeviceRegister | `handler/platform.go` |
+| DELETE | `/api/v1/device-tokens/:token` | ✅ | ⚪ | ⚪ | alias of Platform.DeviceUnregister | `handler/platform.go` |
 | GET | `/api/v1/heatmap` | ❌ | ⚪ | ⚪ | Platform.Heatmap (placeholder PNG) | `handler/platform.go:435` |
 | GET | `/api/v1/drivers/:id/location` | ✅ | ⚪ declared-but-unused | — | Geo.GetDriverLocation | `handler/geo.go:186` |
 | POST | `/api/v1/driver/earnings/withdraw` | ❌ | — | ⚪ declared-but-unused | StubPayment | `handler/platform.go:497` |
@@ -690,6 +692,6 @@ Legend — API tier: ✅ `[IMPLEMENTED]` · 🟡 `[PARTIAL]` · ❌ `[STUB]`. Ap
 
 **Driver app wiring summary (from `driver_app/`, audited 2026-09-25: plans 01–05 landed, 06 🟠 untested, 07 🟠):** **21 of 31 declared** endpoints actually invoked — `/auth/register`, `/auth/login`, `/auth/refresh` (401 single-flight auto-refresh), `/auth/logout`, `/auth/forgot-password`, `/auth/reset-password`, `POST /driver/register` (promotes to the `driver` role; onboarding name fields are collected but **never sent**), `GET /driver/me` (seeded at login/refresh, rendered in profile + home), `PUT /driver/me` (profile edit, `ProfileNotifier.updateProfile`), `PUT /driver/me/status` (online/offline toggle, double-tap guarded), `PUT /geo/driver/location` (+ `PUT /geo/driver/location/batch` for buffered flushes; ≥5 s throttle, online-only pushes), `GET /driver/rides/:id` (offer detail fetch, 5 s load timeout), `POST /driver/rides/:id/accept` (HTTP fallback when the WS is dead; 409 → "Trip no longer available"), `GET /driver/rides/current` (launch restore — the WS has no replay), `PUT /driver/rides/:id/status` (trip stage transitions), `POST /driver/rides/:id/cancel` (driver-initiated, pre-`in_progress` only, confirm dialog), `GET /driver/rides/history` (1-based `page`/`per_page`, id-deduped, pull-to-refresh + infinite scroll), `POST /driver/rides/:id/rate` (1–5 stars + optional comment from the trip receipt or the history list), `GET /navigation/route` (origin = the driver's live fix, refetched past a 200 m move), `/ws` (connect for the `driver` role; `ride.offer`/`ride.updated`/`driver.location` consumed by `RideStateNotifier` → `TripNotifier`; `ride.accept`/`ride.decline`/`ping` sent; offer expiry from `offerExpiresAt`). ⚠️ Two contract corrections vs. `driver_app_plans/STATUS.md` `[history]` as first written: the rate body field is **`score`**, not `rating` (a `rating` key binds to zero and 400s), and history pagination is `page`/`per_page`, not `limit`/`offset` (out-of-range values are silently rewritten, so a bad one returns a valid-looking page). No endpoint is declared-but-dead any more.
 
-**Still declared-but-unused:** `GET /driver/rides/queue`, `GET /driver/rides/:id/rider`, `POST /driver/rides/:id/decline` (HTTP; decline is WS-only), `POST /driver/rides/:id/notify-arrival`, `GET /driver/me/earnings`, `POST /driver/earnings/withdraw`, `GET /driver/ratings`, `GET/POST /driver/me/documents`, `POST /sos`, `POST /feedback`; `GET /driver/me/vehicle` has a call site but is feature-gated off. Note that `/driver/me/earnings` and `/driver/earnings/withdraw` are **stubs**, so the app's earnings card is a client-side sum over the history pages loaded so far and there is no withdraw UI at all; `GET /driver/ratings` being a stub is why "already rated" is tracked in-session only. Test coverage: **224 driver tests green**, `flutter analyze` clean — the profile/settings suites now exist; the vehicle surface shipped in plan 06 still has **no tests** (its `vehicleFeatureEnabled` flag is false, so the screen is unreachable). Blueprint: `DRIVER_APP_PLAN.md` (M1–M10); per-plan status and the resume point in `driver_app_plans/STATUS.md` (07's safety screen → 06's missing suites).
+**Still declared-but-unused (API-side status corrected):** `GET /driver/rides/queue`, `GET /driver/rides/:id/rider`, `POST /driver/rides/:id/decline` (HTTP; decline is WS-only), `POST /driver/rides/:id/notify-arrival` (**implemented** server-side; the app skips it because the status transition already notifies), `GET /driver/me/earnings`, `POST /driver/earnings/withdraw`, `GET/POST /driver/me/documents`, `POST /sos`; `GET /driver/ratings` and `POST /feedback` are now invoked by the driver app. `GET /driver/me/vehicle` has a call site but is feature-gated off. Note that `/driver/me/earnings` and `/driver/earnings/withdraw` are **stubs**, so the app's earnings card is a client-side sum over the history pages loaded so far and there is no withdraw UI at all; `GET /driver/ratings` is a real paginated read (used by `RatedRidesNotifier`), and `rating_summary` is still never recalculated. Test coverage: **224 driver tests green**, `flutter analyze` clean — the profile/settings suites now exist; the vehicle surface shipped in plan 06 still has **no tests** (its `vehicleFeatureEnabled` flag is false, so the screen is unreachable). Blueprint: `DRIVER_APP_PLAN.md` (M1–M10); per-plan status and the resume point in `driver_app_plans/STATUS.md` (07's safety screen → 06's missing suites).
 
 **Matrix freshness:** last-applied: rider app (WS contract, real cancel, current-poll, zoom-to-fit, dropoff marker refresh, server route polyline, web/CORS ride creation, real profile/account — all condensed in `rider_app_plans/STATUS.md`); driver plans 01–05 (WS contract + ride-state, online/location loop, offer accept/decline, trip journey + navigation, history/earnings/rating) + 06 partial. Still open in `rider_app_plans/`: `[history]` ride history, `[geo]` rider-location ping, `[auth]` forgot-password, `[safety]` SOS/skip, `[tracking]` receipt/rating + live tracking (partial); in `driver_app_plans/`: 06 tests, 07 safety/support (turn-by-turn guidance stays open everywhere). An endpoint cell flips to 🟢/🟠 only after its build plan lands and `flutter test` passes; update the rider "13 targets" / driver "21 of 31" counts and any story tags together at that point.

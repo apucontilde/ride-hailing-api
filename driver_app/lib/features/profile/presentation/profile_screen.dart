@@ -34,9 +34,9 @@ class _ProfileScreenState extends ConsumerState<ProfileScreen> {
         .updateProfile(firstName: firstName, lastName: lastName, phone: phone);
     if (!mounted) return;
     if (ok) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('Profile saved')),
-      );
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(const SnackBar(content: Text('Profile saved')));
     } else {
       FocusScope.of(context).unfocus();
     }
@@ -46,63 +46,64 @@ class _ProfileScreenState extends ConsumerState<ProfileScreen> {
   Widget build(BuildContext context) {
     final profile = ref.watch(profileNotifierProvider);
     final driver = profile.driver;
-    final ratingLabel =
-        ref.read(profileNotifierProvider.notifier).ratingSummaryLabel;
+    final ratingLabel = ref
+        .read(profileNotifierProvider.notifier)
+        .ratingSummaryLabel;
 
-    return Scaffold(
-      appBar: AppBar(title: const Text('Profile')),
-      body: driver == null
-          ? const Center(child: CircularProgressIndicator())
-          : ListView(
-              padding: const EdgeInsets.all(24),
-              children: [
-                AppProfileHeader(
-                  // The `'Driver'` fallback stays app-side so the shared widget
-                  // never invents a label. Known bug #3 (onboarding never `PUT`s
-                  // /driver/me) means an empty `fullName` is the *common* path
-                  // for a fresh driver, not an edge case — and it is also why no
-                  // `initials:` argument is needed: the shared rule derives `'D'`
-                  // from `'Driver'` on its own.
-                  displayName:
-                      driver.fullName.isEmpty ? 'Driver' : driver.fullName,
-                  photoUrl: driver.photoUrl,
-                  statusColor: driver.isOnline ? Colors.green : Colors.grey,
-                  statusLabel: driver.status,
-                  statusChipLabel: driver.onboardingStatus.isEmpty
-                      ? 'Onboarding pending'
-                      : driver.onboardingStatus,
-                  ratingLabel: ratingLabel,
-                ),
-                const SizedBox(height: 24),
-                AppProfileForm(
-                  firstName: driver.firstName,
-                  lastName: driver.lastName,
-                  // No phone seed, deliberately: this app's `initState` has only
-                  // ever seeded first/last, and `_save()` sends
-                  // `phone: text.isEmpty ? null : text`. Pre-filling from
-                  // `authProvider` the way the rider does would silently start
-                  // writing a phone value this app never wrote before.
-                  isSaving: profile.saving,
-                  errorText: profile.error,
-                  onSave: _save,
-                ),
-                const SizedBox(height: 8),
-                // Fed from the same list the sidebar reads, minus `profile`,
-                // which is the page this card sits on. With
-                // `vehicleFeatureEnabled` false the vehicle row is absent from
-                // both surfaces, which is what makes driver known bug #12
-                // ("reachable only from inside /profile") false rather than
-                // merely re-worded.
-                AppNavLinkCard(
-                  items: buildDriverNavItems()
-                      .where(
-                        (item) => item.destination != AppNavDestination.profile,
-                      )
-                      .toList(),
-                  onItemSelected: (item) => context.push(item.route),
-                ),
-              ],
-            ),
+    // Body-only: `DriverShell` owns the Scaffold and AppBar for every
+    // top-level section, so this screen must not build a second one.
+    if (driver == null) {
+      return const Center(child: CircularProgressIndicator());
+    }
+    return ListView(
+      padding: const EdgeInsets.all(24),
+      children: [
+        AppProfileHeader(
+          // The `'Driver'` fallback stays app-side so the shared widget
+          // never invents a label. An empty `fullName` still reaches
+          // here if onboarding's non-fatal name save failed, so the
+          // fallback stays the edge-case guard rather than dead code —
+          // and no `initials:` argument is needed: the shared rule
+          // derives `'D'` from `'Driver'` on its own.
+          displayName: driver.fullName.isEmpty ? 'Driver' : driver.fullName,
+          photoUrl: driver.photoUrl,
+          statusColor: driver.isOnline ? Colors.green : Colors.grey,
+          statusLabel: driver.status,
+          statusChipLabel: driver.onboardingStatus.isEmpty
+              ? 'Onboarding pending'
+              : driver.onboardingStatus,
+          ratingLabel: ratingLabel,
+        ),
+        const SizedBox(height: 24),
+        AppProfileForm(
+          firstName: driver.firstName,
+          lastName: driver.lastName,
+          // No phone seed, deliberately: this app's `initState` has only
+          // ever seeded first/last, and `_save()` sends
+          // `phone: text.isEmpty ? null : text`. Pre-filling from
+          // `authProvider` the way the rider does would silently start
+          // writing a phone value this app never wrote before.
+          isSaving: profile.saving,
+          errorText: profile.error,
+          onSave: _save,
+        ),
+        const SizedBox(height: 8),
+        // Fed from the same list the sidebar reads, minus `profile`,
+        // which is the page this card sits on. With
+        // `vehicleFeatureEnabled` false the vehicle row is absent from
+        // both surfaces, which is what makes driver known bug #12
+        // ("reachable only from inside /profile") false rather than
+        // merely re-worded.
+        AppNavLinkCard(
+          items: buildDriverNavItems()
+              .where((item) => item.destination != AppNavDestination.profile)
+              .toList(),
+          // `go`, not `push`: these are top-level sections, and an imperative
+          // push would leave the shell's title showing `/profile` while the
+          // body rendered the new section.
+          onItemSelected: (item) => context.go(item.route),
+        ),
+      ],
     );
   }
 }

@@ -7,8 +7,34 @@ import 'package:http_mock_adapter/http_mock_adapter.dart';
 import 'package:rider_app/core/api/api_client.dart';
 import 'package:rider_app/core/auth/auth_provider.dart';
 import 'package:rider_app/core/network/websocket_service.dart';
+import 'package:rider_app/features/home/data/location_ping_service.dart';
 import 'package:rider_app/features/home/data/ride_status_provider.dart';
 import 'package:rider_app/features/home/presentation/driver_matching_screen.dart';
+
+/// Records only the lifecycle the screen drives; the service's own throttling
+/// and lease accounting live in `location_ping_service_test.dart`.
+class FakeLocationPingService extends LocationPingService {
+  FakeLocationPingService(super.apiClient);
+
+  int startCount = 0;
+  int stopCount = 0;
+  bool _active = false;
+
+  @override
+  void start() {
+    startCount++;
+    _active = true;
+  }
+
+  @override
+  Future<void> stop() async {
+    stopCount++;
+    _active = false;
+  }
+
+  @override
+  bool get isActive => _active;
+}
 
 class FakeWebSocketService extends WebSocketService {
   final StreamController<Map<String, dynamic>> _controller =
@@ -48,7 +74,7 @@ void main() {
     await tester.pump();
   }
 
-  Widget buildRouter() {
+  Widget buildRouter({FakeLocationPingService? ping}) {
     final router = GoRouter(
       initialLocation: '/driver-matching',
       routes: [
@@ -67,6 +93,7 @@ void main() {
       overrides: [
         apiClientProvider.overrideWithValue(apiClient),
         rideStatusProvider.overrideWith((ref) => rideNotifier),
+        if (ping != null) locationPingServiceProvider.overrideWithValue(ping),
       ],
       child: MaterialApp.router(routerConfig: router),
     );
@@ -160,4 +187,33 @@ void main() {
     await tester.pumpWidget(const SizedBox());
     await tester.pump(const Duration(milliseconds: 1));
   });
+
+  testWidgets(
+    'holds the location ping lease through matching and releases it on dispose',
+    (WidgetTester tester) async {
+      dioAdapter.onGet(
+        '/api/v1/rides/current',
+        (server) =>
+            server.reply(200, {'ride': {'id': 'ride-1', 'status': 'pending'}}),
+      );
+      final ping = FakeLocationPingService(apiClient);
+
+      await tester.pumpWidget(buildRouter(ping: ping));
+      await tester.pump();
+
+      // Home was disposed by the `context.go` into matching; matching must keep
+      // the rider position flowing until a driver accepts.
+      expect(ping.startCount, 1);
+      expect(ping.isActive, isTrue);
+
+      // Let the first `/rides/current` poll settle before tearing the tree
+      // down, so the notifier is not written after its container is disposed.
+      await tester.pump(const Duration(milliseconds: 10));
+      await tester.pumpWidget(const SizedBox());
+      await tester.pump(const Duration(milliseconds: 1));
+
+      expect(ping.stopCount, 1);
+      expect(ping.isActive, isFalse);
+    },
+  );
 }

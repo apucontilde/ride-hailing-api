@@ -11,6 +11,7 @@ import 'package:driver_app/features/driver/model/driver_profile.dart';
 import 'package:driver_app/features/profile/presentation/profile_screen.dart';
 
 class MockApiClient extends Mock implements ApiClient {}
+
 class MockDio extends Mock implements Dio {}
 
 /// The first coverage `profile_screen.dart` has ever had — driver known bug #4.
@@ -52,7 +53,10 @@ void main() {
     return c;
   }
 
-  Future<void> pumpProfile(WidgetTester tester, {DriverProfile seed = driver}) async {
+  Future<void> pumpProfile(
+    WidgetTester tester, {
+    DriverProfile seed = driver,
+  }) async {
     container = buildContainer(seed: seed);
     // Tall enough that the whole ListView lays out, so a test never has to scroll
     // to reach a tile.
@@ -62,8 +66,16 @@ void main() {
     final router = GoRouter(
       initialLocation: '/profile',
       routes: [
-        GoRoute(path: '/profile', builder: (_, _) => const ProfileScreen()),
-        GoRoute(path: '/vehicle', builder: (_, _) => const Scaffold(body: Text('Vehicle Page'))),
+        // Body-only since bug #10, so the test hosts it in a Scaffold the way
+        // `DriverShell` does in the app.
+        GoRoute(
+          path: '/profile',
+          builder: (_, _) => const Scaffold(body: ProfileScreen()),
+        ),
+        GoRoute(
+          path: '/vehicle',
+          builder: (_, _) => const Scaffold(body: Text('Vehicle Page')),
+        ),
         GoRoute(
           path: '/rides-history',
           builder: (_, _) => const Scaffold(body: Text('Rides History Page')),
@@ -102,7 +114,9 @@ void main() {
       expect(find.text('verified'), findsOneWidget);
     });
 
-    testWidgets("a nameless driver falls back to 'Driver' and a 'D' avatar", (tester) async {
+    testWidgets("a nameless driver falls back to 'Driver' and a 'D' avatar", (
+      tester,
+    ) async {
       // Known bug #3 means this is the common path for a fresh driver, not an
       // edge case: onboarding never `PUT`s /driver/me.
       await pumpProfile(tester, seed: const DriverProfile(userId: 'd2'));
@@ -114,20 +128,26 @@ void main() {
       expect(find.text('New driver'), findsOneWidget);
     });
 
-    testWidgets('a blank photoUrl shows initials rather than a broken image', (tester) async {
+    testWidgets('a blank photoUrl shows initials rather than a broken image', (
+      tester,
+    ) async {
       await pumpProfile(tester);
 
       // `DriverProfile.fromJson` passes `photo_url` straight through, so `''` is
       // what a driver without a photo actually has. `NetworkImage('')` paints a
       // red error box; the shared header treats blank as absent.
-      final avatar = tester.widget<CircleAvatar>(find.byType(CircleAvatar).first);
+      final avatar = tester.widget<CircleAvatar>(
+        find.byType(CircleAvatar).first,
+      );
       expect(avatar.backgroundImage, isNull);
       expect(find.text('AL'), findsOneWidget);
     });
   });
 
   group('ProfileScreen form', () {
-    testWidgets('prefills first and last name and leaves the phone empty', (tester) async {
+    testWidgets('prefills first and last name and leaves the phone empty', (
+      tester,
+    ) async {
       await pumpProfile(tester);
 
       expect(field(tester, 'First name').controller?.text, 'Ava');
@@ -138,9 +158,12 @@ void main() {
       expect(field(tester, 'Phone').controller?.text, '');
     });
 
-    testWidgets('saves a sparse body and keeps the phone field empty', (tester) async {
-      when(() => mockDio.put(ApiEndpoints.driverMe, data: any(named: 'data')))
-          .thenAnswer(
+    testWidgets('saves a sparse body and keeps the phone field empty', (
+      tester,
+    ) async {
+      when(
+        () => mockDio.put(ApiEndpoints.driverMe, data: any(named: 'data')),
+      ).thenAnswer(
         (_) async => Response(
           requestOptions: RequestOptions(path: ApiEndpoints.driverMe),
           statusCode: 200,
@@ -169,7 +192,8 @@ void main() {
       // rider's, which sends first/last/photo unconditionally because its handler
       // assigns them all. Sharing the form widget must not reconcile that.
       final captured = verify(
-        () => mockDio.put(ApiEndpoints.driverMe, data: captureAny(named: 'data')),
+        () =>
+            mockDio.put(ApiEndpoints.driverMe, data: captureAny(named: 'data')),
       ).captured;
       expect(captured.single, {'first_name': 'Ava', 'last_name': 'Updated'});
       expect(captured.single, isNot(contains('phone')));
@@ -181,13 +205,18 @@ void main() {
 
     testWidgets('an empty phone never blocks the save', (tester) async {
       // A mandatory phone would make this the driver's only save path unreachable.
-      when(() => mockDio.put(ApiEndpoints.driverMe, data: any(named: 'data')))
-          .thenAnswer(
+      when(
+        () => mockDio.put(ApiEndpoints.driverMe, data: any(named: 'data')),
+      ).thenAnswer(
         (_) async => Response(
           requestOptions: RequestOptions(path: ApiEndpoints.driverMe),
           statusCode: 200,
           data: {
-            'driver': {'user_id': 'd1', 'first_name': 'Ava', 'last_name': 'Lopez'},
+            'driver': {
+              'user_id': 'd1',
+              'first_name': 'Ava',
+              'last_name': 'Lopez',
+            },
           },
         ),
       );
@@ -200,7 +229,9 @@ void main() {
       expect(find.text('Profile saved'), findsOneWidget);
     });
 
-    testWidgets('validates a malformed phone and never calls the API', (tester) async {
+    testWidgets('validates a malformed phone and never calls the API', (
+      tester,
+    ) async {
       await pumpProfile(tester);
 
       await tester.enterText(
@@ -214,9 +245,12 @@ void main() {
       verifyNever(() => mockDio.put(any(), data: any(named: 'data')));
     });
 
-    testWidgets('shows the mapped error under the profile-error key', (tester) async {
-      when(() => mockDio.put(ApiEndpoints.driverMe, data: any(named: 'data')))
-          .thenThrow(
+    testWidgets('shows the mapped error under the profile-error key', (
+      tester,
+    ) async {
+      when(
+        () => mockDio.put(ApiEndpoints.driverMe, data: any(named: 'data')),
+      ).thenThrow(
         DioException(
           requestOptions: RequestOptions(path: ApiEndpoints.driverMe),
           response: Response(
@@ -246,14 +280,19 @@ void main() {
     });
 
     testWidgets('disables the save button while saving', (tester) async {
-      when(() => mockDio.put(ApiEndpoints.driverMe, data: any(named: 'data')))
-          .thenAnswer((_) async {
+      when(
+        () => mockDio.put(ApiEndpoints.driverMe, data: any(named: 'data')),
+      ).thenAnswer((_) async {
         await Future<void>.delayed(const Duration(milliseconds: 50));
         return Response(
           requestOptions: RequestOptions(path: ApiEndpoints.driverMe),
           statusCode: 200,
           data: {
-            'driver': {'user_id': 'd1', 'first_name': 'Ava', 'last_name': 'Lopez'},
+            'driver': {
+              'user_id': 'd1',
+              'first_name': 'Ava',
+              'last_name': 'Lopez',
+            },
           },
         );
       });
@@ -283,7 +322,9 @@ void main() {
       expect(find.text('Settings Page'), findsOneWidget);
     });
 
-    testWidgets('the ride history row carries the sidebar label', (tester) async {
+    testWidgets('the ride history row carries the sidebar label', (
+      tester,
+    ) async {
       await pumpProfile(tester);
 
       // The card used to say 'Ride history' while the drawer said 'Ride history &
@@ -292,7 +333,9 @@ void main() {
       expect(find.text('Ride history'), findsNothing);
     });
 
-    testWidgets('no /vehicle row while the vehicle backend is a stub', (tester) async {
+    testWidgets('no /vehicle row while the vehicle backend is a stub', (
+      tester,
+    ) async {
       await pumpProfile(tester);
 
       // The other half of the "neither surface links to /vehicle" assertion —

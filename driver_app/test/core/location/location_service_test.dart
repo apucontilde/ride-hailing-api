@@ -7,7 +7,9 @@ import 'package:dio/dio.dart';
 import 'package:geolocator/geolocator.dart';
 import 'package:driver_app/core/api/api_client.dart';
 import 'package:driver_app/core/api/endpoints.dart';
+import 'package:driver_app/core/auth/auth_provider.dart';
 import 'package:driver_app/core/location/location_service.dart';
+import 'package:driver_app/core/network/websocket_service.dart';
 import 'package:driver_app/features/home/providers/availability_notifier.dart';
 
 Position positionFor(double lat, double lng) {
@@ -33,25 +35,51 @@ class _FakePermissionLocationService extends LocationService {
   _FakePermissionLocationService({
     required super.apiClient,
     required super.availabilityNotifier,
-    required List<({bool granted, bool deniedPermanently})> permissionResults,
-    required ({bool granted, bool deniedPermanently}) mockResult,
-  })  : _permissionResults = permissionResults,
-        _mockResult = mockResult,
-        super(
+    required this.permissionResults,
+    required this.mockResult,
+  }) : super(
           positionStreamProvider: () => const Stream<Position>.empty(),
         );
 
-  final List<({bool granted, bool deniedPermanently})> _permissionResults;
-  final ({bool granted, bool deniedPermanently}) _mockResult;
+  final List<({bool granted, bool deniedPermanently})> permissionResults;
+  final ({bool granted, bool deniedPermanently}) mockResult;
 
   @override
   Future<bool> requestPermission() async {
     onPermission?.call(
-      granted: _mockResult.granted,
-      deniedPermanently: _mockResult.deniedPermanently,
+      granted: mockResult.granted,
+      deniedPermanently: mockResult.deniedPermanently,
     );
-    _permissionResults.add(_mockResult);
-    return _mockResult.granted;
+    permissionResults.add(mockResult);
+    return mockResult.granted;
+  }
+}
+
+/// A geolocator seam so a test can drive the *real* `locationServiceProvider`
+/// (whose `LocationService` uses `LocationHelper.getPositionStream`): the
+/// provider does not expose a position-stream override, so the platform
+/// singleton is the only injection point. Only the stream is faked; every
+/// other platform method keeps the base implementation.
+class _FakeGeolocatorPlatform extends GeolocatorPlatform {
+  _FakeGeolocatorPlatform(this._stream);
+
+  final Stream<Position> _stream;
+
+  @override
+  Stream<Position> getPositionStream({LocationSettings? locationSettings}) =>
+      _stream;
+}
+
+Future<void> waitFor(
+  bool Function() predicate, {
+  Duration timeout = const Duration(seconds: 5),
+}) async {
+  final deadline = DateTime.now().add(timeout);
+  while (!predicate()) {
+    if (DateTime.now().isAfter(deadline)) {
+      fail('condition not met within $timeout');
+    }
+    await Future<void>.delayed(const Duration(milliseconds: 20));
   }
 }
 
@@ -386,6 +414,71 @@ void main() {
       expect(permissionResults.length, 1);
       expect(permissionResults.single.granted, isTrue);
       expect(permissionResults.single.deniedPermanently, isFalse);
+    });
+
+    test('the provider binding re-publishes the last fix on reconnect',
+        () async {
+      // Regression for location_service.dart:249: the provider owns the
+      // reconnect hook (`websocket.onReconnected = () => service
+      // .publishLastPosition()`), and no test instantiated it. Build the real
+      // provider wiring with the websocket + geolocator seam faked, feed one
+      // fix, then fire the hook the way a real reconnect does.
+      final positions = StreamController<Position>.broadcast();
+      addTearDown(positions.close);
+      GeolocatorPlatform.instance = _FakeGeolocatorPlatform(positions.stream);
+
+      final websocket = DriverWebSocketService(WebSocketService());
+      addTearDown(websocket.dispose);
+
+      final container = ProviderContainer(
+        overrides: [
+          apiClientProvider.overrideWithValue(mockApiClient),
+          driverWebSocketServiceProvider.overrideWithValue(websocket),
+          availabilityProvider.overrideWith(
+            (ref) => AvailabilityNotifier(ref),
+          ),
+        ],
+      );
+      addTearDown(container.dispose);
+
+      var pushed = false;
+      when(() => mockDio.put(
+            ApiEndpoints.driverLocation,
+            data: any(named: 'data'),
+          )).thenAnswer((_) async {
+        pushed = true;
+        return okResponse(ApiEndpoints.driverLocation);
+      });
+
+      final service = container.read(locationServiceProvider);
+      final availability = container.read(availabilityProvider.notifier);
+
+      // Stay offline while seeding the fix so the seed itself pushes nothing;
+      // the reconnect is then the only thing that can trigger a PUT.
+      availability.setOffline();
+      service.start();
+      positions.add(positionFor(9.93, -84.08));
+      await waitFor(() => container.read(lastPositionProvider) != null);
+      clearInteractions(mockDio);
+
+      availability.setOnline();
+      expect(websocket.onReconnected, isNotNull,
+          reason: 'locationServiceProvider must bind the reconnect hook');
+
+      websocket.onReconnected!();
+      await waitFor(() => pushed);
+      await Future<void>.delayed(const Duration(milliseconds: 20));
+
+      verify(() => mockDio.put(
+            ApiEndpoints.driverLocation,
+            data: {
+              'lat': 9.93,
+              'lng': -84.08,
+              'heading': 0.0,
+              'speed': 0.0,
+            },
+          )).called(1);
+      service.stop();
     });
   });
 }

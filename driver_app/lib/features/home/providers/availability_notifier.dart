@@ -35,6 +35,11 @@ class AvailabilityNotifier extends StateNotifier<AvailabilityState> {
 
   AvailabilityNotifier(this._ref) : super(const AvailabilityState());
 
+  /// Invoked with the resulting online flag whenever availability is
+  /// (re)evaluated. The driver app wires this to the websocket keep-alive so
+  /// an offline driver stops pinging and an online driver (re)starts it.
+  void Function(bool online)? onOnlineChanged;
+
   ApiClient get _apiClient => _ref.read(apiClientProvider);
 
   bool get online => state.online;
@@ -47,18 +52,23 @@ class AvailabilityNotifier extends StateNotifier<AvailabilityState> {
     if (isOnline != state.online) {
       state = state.copyWith(online: isOnline, error: null);
     }
+    // Fire even when the flag did not change so a freshly built app with an
+    // offline profile still tears down any heartbeat the connect started.
+    onOnlineChanged?.call(state.online);
   }
 
   void setOnline() {
     if (state.inFlight) return;
     if (state.online) return;
     state = state.copyWith(online: true, error: null);
+    onOnlineChanged?.call(state.online);
   }
 
   void setOffline() {
     if (state.inFlight) return;
     if (!state.online) return;
     state = state.copyWith(online: false, error: null);
+    onOnlineChanged?.call(state.online);
   }
 
   Future<void> toggle() async {
@@ -88,6 +98,7 @@ class AvailabilityNotifier extends StateNotifier<AvailabilityState> {
         inFlight: false,
         error: null,
       );
+      onOnlineChanged?.call(state.online);
     } catch (e) {
       // Revert to previous state on failure.
       state = state.copyWith(
@@ -95,6 +106,9 @@ class AvailabilityNotifier extends StateNotifier<AvailabilityState> {
         inFlight: false,
         error: e is Exception ? e.toString() : 'Failed to update status',
       );
+      // Re-assert the (unchanged) flag so the heartbeat follows the server
+      // truth after a failed flip.
+      onOnlineChanged?.call(state.online);
     }
   }
 }

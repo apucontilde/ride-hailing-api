@@ -5,9 +5,13 @@ import '../../../core/api/endpoints.dart';
 import '../../../core/auth/auth_provider.dart';
 
 /// Reads `GET /driver/me/vehicle` — only reachable when the feature flag is on.
-final vehicleDetailsProvider = FutureProvider<Map<String, dynamic>>((ref) async {
-  final response =
-      await ref.read(apiClientProvider).dio.get(ApiEndpoints.driverMeVehicle);
+final vehicleDetailsProvider = FutureProvider<Map<String, dynamic>>((
+  ref,
+) async {
+  final response = await ref
+      .read(apiClientProvider)
+      .dio
+      .get(ApiEndpoints.driverMeVehicle);
   return (response.data as Map<String, dynamic>?) ?? const {};
 });
 
@@ -23,10 +27,8 @@ class VehicleScreen extends ConsumerWidget {
   @override
   Widget build(BuildContext context, WidgetRef ref) {
     final enabled = ApiConfig.vehicleFeatureEnabled;
-    return Scaffold(
-      appBar: AppBar(title: const Text('Vehicle & Documents')),
-      body: enabled ? const _VehicleDetails() : const _ComingSoon(),
-    );
+    // Body-only: `DriverShell` owns the Scaffold/AppBar for the section.
+    return enabled ? const _VehicleDetails() : const _ComingSoon();
   }
 }
 

@@ -115,6 +115,21 @@ void main() {
       expect(notifier.online, isFalse);
     });
 
+    test('onOnlineChanged tracks online/offline transitions for the heartbeat',
+        () {
+      // The driver app wires this to `DriverWebSocketService.setOnline`, so the
+      // keep-alive must follow the switch (online pings, offline stops).
+      final seen = <bool>[];
+      notifier.onOnlineChanged = seen.add;
+
+      notifier.setOnline();
+      notifier.setOffline();
+      notifier.syncFromProfile(DriverProfile(status: 'online'));
+      notifier.syncFromProfile(null);
+
+      expect(seen, [true, false, true, false]);
+    });
+
     test('toggle() writes the new status into driverProfileProvider', () async {
       // Regression: the status flip used to update only `availabilityProvider`,
       // leaving the shared profile cache at its login-time value. The home

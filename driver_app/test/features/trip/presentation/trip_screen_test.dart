@@ -18,6 +18,7 @@ import 'package:driver_app/core/ride/ride_state_notifier.dart';
 import 'package:driver_app/features/rides/presentation/rate_sheet.dart';
 import 'package:driver_app/features/trip/providers/trip_notifier.dart';
 import 'package:driver_app/features/trip/presentation/trip_screen.dart';
+import 'package:driver_app/features/rides/data/rated_rides_provider.dart';
 
 class MockApiClient extends Mock implements ApiClient {}
 
@@ -41,6 +42,44 @@ void main() {
         data: data,
       );
 
+  /// Stubs `GET /driver/ratings`: the driver has rated exactly [rideIds].
+  /// Defaults to "rated nothing" — the only state in which the post-trip
+  /// prompt may appear.
+  void stubRatings(List<String> rideIds) {
+    when(() => mockDio.get(
+      ApiEndpoints.driverRatings,
+      queryParameters: any(named: 'queryParameters'),
+      cancelToken: any(named: 'cancelToken'),
+    )).thenAnswer((_) async => jsonResponse({
+          'ratings': [
+            for (final id in rideIds)
+              {
+                'id': 'rating-$id',
+                'ride_id': id,
+                'rater_role': 'driver',
+                'score': 5,
+                'comment': '',
+                'created_at': '2026-09-01T12:00:00Z',
+              },
+          ],
+          'total': rideIds.length,
+          'page': 1,
+          'per_page': ratedRidesPageSize,
+          'total_pages': 1,
+        }));
+  }
+
+  /// Holds the rated list open, so the in-flight window is observable.
+  Completer<Response> gateRatings() {
+    final gate = Completer<Response>();
+    when(() => mockDio.get(
+      ApiEndpoints.driverRatings,
+      queryParameters: any(named: 'queryParameters'),
+      cancelToken: any(named: 'cancelToken'),
+    )).thenAnswer((_) => gate.future);
+    return gate;
+  }
+
   setUp(() {
     mockApiClient = MockApiClient();
     mockDio = MockDio();
@@ -61,6 +100,11 @@ void main() {
       ],
     );
     addTearDown(container.dispose);
+
+    // The rated list is server-gated: default it to "rated nothing", the only
+    // state in which the post-trip prompt may appear. A case that cares about a
+    // different list re-stubs it after this.
+    stubRatings(const []);
   });
 
   void broadcast({
@@ -304,17 +348,66 @@ void main() {
       expect(find.text('Rate your rider'), findsOneWidget);
     });
 
-    testWidgets('the prompt retires once the ride is rated', (tester) async {
+    testWidgets('the prompt retires once the server lists the ride as rated', (
+      tester,
+    ) async {
+      stubRatings(['r1']);
       await pumpTrip(tester);
       completeTrip();
       await tester.pump();
 
-      // A successful submit is what marks the ride rated; the server keeps no
-      // record the app can read back, so the guard is session-local.
-      container.read(ratedRideIdsProvider.notifier).state = {'r1'};
+      expect(find.byKey(const Key('trip-rate-button')), findsNothing);
+    });
+
+    testWidgets('nothing is offered while the rated list is still loading', (
+      tester,
+    ) async {
+      final gate = gateRatings();
+      await pumpTrip(tester);
+      completeTrip();
+      await tester.pump();
+
+      // Unknown, not unrated: the trip just ended, so claiming the driver
+      // never rated it would re-ask for a rating they may already have given.
+      expect(find.byKey(const Key('trip-rate-button')), findsNothing);
+      expect(find.byKey(const Key('trip-ratings-retry')), findsNothing);
+
+      gate.complete(jsonResponse({
+        'ratings': const [],
+        'total': 0,
+        'page': 1,
+        'per_page': ratedRidesPageSize,
+        'total_pages': 1,
+      }));
+      await tester.pump();
+      await tester.pump();
+
+      expect(find.byKey(const Key('trip-rate-button')), findsOneWidget);
+    });
+
+    testWidgets('a failed rated list hides the prompt and offers a retry', (
+      tester,
+    ) async {
+      when(() => mockDio.get(
+        ApiEndpoints.driverRatings,
+        queryParameters: any(named: 'queryParameters'),
+        cancelToken: any(named: 'cancelToken'),
+      )).thenThrow(Exception('boom'));
+      await pumpTrip(tester);
+      completeTrip();
+      await tester.pump();
       await tester.pump();
 
       expect(find.byKey(const Key('trip-rate-button')), findsNothing);
+      expect(find.text(ratedRidesErrorMessage), findsOneWidget);
+
+      stubRatings(const []);
+      await tester.tap(find.byKey(const Key('trip-ratings-retry')));
+      await tester.pump();
+      await tester.pump();
+
+      expect(find.text(ratedRidesErrorMessage), findsNothing);
+      expect(find.byKey(const Key('trip-rate-button')), findsOneWidget);
     });
 
     testWidgets('a mid-trip stage offers no rating', (tester) async {

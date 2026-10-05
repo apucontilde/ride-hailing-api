@@ -3,6 +3,7 @@
 package repository
 
 import (
+	"errors"
 	"testing"
 
 	"github.com/jmoiron/sqlx"
@@ -355,8 +356,8 @@ func TestRouteInRegionPGRouting(t *testing.T) {
 		fLat, fLng := sjPin(1)
 		tLat, tLng := lcPin(2) // exists only in cr-lc, ~4.4 km from any cr-sj vertex
 		_, err := repo.RouteInRegion(regionSJ, "", fLat, fLng, tLat, tLng)
-		if err != routing.ErrNoRoute {
-			t.Fatalf("got %v, want %v", err, routing.ErrNoRoute)
+		if !errors.Is(err, ErrPinUncovered) {
+			t.Fatalf("got %v, want %v", err, ErrPinUncovered)
 		}
 	})
 

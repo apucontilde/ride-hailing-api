@@ -9,10 +9,14 @@ import 'package:rider_app/core/api/endpoints.dart';
 import 'package:rider_app/core/auth/auth_provider.dart';
 import 'package:rider_app/core/network/websocket_service.dart';
 import 'package:rider_app/features/home/presentation/home_screen.dart';
+import 'package:rider_app/features/navigation/rider_shell.dart';
 
 class MockAuthStorage extends Mock implements AuthStorage {}
+
 class MockApiClient extends Mock implements ApiClient {}
+
 class MockDio extends Mock implements Dio {}
+
 class MockWebSocketService extends Mock implements WebSocketService {}
 
 class _Stub extends StatelessWidget {
@@ -21,8 +25,7 @@ class _Stub extends StatelessWidget {
   final String label;
 
   @override
-  Widget build(BuildContext context) =>
-      Scaffold(body: Center(child: Text(label)));
+  Widget build(BuildContext context) => Center(child: Text(label));
 }
 
 void main() {
@@ -59,8 +62,9 @@ void main() {
     when(() => mockStorage.getRefreshToken()).thenAnswer((_) async => null);
     when(() => mockStorage.clearTokens()).thenAnswer((_) async {});
     when(() => mockWebSocketService.disconnect()).thenAnswer((_) async {});
-    when(() => mockWebSocketService.connect(token: any(named: 'token')))
-        .thenAnswer((_) async {});
+    when(
+      () => mockWebSocketService.connect(token: any(named: 'token')),
+    ).thenAnswer((_) async {});
     when(() => mockDio.get(ApiEndpoints.riderMe)).thenAnswer(
       (_) async => Response(
         requestOptions: RequestOptions(path: ApiEndpoints.riderMe),
@@ -87,16 +91,40 @@ void main() {
   /// `SplashScreen`, which awaits `checkAuth()` and a current-ride check before
   /// it navigates anywhere. Reaching `/home` through the real router would need
   /// an authenticated-state override before the drawer was ever on screen.
+  ///
+  /// It mirrors the real tree's shape: the six sections live in one `ShellRoute`
+  /// rendered by [RiderShell] (which owns the drawer), `/login` stays outside.
   Future<void> pumpHome(WidgetTester tester) async {
     final router = GoRouter(
       initialLocation: '/home',
       routes: [
-        GoRoute(path: '/home', builder: (_, _) => const HomeScreen()),
-        GoRoute(path: '/profile', builder: (_, _) => const _Stub('Profile Page')),
-        GoRoute(path: '/history', builder: (_, _) => const _Stub('History Page')),
-        GoRoute(path: '/payment', builder: (_, _) => const _Stub('Payment Page')),
-        GoRoute(path: '/security', builder: (_, _) => const _Stub('Security Page')),
-        GoRoute(path: '/settings', builder: (_, _) => const _Stub('Settings Page')),
+        ShellRoute(
+          builder: (context, state, child) =>
+              RiderShell(state: state, child: child),
+          routes: [
+            GoRoute(path: '/home', builder: (_, _) => const HomeScreen()),
+            GoRoute(
+              path: '/profile',
+              builder: (_, _) => const _Stub('Profile Page'),
+            ),
+            GoRoute(
+              path: '/history',
+              builder: (_, _) => const _Stub('History Page'),
+            ),
+            GoRoute(
+              path: '/payment',
+              builder: (_, _) => const _Stub('Payment Page'),
+            ),
+            GoRoute(
+              path: '/security',
+              builder: (_, _) => const _Stub('Security Page'),
+            ),
+            GoRoute(
+              path: '/settings',
+              builder: (_, _) => const _Stub('Settings Page'),
+            ),
+          ],
+        ),
         GoRoute(path: '/login', builder: (_, _) => const _Stub('Log In')),
       ],
     );
@@ -116,17 +144,28 @@ void main() {
   }
 
   group('rider sidebar structure', () {
-    testWidgets('opens from the shared toggle button', (tester) async {
-      await pumpHome(tester);
+    testWidgets(
+      "opens from home's map-overlay toggle (Scaffold.of through the shell)",
+      (tester) async {
+        // F5: `/home` renders body-only under `RiderShell` and the shell owns the
+        // only `Scaffold`. Home's `AppSidebarToggleButton` lives in the map
+        // overlay, so its `Scaffold.of(context).openDrawer()` only works if the
+        // shell `Scaffold` is an ancestor. This is the one path that exercises
+        // that resolution; the AppBar toggle path is covered in
+        // `rider_shell_test.dart`.
+        await pumpHome(tester);
 
-      expect(find.byType(AppSidebarToggleButton), findsOneWidget);
-      expect(find.byType(AppSidebar), findsNothing);
+        expect(find.byType(AppSidebarToggleButton), findsOneWidget);
+        expect(find.byType(AppSidebar), findsNothing);
 
-      await openSidebar(tester);
-      expect(find.byType(AppSidebar), findsOneWidget);
-    });
+        await openSidebar(tester);
+        expect(find.byType(AppSidebar), findsOneWidget);
+      },
+    );
 
-    testWidgets('drawer header shows the signed-in rider, not a literal', (tester) async {
+    testWidgets('drawer header shows the signed-in rider, not a literal', (
+      tester,
+    ) async {
       // Migrated from `home_screen_test.dart`, where it pumped `HomeScreen` with
       // no router at all — that worked only while the drawer had no navigation.
       // The `find.byIcon(Icons.menu)` tap is kept verbatim: it survives because
@@ -143,7 +182,9 @@ void main() {
       expect(find.text('Rider'), findsNothing);
     });
 
-    testWidgets('the four section headings appear in enum order', (tester) async {
+    testWidgets('the four section headings appear in enum order', (
+      tester,
+    ) async {
       await pumpHome(tester);
       await openSidebar(tester);
 
@@ -158,11 +199,19 @@ void main() {
       expect(rendered, headings);
     });
 
-    testWidgets('every destination is findable by its sidebar key', (tester) async {
+    testWidgets('every destination is findable by its sidebar key', (
+      tester,
+    ) async {
       await pumpHome(tester);
       await openSidebar(tester);
 
-      for (final id in ['profile', 'ride-history', 'payment', 'security', 'settings']) {
+      for (final id in [
+        'profile',
+        'ride-history',
+        'payment',
+        'security',
+        'settings',
+      ]) {
         expect(find.byKey(Key('sidebar-item-$id')), findsOneWidget, reason: id);
       }
     });
@@ -177,7 +226,9 @@ void main() {
       expect(find.text('Sign out'), findsOneWidget);
     });
 
-    testWidgets('shows no status dot and no rating, unlike the driver', (tester) async {
+    testWidgets('shows no status dot and no rating, unlike the driver', (
+      tester,
+    ) async {
       await pumpHome(tester);
       await openSidebar(tester);
 
@@ -210,22 +261,27 @@ void main() {
       }
     });
 
-    testWidgets('tapping the header routes to /profile with the drawer closed', (tester) async {
-      await pumpHome(tester);
-      await openSidebar(tester);
+    testWidgets(
+      'tapping the header routes to /profile with the drawer closed',
+      (tester) async {
+        await pumpHome(tester);
+        await openSidebar(tester);
 
-      await tester.tap(find.text('Ana Rojas'));
-      await tester.pumpAndSettle();
+        await tester.tap(find.text('Ana Rojas'));
+        await tester.pumpAndSettle();
 
-      expect(find.text('Profile Page'), findsOneWidget);
-      // Pop-then-push: the old `GestureDetector` header had to get this order
-      // right by hand, and nothing asserted it. Pushing first would leave the
-      // drawer open on top of /profile.
-      expect(find.byKey(const Key('sidebar-item-profile')), findsNothing);
-      expect(find.byType(AppSidebar), findsNothing);
-    });
+        expect(find.text('Profile Page'), findsOneWidget);
+        // Pop-then-push: the old `GestureDetector` header had to get this order
+        // right by hand, and nothing asserted it. Pushing first would leave the
+        // drawer open on top of /profile.
+        expect(find.byKey(const Key('sidebar-item-profile')), findsNothing);
+        expect(find.byType(AppSidebar), findsNothing);
+      },
+    );
 
-    testWidgets('a destination row also closes the drawer before pushing', (tester) async {
+    testWidgets('a destination row also closes the drawer before pushing', (
+      tester,
+    ) async {
       await pumpHome(tester);
       await openSidebar(tester);
 
@@ -238,7 +294,9 @@ void main() {
   });
 
   group('rider sidebar sign-out', () {
-    testWidgets('confirming clears the session and returns to /login', (tester) async {
+    testWidgets('confirming clears the session and returns to /login', (
+      tester,
+    ) async {
       // The pre-condition is asserted, not assumed: `riderProfileProvider` is a
       // `StateProvider<RiderProfile?>` defaulting to null, so in a container that
       // never seeded a profile the `isNull` assertion below would pass even with
@@ -265,7 +323,9 @@ void main() {
       verify(() => mockStorage.clearTokens()).called(1);
     });
 
-    testWidgets('cancelling keeps the session and stays on /home', (tester) async {
+    testWidgets('cancelling keeps the session and stays on /home', (
+      tester,
+    ) async {
       await pumpHome(tester);
       await openSidebar(tester);
 

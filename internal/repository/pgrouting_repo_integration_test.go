@@ -3,6 +3,7 @@
 package repository
 
 import (
+	"errors"
 	"testing"
 
 	"github.com/jmoiron/sqlx"
@@ -175,8 +176,8 @@ func TestPGRoutingRepoSnapRadius(t *testing.T) {
 	covered := NewPGRoutingRepo(db, 0)
 	uncovered := NewPGRoutingRepo(db, 1000)
 
-	if _, err := uncovered.GetShortestPath(1.0, 1.0, 2.0, 2.0); err != routing.ErrNoRoute {
-		t.Fatalf("far pin with radius 1000: want %v, got %v", routing.ErrNoRoute, err)
+	if _, err := uncovered.GetShortestPath(1.0, 1.0, 2.0, 2.0); !errors.Is(err, ErrPinUncovered) {
+		t.Fatalf("far pin with radius 1000: want %v, got %v", ErrPinUncovered, err)
 	}
 
 	// With the radius disabled the same far pins still snap (to the nearest,

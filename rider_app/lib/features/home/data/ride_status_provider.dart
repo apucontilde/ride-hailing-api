@@ -3,6 +3,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../../../core/network/websocket_service.dart';
 import '../model/driver.dart';
 import '../model/fare.dart';
+import '../model/ride_detail.dart';
 
 enum RideStatus { matching, driverApproaching, driverArrived, onTrip, completed, cancelled, noDriverAvailable, idle }
 
@@ -123,6 +124,34 @@ class RideStatusNotifier extends StateNotifier<RideState> {
     state = state.copyWith(
       rideId: data['ride_id'] as String? ?? state.rideId,
       driverLocation: DriverLocation.fromJson(data),
+    );
+  }
+
+  /// Publishes a driver fix obtained outside the WS stream (the
+  /// `GET /drivers/{id}/location` polling fallback, see
+  /// `driver_tracking_provider.dart`).
+  ///
+  /// Deliberately narrow: it touches ONLY [RideState.driverLocation] so the
+  /// HTTP path cannot clear the driver identity, status or ride id the WS
+  /// stream owns — and the screen keeps rendering a single marker regardless of
+  /// which channel fed it.
+  void applyDriverLocation(DriverLocation location) {
+    state = state.copyWith(driverLocation: location);
+  }
+
+  /// Merges the authoritative `GET /rides/:id` object into the live state.
+  ///
+  /// Only the fields the REST object actually owns are written — status, ride
+  /// id and (once priced) the fare. Everything else the screen renders comes
+  /// from the WS stream and must survive this merge, which is why this does not
+  /// reuse [updateFromCurrentRide]: that path is the poll's, and it deliberately
+  /// drops the driver/location/fare it has no opinion about.
+  void applyRideDetail(RideDetail detail) {
+    final status = _statusFromBackend(detail.status);
+    state = state.copyWith(
+      status: status ?? state.status,
+      rideId: detail.id,
+      fare: detail.hasFare ? detail.fare : state.fare,
     );
   }
 

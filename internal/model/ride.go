@@ -31,6 +31,13 @@ type Ride struct {
 	CancelledAt     *time.Time `db:"cancelled_at" json:"cancelled_at"`
 	CreatedAt       time.Time  `db:"created_at" json:"created_at"`
 	UpdatedAt       time.Time  `db:"updated_at" json:"updated_at"`
+
+	// Stops is the itinerary, written by CreateRide in the same transaction as
+	// the ride row (migration 016). It is not a rides column, so it is hidden
+	// from the ride JSON: the read endpoints expose it as a separate, additive
+	// `stops` envelope instead, which cannot change the shape of `ride` for a
+	// client that ignores it.
+	Stops []RideStop `db:"-" json:"-"`
 }
 
 type RideEvent struct {
@@ -58,4 +65,28 @@ type RiderPreference struct {
 	UserID string `db:"user_id" json:"user_id"`
 	Key    string `db:"key" json:"key"`
 	Value  string `db:"value" json:"value"`
+}
+
+// RideStop kinds. `Stop` is an intermediate waypoint; `Destination` is the
+// final one and is always the highest Sequence. The final destination is
+// mirrored into rides.dropoff_lat/lng/address, which stays authoritative for
+// the routing, fare and receipt paths.
+const (
+	StopKind        = "stop"
+	DestinationKind = "destination"
+)
+
+// RideStop is one ordered waypoint of a ride (migration 016). Sequence is
+// 1-based and unique per ride; Stops is the itinerary in visit order with the
+// final DestinationKind last.
+type RideStop struct {
+	ID        string    `db:"id" json:"id"`
+	RideID    string    `db:"ride_id" json:"ride_id"`
+	Sequence  int       `db:"sequence" json:"sequence"`
+	Kind      string    `db:"kind" json:"kind"`
+	Lat       float64   `db:"lat" json:"lat"`
+	Lng       float64   `db:"lng" json:"lng"`
+	Address   string    `db:"address" json:"address"`
+	CreatedAt time.Time `db:"created_at" json:"created_at"`
+	UpdatedAt time.Time `db:"updated_at" json:"updated_at"`
 }

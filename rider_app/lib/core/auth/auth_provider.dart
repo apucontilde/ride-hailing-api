@@ -41,6 +41,15 @@ class AuthNotifier extends AppAuthController {
     return _parseProfile(data);
   }
 
+  /// Requests a password-reset email through `POST /auth/forgot-password`.
+  /// Throws on failure; the screen maps the error to user-facing copy.
+  Future<void> forgotPassword(String email) async {
+    await apiClient.dio.post(
+      ApiEndpoints.forgotPassword,
+      data: {'email': email},
+    );
+  }
+
   @override
   Future<void> onAuthenticated(AuthUser user) async {
     // `checkAuth` runs `fetchMe` (which already seeds the cache) immediately

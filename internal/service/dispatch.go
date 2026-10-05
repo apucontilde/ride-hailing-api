@@ -101,7 +101,15 @@ func (s *DispatchService) Dispatch(ride *model.Ride) error {
 		if len(drivers) > 0 {
 			logSearchRounds(ride.ID, searchRadii[:i+1], len(drivers))
 			s.traceRecorder().begin(ride.ID, len(drivers))
-			go s.sendRequestsSequentially(ride, drivers)
+			go func() {
+				// Safety net: if the offer loop unwinds without reaching one of
+				// its explicit terminal states (a panic, or a future early
+				// return), the attempt is still closed and published with a
+				// terminal outcome instead of leaking. On the normal paths the
+				// trace is already ended, so this is a no-op.
+				defer s.traceRecorder().abortIfOpen(ride.ID, errDispatchAborted)
+				s.sendRequestsSequentially(ride, drivers)
+			}()
 			return nil
 		}
 	}
@@ -118,7 +126,9 @@ func (s *DispatchService) Dispatch(ride *model.Ride) error {
 // The terminal trace is published from a defer, so it is emitted on EVERY path
 // — including one where the status write fails — but only AFTER the write has
 // settled, so a support query never sees a completed trace for an outcome that
-// is still being decided.
+// is still being decided. A failed write records its cause on the trace
+// (terminal_err, outcome=terminal_write_failed), so the one support line can
+// tell "our write failed" from a genuinely empty search.
 //
 // A failed write ABORTS here: the ride is still pending in the database, so
 // pushing no_driver_available would tell the rider their ride is dead while the
@@ -130,6 +140,7 @@ func (s *DispatchService) finishWithoutDriver(ride *model.Ride) {
 	}()
 
 	if err := s.rideRepo.UpdateRideStatus(ride.ID, "no_driver_available", nil); err != nil {
+		s.traceRecorder().noteTerminalError(ride.ID, fmt.Errorf("persist no_driver_available: %w", err))
 		log.Printf("ride %s: failed to persist no_driver_available: %v "+
 			"(not pushing the rider a status the database does not hold)", ride.ID, err)
 		return
@@ -174,14 +185,21 @@ func (s *DispatchService) sendRequestsSequentially(ride *model.Ride, drivers []m
 	}
 
 	current, err := s.rideRepo.FindByID(ride.ID)
-	if err == nil && current.Status == "pending" {
+	switch {
+	case err != nil:
+		// An unexpected exit: the status read failed, so we cannot know whether
+		// the ride is still pending. Recording not_pending here would be a lie;
+		// record the failure as this attempt's terminal outcome instead.
+		s.traceRecorder().noteTerminalError(ride.ID, fmt.Errorf("check ride after dispatch: %w", err))
+	case current.Status == "pending":
 		s.finishWithoutDriver(ride)
 		return
+	default:
+		// The ride is no longer pending (accepted elsewhere, cancelled): nobody
+		// to tell, but the trace still has to be closed with its own outcome so
+		// a support query does not wait forever on an open attempt.
+		s.traceRecorder().noteNotPending(ride.ID)
 	}
-	// The ride is no longer pending (accepted elsewhere, cancelled): nobody to
-	// tell, but the trace still has to be closed so a support query does not
-	// wait forever on an open attempt.
-	s.traceRecorder().noteNotPending(ride.ID)
 	s.traceRecorder().end(ride.ID)
 }
 

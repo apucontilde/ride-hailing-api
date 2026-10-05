@@ -21,21 +21,52 @@ class WebSocketService {
   final String baseUrl;
   final String wsPath;
 
+  /// How often [ping] is sent while a socket is connected.
+  ///
+  /// The backend has no read deadline of its own, so the interval only has to
+  /// detect a socket that died silently on a NAT/load-balancer idle timeout: a
+  /// write to a dead socket surfaces through the channel's error handler, which
+  /// tears the channel down and lets [connect] re-arm. It is also kept under the
+  /// dispatch position window (30 s) so a ping-caused reconnect can re-publish
+  /// before the driver ages out.
+  ///
+  /// **Disabled by default** ([Duration.zero]): the keep-alive is opt-in per
+  /// app, so the rider does not pay for a driver-side reliability fix (and does
+  /// not leave a pending timer in widget tests that never disconnect). The
+  /// driver app enables it via its `webSocketServiceProvider`.
+  final Duration heartbeatInterval;
+
   WebSocketChannel? _channel;
   Timer? _reconnectTimer;
+  Timer? _heartbeatTimer;
   String? _accessToken;
   bool _shouldReconnect = false;
   bool _isDisposed = false;
   final StreamController<Map<String, dynamic>> _eventController =
       StreamController.broadcast();
 
-  WebSocketService({String? baseUrl, this.wsPath = '/ws'})
-      : baseUrl = baseUrl ?? 'http://localhost:8080';
+  /// Invoked after every successful [connect] — the first connect and every
+  /// automatic reconnect. The driver app uses this to re-publish its last
+  /// position so a freshly-connected driver is immediately dispatchable; the
+  /// shared service itself only guarantees the ping below.
+  void Function()? onConnected;
+
+  WebSocketService({
+    String? baseUrl,
+    this.wsPath = '/ws',
+    this.heartbeatInterval = Duration.zero,
+  }) : baseUrl = baseUrl ?? 'http://localhost:8080';
 
   Stream<Map<String, dynamic>> get events => _eventController.stream;
 
-  /// Whether a live socket is currently open. Used by the driver offer dialog
-  /// to decide between the WS accept path and the HTTP fallback.
+  /// Whether a socket is currently **open** — not whether it is **alive**.
+  ///
+  /// A socket that died silently (NAT/intermediary idle timeout) still reads
+  /// `true` until a read or write actually fails. The [heartbeatInterval]
+  /// ping is what keeps that window short; treat the heartbeat as the real
+  /// liveness signal and this getter as "there is a channel object to write
+  /// to". Used by the driver offer dialog to decide between the WS accept path
+  /// and the HTTP fallback.
   bool get isConnected => _channel != null;
 
   Future<void> connect({required String token}) async {
@@ -76,6 +107,10 @@ class WebSocketService {
         onError: (Object error, StackTrace stackTrace) =>
             _handleDisconnect(error),
       );
+      // Keep the socket alive (and make a silent death discoverable) and let
+      // the app react to every (re)connect.
+      startHeartbeat();
+      onConnected?.call();
     } catch (e) {
       _handleDisconnect(e);
     }
@@ -83,6 +118,10 @@ class WebSocketService {
 
   void _handleDisconnect([Object? error]) {
     if (_isDisposed) return;
+
+    // The channel is gone; stop pinging it. `connect` re-arms the heartbeat on
+    // every (re)connect.
+    _stopHeartbeat();
 
     if (_isAuthError(error)) {
       _shouldReconnect = false;
@@ -101,6 +140,29 @@ class WebSocketService {
     });
   }
 
+  /// Starts (or restarts) the keep-alive ping loop for the current channel.
+  ///
+  /// Idempotent: an existing loop is cancelled first, so calling this from
+  /// [connect] and from the driver's "went online" hook never stacks timers.
+  /// No-op when disposed or when [heartbeatInterval] is [Duration.zero].
+  void startHeartbeat() {
+    if (_isDisposed) return;
+    if (heartbeatInterval <= Duration.zero) return;
+    _heartbeatTimer?.cancel();
+    _heartbeatTimer = Timer.periodic(heartbeatInterval, (_) {
+      if (_isDisposed || _channel == null) return;
+      ping();
+    });
+  }
+
+  /// Cancels the keep-alive ping loop. Safe to call more than once.
+  void stopHeartbeat() => _stopHeartbeat();
+
+  void _stopHeartbeat() {
+    _heartbeatTimer?.cancel();
+    _heartbeatTimer = null;
+  }
+
   bool _isAuthError(Object? error) {
     final text = error?.toString().toLowerCase() ?? '';
     return text.contains('401') ||
@@ -112,6 +174,7 @@ class WebSocketService {
     _shouldReconnect = false;
     _reconnectTimer?.cancel();
     _reconnectTimer = null;
+    _stopHeartbeat();
     _accessToken = null;
     final channel = _channel;
     _channel = null;
@@ -138,6 +201,7 @@ class WebSocketService {
   void dispose() {
     _isDisposed = true;
     _reconnectTimer?.cancel();
+    _stopHeartbeat();
     _channel?.sink.close();
     _eventController.close();
   }

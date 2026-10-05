@@ -6,6 +6,7 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:mocktail/mocktail.dart';
 
 import 'package:driver_app/features/rides/data/rides_repository.dart';
+import 'package:driver_app/features/rides/data/rated_rides_provider.dart';
 import 'package:driver_app/features/rides/presentation/rate_sheet.dart';
 
 class MockRidesRepository extends Mock implements RidesRepository {}
@@ -229,47 +230,93 @@ void main() {
     await tester.pumpWidget(const SizedBox());
   });
 
-  group('ratedRideIdsProvider', () {
-    testWidgets('a successful submit marks the ride rated', (tester) async {
-      when(() => repo.rateRide(
-            rideId: 'r1',
-            score: 5,
-            comment: any(named: 'comment'),
-          )).thenAnswer((_) async {});
-
-      late WidgetRef capturedRef;
+  group('the rated-rides list', () {
+    /// Pumps a container that watches the server's rated list, with the sheet
+    /// reachable from a button. The list is loaded and empty unless a case
+    /// says otherwise, which is the only state in which a prompt is honest.
+    Future<ProviderContainer> pumpRated(WidgetTester tester) async {
+      final container = ProviderContainer(
+        overrides: [ridesRepositoryProvider.overrideWith((ref) => repo)],
+      );
+      addTearDown(container.dispose);
       await tester.pumpWidget(
-        ProviderScope(
-          overrides: [ridesRepositoryProvider.overrideWith((ref) => repo)],
+        UncontrolledProviderScope(
+          container: container,
           child: MaterialApp(
-            home: Builder(
-              builder: (context) => Scaffold(
-                body: Consumer(
-                  builder: (context, ref, _) {
-                    capturedRef = ref;
-                    return Center(
-                      child: TextButton(
-                        onPressed: () => showModalBottomSheet<void>(
-                          context: context,
-                          isScrollControlled: true,
-                          builder: (_) => const RateSheet(rideId: 'r1'),
-                        ),
-                        child: const Text('open'),
+            home: Scaffold(
+              // Watched so the rated-rides list is fetched on the first frame,
+              // the way a screen that shows the prompt does.
+              body: Consumer(
+                builder: (context, ref, _) {
+                  ref.watch(ratedRidesProvider);
+                  return Center(
+                    child: TextButton(
+                      onPressed: () => showModalBottomSheet<void>(
+                        context: context,
+                        isScrollControlled: true,
+                        builder: (_) => const RateSheet(rideId: 'r1'),
                       ),
-                    );
-                  },
-                ),
+                      child: const Text('open'),
+                    ),
+                  );
+                },
               ),
             ),
           ),
         ),
       );
+      await tester.pump();
+      return container;
+    }
+
+    void stubRatings(List<String> rideIds) {
+      when(() => repo.fetchMyRatings(
+            page: 1,
+            perPage: ratedRidesPageSize,
+            cancelToken: any(named: 'cancelToken'),
+          )).thenAnswer((_) async => DriverRatingPage(
+                ratings: [
+                  for (final id in rideIds)
+                    DriverRating(
+                      id: 'rating-$id',
+                      rideId: id,
+                      raterRole: 'driver',
+                      score: 5,
+                      comment: null,
+                      createdAt: DateTime(2026, 9),
+                    ),
+                ],
+                total: rideIds.length,
+                page: 1,
+                perPage: ratedRidesPageSize,
+                totalPages: 1,
+              ));
+    }
+
+    void stubSubmit() {
+      when(() => repo.rateRide(
+            rideId: 'r1',
+            score: any(named: 'score'),
+            comment: any(named: 'comment'),
+          )).thenAnswer((_) async {});
+    }
+
+    testWidgets('a loaded empty list leaves the ride unrated, and a successful '
+        'submit retires the prompt', (tester) async {
+      stubRatings(const []);
+      stubSubmit();
+      final container = await pumpRated(tester);
+      await tester.pump();
+
+      expect(
+        container.read(ratedRideStatusProvider('r1')),
+        RatingStatus.unrated,
+      );
+
       await tester.tap(find.text('open'));
       await tester.pump();
       await tester.pump(const Duration(milliseconds: 300));
       await tester.pump();
-
-      expect(isRated(capturedRef, 'r1'), isFalse);
 
       await tester.tap(find.byKey(const Key('rate-star-5')));
       await tester.pump();
@@ -277,45 +324,53 @@ void main() {
       await tester.pump();
       await tester.pump(const Duration(milliseconds: 300));
 
-      expect(isRated(capturedRef, 'r1'), isTrue);
+      // Optimistic: the POST landed, so the prompt is retired without waiting
+      // for the server list to be re-read.
+      expect(
+        container.read(ratedRideStatusProvider('r1')),
+        RatingStatus.rated,
+      );
+      // The submit was not followed by a refetch: the mark is optimistic.
+      verify(() => repo.fetchMyRatings(
+            page: 1,
+            perPage: ratedRidesPageSize,
+            cancelToken: any(named: 'cancelToken'),
+          )).called(1);
 
       await tester.pumpWidget(const SizedBox());
     });
 
-    testWidgets('a failed submit leaves the ride unrated', (tester) async {
+    testWidgets('a ride the server already lists is rated before any submit', (
+      tester,
+    ) async {
+      stubRatings(['r1']);
+      final container = await pumpRated(tester);
+      await tester.pump();
+
+      expect(
+        container.read(ratedRideStatusProvider('r1')),
+        RatingStatus.rated,
+      );
+      expect(
+        container.read(ratedRideStatusProvider('r1')).canPrompt,
+        isFalse,
+      );
+
+      await tester.pumpWidget(const SizedBox());
+    });
+
+    testWidgets('a failed submit leaves the loaded answer alone', (
+      tester,
+    ) async {
+      stubRatings(const []);
       when(() => repo.rateRide(
             rideId: 'r1',
             score: 5,
             comment: any(named: 'comment'),
           )).thenThrow(Exception('500'));
+      final container = await pumpRated(tester);
+      await tester.pump();
 
-      late WidgetRef capturedRef;
-      await tester.pumpWidget(
-        ProviderScope(
-          overrides: [ridesRepositoryProvider.overrideWith((ref) => repo)],
-          child: MaterialApp(
-            home: Builder(
-              builder: (context) => Scaffold(
-                body: Consumer(
-                  builder: (context, ref, _) {
-                    capturedRef = ref;
-                    return Center(
-                      child: TextButton(
-                        onPressed: () => showModalBottomSheet<void>(
-                          context: context,
-                          isScrollControlled: true,
-                          builder: (_) => const RateSheet(rideId: 'r1'),
-                        ),
-                        child: const Text('open'),
-                      ),
-                    );
-                  },
-                ),
-              ),
-            ),
-          ),
-        ),
-      );
       await tester.tap(find.text('open'));
       await tester.pump();
       await tester.pump(const Duration(milliseconds: 300));
@@ -327,31 +382,12 @@ void main() {
       await tester.pump();
       await tester.pump(const Duration(milliseconds: 300));
 
-      expect(isRated(capturedRef, 'r1'), isFalse);
-
-      await tester.pumpWidget(const SizedBox());
-    });
-
-    testWidgets('markRated is idempotent', (tester) async {
-      late WidgetRef capturedRef;
-      await tester.pumpWidget(
-        ProviderScope(
-          child: MaterialApp(
-            home: Consumer(
-              builder: (context, ref, _) {
-                capturedRef = ref;
-                return const SizedBox();
-              },
-            ),
-          ),
-        ),
+      expect(find.text('Could not send your rating. Please try again.'),
+          findsOneWidget);
+      expect(
+        container.read(ratedRideStatusProvider('r1')),
+        RatingStatus.unrated,
       );
-
-      markRated(capturedRef, 'r1');
-      markRated(capturedRef, 'r1');
-      markRated(capturedRef, 'r2');
-
-      expect(capturedRef.read(ratedRideIdsProvider), {'r1', 'r2'});
 
       await tester.pumpWidget(const SizedBox());
     });

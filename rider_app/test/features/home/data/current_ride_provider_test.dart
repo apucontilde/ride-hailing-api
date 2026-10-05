@@ -59,6 +59,51 @@ void main() {
       expect(notifier.state.stillSearching, isFalse);
     });
 
+    test('cancelled stops the poll', () async {
+      payload = {'ride': {'id': 'ride-c', 'status': 'cancelled'}};
+
+      notifier.startPolling();
+      await notifier.pollNow();
+
+      expect(notifier.state.status, 'cancelled');
+      expect(notifier.isPolling, isFalse);
+    });
+
+    test('completed stops the poll', () async {
+      payload = {'ride': {'id': 'ride-d', 'status': 'completed'}};
+
+      notifier.startPolling();
+      await notifier.pollNow();
+
+      expect(notifier.state.status, 'completed');
+      expect(notifier.isPolling, isFalse);
+    });
+
+    test('no_driver_available stops the poll', () async {
+      payload = {'ride': {'id': 'ride-e', 'status': 'no_driver_available'}};
+
+      notifier.startPolling();
+      await notifier.pollNow();
+
+      expect(notifier.isPolling, isFalse);
+    });
+
+    test('non-terminal statuses keep the poll running', () async {
+      for (final status in ['pending', 'accepted', 'in_progress']) {
+        payload = {'ride': {'id': 'ride-$status', 'status': status}};
+
+        notifier.startPolling();
+        await notifier.pollNow();
+
+        expect(
+          notifier.isPolling,
+          isTrue,
+          reason: '$status must keep polling',
+        );
+        notifier.stopPolling();
+      }
+    });
+
     test('active statuses restore into ride_status_provider', () async {
       payload = {'ride': {'id': 'ride-2', 'status': 'accepted'}};
 

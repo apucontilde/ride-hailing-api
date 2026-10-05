@@ -45,10 +45,9 @@ class AppSidebar extends StatelessWidget {
   /// Pinned below the scroller — both apps use it for sign-out.
   final Widget? footer;
 
-  /// Highlights the row whose [AppNavItem.route] equals this. No app passes it
-  /// yet: the sidebar only exists on `/home` today, so nothing is selected.
-  /// Declared now so a later section-level sidebar does not have to change this
-  /// widget's API.
+  /// Highlights the row whose [AppNavItem.route] equals this. Both apps pass
+  /// it from their shell (the rider `RiderShell` and the driver `DriverShell`),
+  /// wiring the current location so the active section is highlighted.
   final String? selectedRoute;
 
   @override

@@ -13,8 +13,11 @@ import 'package:rider_app/core/network/websocket_service.dart';
 import 'package:rider_app/features/home/presentation/profile_screen.dart';
 
 class MockAuthStorage extends Mock implements AuthStorage {}
+
 class MockApiClient extends Mock implements ApiClient {}
+
 class MockDio extends Mock implements Dio {}
+
 class MockWebSocketService extends Mock implements WebSocketService {}
 
 void main() {
@@ -56,14 +59,16 @@ void main() {
     when(() => mockStorage.getRefreshToken()).thenAnswer((_) async => null);
     when(() => mockStorage.clearTokens()).thenAnswer((_) async {});
     when(() => mockWebSocketService.disconnect()).thenAnswer((_) async {});
-    when(() => mockWebSocketService.connect(token: any(named: 'token')))
-        .thenAnswer((_) async {});
-    when(() => mockDio.get(ApiEndpoints.riderMe)).thenAnswer((_) async =>
-        Response(
-          requestOptions: RequestOptions(path: ApiEndpoints.riderMe),
-          statusCode: 200,
-          data: riderMeData,
-        ));
+    when(
+      () => mockWebSocketService.connect(token: any(named: 'token')),
+    ).thenAnswer((_) async {});
+    when(() => mockDio.get(ApiEndpoints.riderMe)).thenAnswer(
+      (_) async => Response(
+        requestOptions: RequestOptions(path: ApiEndpoints.riderMe),
+        statusCode: 200,
+        data: riderMeData,
+      ),
+    );
     container = ProviderContainer(
       overrides: [
         authStorageProvider.overrideWithValue(mockStorage),
@@ -86,7 +91,12 @@ void main() {
     final router = GoRouter(
       initialLocation: '/profile',
       routes: [
-        GoRoute(path: '/profile', builder: (_, _) => const ProfileScreen()),
+        GoRoute(
+          path: '/profile',
+          // Body-only now; the shell's `Scaffold` is what provides the Material
+          // ancestor and the ScaffoldMessenger target (the save SnackBar).
+          builder: (_, _) => const Scaffold(body: ProfileScreen()),
+        ),
         GoRoute(
           path: '/settings',
           builder: (_, _) =>
@@ -123,8 +133,7 @@ void main() {
       expect(find.text('Not set'), findsNothing);
     });
 
-    testWidgets('prefills the form from the cached profile',
-        (tester) async {
+    testWidgets('prefills the form from the cached profile', (tester) async {
       await pumpProfile(tester);
 
       expect(field(tester, 'First name').controller?.text, 'Ana');
@@ -132,25 +141,27 @@ void main() {
       expect(field(tester, 'Phone').controller?.text, '+5065551234');
     });
 
-    testWidgets('falls back to the email when the rider set no name',
-        (tester) async {
-      when(() => mockDio.get(ApiEndpoints.riderMe)).thenAnswer((_) async =>
-          Response(
-            requestOptions: RequestOptions(path: ApiEndpoints.riderMe),
-            statusCode: 200,
-            data: const {
-              'user': {'id': 'user-1', 'email': 'ana@example.com'},
-              // `riders.first_name` is NOT NULL DEFAULT '' — the untouched
-              // account really does answer with empty strings.
-              'rider': {
-                'user_id': 'user-1',
-                'first_name': '',
-                'last_name': '',
-                'photo_url': '',
-                'status': 'idle',
-              },
+    testWidgets('falls back to the email when the rider set no name', (
+      tester,
+    ) async {
+      when(() => mockDio.get(ApiEndpoints.riderMe)).thenAnswer(
+        (_) async => Response(
+          requestOptions: RequestOptions(path: ApiEndpoints.riderMe),
+          statusCode: 200,
+          data: const {
+            'user': {'id': 'user-1', 'email': 'ana@example.com'},
+            // `riders.first_name` is NOT NULL DEFAULT '' — the untouched
+            // account really does answer with empty strings.
+            'rider': {
+              'user_id': 'user-1',
+              'first_name': '',
+              'last_name': '',
+              'photo_url': '',
+              'status': 'idle',
             },
-          ));
+          },
+        ),
+      );
       await container.read(authProvider.notifier).refreshProfile();
 
       await pumpProfile(tester);
@@ -167,9 +178,13 @@ void main() {
       await pumpProfile(tester);
 
       await tester.enterText(
-          find.widgetWithText(TextFormField, 'First name'), 'A');
+        find.widgetWithText(TextFormField, 'First name'),
+        'A',
+      );
       await tester.enterText(
-          find.widgetWithText(TextFormField, 'Phone'), 'not-a-phone');
+        find.widgetWithText(TextFormField, 'Phone'),
+        'not-a-phone',
+      );
       await tester.tap(find.byKey(const Key('profile-save-button')));
       await tester.pumpAndSettle();
 
@@ -179,48 +194,54 @@ void main() {
     });
 
     testWidgets('saves the edit and shows the confirmation', (tester) async {
-      when(() => mockDio.put(any(), data: any(named: 'data')))
-          .thenAnswer((_) async => Response(
-                requestOptions: RequestOptions(path: ApiEndpoints.riderMe),
-                statusCode: 200,
-                data: {
-                  'rider': {
-                    'user_id': 'user-1',
-                    'first_name': 'Ana',
-                    'last_name': 'Updated',
-                    'photo_url': '',
-                    'status': 'idle',
-                  },
-                },
-              ));
+      when(() => mockDio.put(any(), data: any(named: 'data'))).thenAnswer(
+        (_) async => Response(
+          requestOptions: RequestOptions(path: ApiEndpoints.riderMe),
+          statusCode: 200,
+          data: {
+            'rider': {
+              'user_id': 'user-1',
+              'first_name': 'Ana',
+              'last_name': 'Updated',
+              'photo_url': '',
+              'status': 'idle',
+            },
+          },
+        ),
+      );
       // `PUT /rider/me` answers `{rider}` only, so the phone edit is confirmed
       // by the follow-up `GET /rider/me` the notifier issues.
-      when(() => mockDio.get(ApiEndpoints.riderMe)).thenAnswer((_) async =>
-          Response(
-            requestOptions: RequestOptions(path: ApiEndpoints.riderMe),
-            statusCode: 200,
-            data: const {
-              'user': {
-                'id': 'user-1',
-                'email': 'ana@example.com',
-                'phone': '+5065559999',
-              },
-              'rider': {
-                'user_id': 'user-1',
-                'first_name': 'Ana',
-                'last_name': 'Updated',
-                'photo_url': '',
-                'status': 'idle',
-              },
+      when(() => mockDio.get(ApiEndpoints.riderMe)).thenAnswer(
+        (_) async => Response(
+          requestOptions: RequestOptions(path: ApiEndpoints.riderMe),
+          statusCode: 200,
+          data: const {
+            'user': {
+              'id': 'user-1',
+              'email': 'ana@example.com',
+              'phone': '+5065559999',
             },
-          ));
+            'rider': {
+              'user_id': 'user-1',
+              'first_name': 'Ana',
+              'last_name': 'Updated',
+              'photo_url': '',
+              'status': 'idle',
+            },
+          },
+        ),
+      );
 
       await pumpProfile(tester);
 
       await tester.enterText(
-          find.widgetWithText(TextFormField, 'Last name'), 'Updated');
+        find.widgetWithText(TextFormField, 'Last name'),
+        'Updated',
+      );
       await tester.enterText(
-          find.widgetWithText(TextFormField, 'Phone'), '+5065559999');
+        find.widgetWithText(TextFormField, 'Phone'),
+        '+5065559999',
+      );
       await tester.tap(find.byKey(const Key('profile-save-button')));
       await tester.pumpAndSettle();
 
@@ -229,25 +250,28 @@ void main() {
       expect(container.read(riderProfileProvider)?.lastName, 'Updated');
     });
 
-    testWidgets('shows the mapped error and leaves the form in place',
-        (tester) async {
-      when(() => mockDio.put(any(), data: any(named: 'data')))
-          .thenThrow(DioException(
-        requestOptions: RequestOptions(path: ApiEndpoints.riderMe),
-        response: Response(
+    testWidgets('shows the mapped error and leaves the form in place', (
+      tester,
+    ) async {
+      when(() => mockDio.put(any(), data: any(named: 'data'))).thenThrow(
+        DioException(
           requestOptions: RequestOptions(path: ApiEndpoints.riderMe),
-          statusCode: 422,
-          data: {
-            'error': {
-              'code': 'VALIDATION_ERROR',
-              'message': 'first_name is required',
+          response: Response(
+            requestOptions: RequestOptions(path: ApiEndpoints.riderMe),
+            statusCode: 422,
+            data: {
+              'error': {
+                'code': 'VALIDATION_ERROR',
+                'message': 'first_name is required',
+              },
             },
-          },
+          ),
+          error: mapStatusCodeToException(422, 'first_name is required'),
+          message:
+              'This exception was thrown because the response has a '
+              'status code of 422 ...',
         ),
-        error: mapStatusCodeToException(422, 'first_name is required'),
-        message: 'This exception was thrown because the response has a '
-            'status code of 422 ...',
-      ));
+      );
 
       await pumpProfile(tester);
 
@@ -261,8 +285,9 @@ void main() {
     });
 
     testWidgets('disables the save button while saving', (tester) async {
-      when(() => mockDio.put(any(), data: any(named: 'data')))
-          .thenAnswer((_) async {
+      when(() => mockDio.put(any(), data: any(named: 'data'))).thenAnswer((
+        _,
+      ) async {
         await Future<void>.delayed(const Duration(milliseconds: 50));
         return Response(
           requestOptions: RequestOptions(path: ApiEndpoints.riderMe),
@@ -277,19 +302,20 @@ void main() {
           },
         );
       });
-      when(() => mockDio.get(ApiEndpoints.riderMe)).thenAnswer((_) async =>
-          Response(
-            requestOptions: RequestOptions(path: ApiEndpoints.riderMe),
-            statusCode: 200,
-            data: const {
-              'user': {'id': 'user-1', 'email': 'ana@example.com'},
-              'rider': {
-                'user_id': 'user-1',
-                'first_name': 'Ana',
-                'last_name': 'Updated',
-              },
+      when(() => mockDio.get(ApiEndpoints.riderMe)).thenAnswer(
+        (_) async => Response(
+          requestOptions: RequestOptions(path: ApiEndpoints.riderMe),
+          statusCode: 200,
+          data: const {
+            'user': {'id': 'user-1', 'email': 'ana@example.com'},
+            'rider': {
+              'user_id': 'user-1',
+              'first_name': 'Ana',
+              'last_name': 'Updated',
             },
-          ));
+          },
+        ),
+      );
 
       await pumpProfile(tester);
 

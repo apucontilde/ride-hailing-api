@@ -4,6 +4,7 @@ import 'package:go_router/go_router.dart';
 import '../data/ride_status_provider.dart';
 import '../data/current_ride_provider.dart';
 import '../data/home_provider.dart';
+import '../data/location_ping_service.dart';
 
 class DriverMatchingScreen extends ConsumerStatefulWidget {
   final VoidCallback? onCancelled;
@@ -14,14 +15,22 @@ class DriverMatchingScreen extends ConsumerStatefulWidget {
   ConsumerState<DriverMatchingScreen> createState() => _DriverMatchingScreenState();
 }
 
-class _DriverMatchingScreenState extends ConsumerState<DriverMatchingScreen> {
+class _DriverMatchingScreenState extends ConsumerState<DriverMatchingScreen>
+    with WidgetsBindingObserver {
   bool _navigating = false;
   bool _cancelInFlight = false;
   late final CurrentRideNotifier _currentRideNotifier;
+  LocationPingService? _pingService;
 
   @override
   void initState() {
     super.initState();
+    // `HomeScreen` is disposed by the `context.go('/driver-matching')` that got
+    // us here; hold the ping lease for the matching wait too, so a driver can be
+    // matched against a fresh rider position.
+    WidgetsBinding.instance.addObserver(this);
+    _pingService = ref.read(locationPingServiceProvider);
+    _pingService!.start();
     _currentRideNotifier = ref.read(currentRideProvider.notifier);
     WidgetsBinding.instance.addPostFrameCallback((_) {
       if (mounted) _currentRideNotifier.startPolling();
@@ -29,7 +38,19 @@ class _DriverMatchingScreenState extends ConsumerState<DriverMatchingScreen> {
   }
 
   @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    if (state == AppLifecycleState.resumed) {
+      _pingService?.start();
+    } else if (state == AppLifecycleState.paused ||
+        state == AppLifecycleState.inactive) {
+      _pingService?.stop();
+    }
+  }
+
+  @override
   void dispose() {
+    WidgetsBinding.instance.removeObserver(this);
+    _pingService?.stop();
     _currentRideNotifier.stopPolling();
     super.dispose();
   }

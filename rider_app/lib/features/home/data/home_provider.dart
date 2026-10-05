@@ -9,11 +9,18 @@ import '../../../core/api/api_client.dart';
 import '../../../core/api/api_exceptions.dart';
 import '../../../core/auth/auth_provider.dart';
 
-final nearbyDriversProvider = FutureProvider<List<NearbyDriver>>((ref) async {
+final nearbyDriversProvider =
+    FutureProvider.family<List<NearbyDriver>, LatLng>((ref, center) async {
   final apiClient = ref.read(apiClientProvider);
-  final response = await apiClient.dio.get(ApiEndpoints.nearbyDrivers);
-  final data = response.data as List<dynamic>;
-  return data.map((json) => NearbyDriver.fromJson(json as Map<String, dynamic>)).toList();
+  final response = await apiClient.dio.get(
+    ApiEndpoints.nearbyDrivers,
+    queryParameters: {'lat': center.latitude, 'lng': center.longitude},
+  );
+  final data = response.data as Map<String, dynamic>;
+  final drivers = data['drivers'] as List<dynamic>? ?? [];
+  return drivers
+      .map((json) => NearbyDriver.fromJson(json as Map<String, dynamic>))
+      .toList();
 });
 
 final priceEstimatesProvider = FutureProvider.family<List<RideEstimate>, Map<String, double>>((ref, coords) async {
@@ -48,30 +55,29 @@ class PlaceSearchArgs {
   int get hashCode => Object.hash(query, lat, lng);
 }
 
-const _radiusSteps = [1000.0, 3000.0, 10000.0, 30000.0]; // last = max
+const _searchRadiusM = 30000.0;
+
+final placeSearchDebounceProvider =
+    Provider<Duration>((ref) => const Duration(milliseconds: 350));
 
 final placeSearchProvider =
     FutureProvider.family<List<Place>, PlaceSearchArgs>((ref, args) async {
   if (args.query.trim().isEmpty) return [];
   final apiClient = ref.read(apiClientProvider);
 
-  for (final radius in _radiusSteps) {
-    final response = await apiClient.dio.get(
-      ApiEndpoints.placesAutocomplete,
-      queryParameters: {
-        'lat': args.lat,
-        'lng': args.lng,
-        'radius': radius,
-        'q': args.query,
-        'limit': 10,
-      },
-    );
-    final list = (response.data['places'] as List<dynamic>? ?? [])
-        .map((j) => Place.fromJson(j as Map<String, dynamic>))
-        .toList();
-    if (list.isNotEmpty) return list;
-  }
-  return [];
+  final response = await apiClient.dio.get(
+    ApiEndpoints.placesAutocomplete,
+    queryParameters: {
+      'lat': args.lat,
+      'lng': args.lng,
+      'radius': _searchRadiusM,
+      'q': args.query,
+      'limit': 10,
+    },
+  );
+  return (response.data['places'] as List<dynamic>? ?? [])
+      .map((j) => Place.fromJson(j as Map<String, dynamic>))
+      .toList();
 });
 
 class NavigationRoute {

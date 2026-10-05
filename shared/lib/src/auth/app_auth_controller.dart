@@ -123,7 +123,66 @@ abstract class AppAuthController extends StateNotifier<AuthState> {
     }
   }
 
+  /// True when the app already holds an authenticated session for an account
+  /// other than [email] (or [id] when supplied). [login] refuses to overwrite
+  /// such a session — callers must confirm and use [switchAccount] instead.
+  ///
+  /// The rule is conservative: when the current identity is *unknown* or only
+  /// partially known we cannot prove it is the same account, so the caller
+  /// must confirm. This matters for the driver app, whose authenticated
+  /// [AuthUser] carries an id but no email, and for `onForbiddenProfile`,
+  /// which yields empty id+email.
+  bool needsAccountSwitch(String email, {String? id}) {
+    if (state.status != AuthStatus.authenticated) return false;
+    final current = state.user;
+    if (current == null) return false;
+
+    final currentId = current.id.trim();
+    final currentEmail = current.email.trim().toLowerCase();
+    final nextId = id?.trim() ?? '';
+    final nextEmail = email.trim().toLowerCase();
+
+    // Unknown identity — cannot prove it is the same account.
+    if (currentId.isEmpty && currentEmail.isEmpty) return true;
+
+    // Compare ids when both are known.
+    if (currentId.isNotEmpty && nextId.isNotEmpty) {
+      return currentId != nextId;
+    }
+
+    // Otherwise compare emails when both are known.
+    if (currentEmail.isNotEmpty && nextEmail.isNotEmpty) {
+      return currentEmail != nextEmail;
+    }
+
+    // Partial identity (e.g. an id but no email, the driver shape) — cannot
+    // prove it is the same account.
+    return true;
+  }
+
+  /// Revokes the stored refresh token through the logout endpoint and drops
+  /// the local session, leaving no orphaned token behind. Same side effects as
+  /// [logout]; named for the guarded switch-account path.
+  Future<void> cancelCurrentSession() => logout();
+
+  /// Cancels the current authenticated session (revoking its refresh token)
+  /// before minting a new one for [email]. [login] alone never overwrites an
+  /// authenticated state — this is the only path that switches accounts.
+  Future<void> switchAccount(String email, String password) async {
+    if (state.status == AuthStatus.authenticated) {
+      await cancelCurrentSession();
+    }
+    await login(email, password);
+  }
+
   Future<void> login(String email, String password) async {
+    if (needsAccountSwitch(email)) {
+      state = state.copyWith(
+        error: 'Already signed in as ${state.user?.email}. '
+            'Sign out before switching accounts.',
+      );
+      return;
+    }
     state = state.copyWith(status: AuthStatus.loading, error: null);
     try {
       final response = await apiClient.dio.post(

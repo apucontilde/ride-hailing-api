@@ -32,10 +32,12 @@ type fakeStore struct {
 	// count is what Count reports, and countErr its failure.
 	count    int
 	countErr error
-	// loadStatus/loadBody are what Load returns, and loadErr its failure.
-	loadStatus int
-	loadBody   json.RawMessage
-	loadErr    error
+	// loadStatus/loadContentType/loadBody are what Load returns, and loadErr its
+	// failure.
+	loadStatus      int
+	loadContentType string
+	loadBody        json.RawMessage
+	loadErr         error
 	// storeErr fails Store; storeDropped makes Store report a losing
 	// ON CONFLICT DO NOTHING insert.
 	storeErr     error
@@ -51,6 +53,7 @@ type fakeStore struct {
 	storeKey    string
 	storeUser   string
 	storeStatus int
+	storeCT     string
 	storeBody   []byte
 }
 
@@ -60,15 +63,15 @@ func (f *fakeStore) Count(key, userID string) (int, error) {
 	return f.count, f.countErr
 }
 
-func (f *fakeStore) Load(key, userID string) (int, json.RawMessage, error) {
+func (f *fakeStore) Load(key, userID string) (int, string, json.RawMessage, error) {
 	f.loadCalls++
 	f.loadKey, f.loadUser = key, userID
-	return f.loadStatus, f.loadBody, f.loadErr
+	return f.loadStatus, f.loadContentType, f.loadBody, f.loadErr
 }
 
-func (f *fakeStore) Store(key, userID string, status int, body []byte) (bool, error) {
+func (f *fakeStore) Store(key, userID string, status int, contentType string, body []byte) (bool, error) {
 	f.storeCalls++
-	f.storeKey, f.storeUser, f.storeStatus, f.storeBody = key, userID, status, body
+	f.storeKey, f.storeUser, f.storeStatus, f.storeCT, f.storeBody = key, userID, status, contentType, body
 	if f.storeErr != nil {
 		return false, f.storeErr
 	}
@@ -119,7 +122,10 @@ func runIdempotency(t *testing.T, store idempotencyStore, key, handlerStatus, ha
 	r.Use(idempotencyWithStore(store))
 	r.POST("/x", func(c *gin.Context) {
 		*ran++
-		c.String(status, handlerBody)
+		// The JSON content type is explicit: the production mount point
+		// (POST /api/v1/rides) is a JSON handler, and the middleware keys its
+		// body wrapping on the content type.
+		c.Data(status, "application/json; charset=utf-8", []byte(handlerBody))
 	})
 
 	req := httptest.NewRequest(http.MethodPost, "/x", nil)
@@ -180,7 +186,7 @@ func TestIdempotencyNilStoreIsInert(t *testing.T) {
 // handler must NOT run (running it would double-charge a retry).
 func TestIdempotencyReplaysStoredResponse(t *testing.T) {
 	stored := json.RawMessage(`{"ride":{"id":"r-1"},"stored":true}`)
-	store := &fakeStore{count: 1, loadStatus: http.StatusCreated, loadBody: stored}
+	store := &fakeStore{count: 1, loadStatus: http.StatusCreated, loadContentType: "application/json; charset=utf-8", loadBody: stored}
 	w, ran := runIdempotency(t, store, "key-1", "ok", `{"ride":{"id":"r-2"}}`)
 
 	if *ran != 0 {
@@ -191,6 +197,9 @@ func TestIdempotencyReplaysStoredResponse(t *testing.T) {
 	}
 	if got := w.Body.String(); got != string(stored) {
 		t.Errorf("body = %q, want the stored %q", got, stored)
+	}
+	if got := w.Header().Get("Content-Type"); got != "application/json; charset=utf-8" {
+		t.Errorf("Content-Type = %q, want the stored application/json", got)
 	}
 	if store.storeCalls != 0 {
 		t.Errorf("Store called %d times on a replay, want 0", store.storeCalls)
@@ -424,9 +433,10 @@ func TestIdempotencyReplayReturnsTheOriginalBody(t *testing.T) {
 	// Second request, same key: the store now reports the recorded pair, exactly
 	// as sqlIdempotencyStore would after a real INSERT.
 	second := &fakeStore{
-		count:      1,
-		loadStatus: first.storeStatus,
-		loadBody:   append(json.RawMessage(nil), first.storeBody...),
+		count:           1,
+		loadStatus:      first.storeStatus,
+		loadContentType: first.storeCT,
+		loadBody:        append(json.RawMessage(nil), first.storeBody...),
 	}
 	w2, ran2 := runIdempotency(t, second, "key-replay", "created", `{"ride":{"id":"ride-99"}}`)
 
@@ -492,28 +502,45 @@ func TestIdempotencyCapturesWriteStringBodies(t *testing.T) {
 // TestReplayableBodyKeepsInsertValid pins the normalisation. response_body is
 // NOT NULL JSONB, so whatever the handler wrote must be turned into something
 // storable — without ever inventing a payload that the client did not receive.
+//
+// The wrapping is keyed on the CONTENT TYPE: a non-JSON type is always
+// JSON-string-encoded, even when the bytes are themselves valid JSON, so the
+// replay can tell "raw JSON document" from "wrapped non-JSON bytes".
 func TestReplayableBodyKeepsInsertValid(t *testing.T) {
+	const jsonCT = "application/json; charset=utf-8"
+	const textCT = "text/plain; charset=utf-8"
+	const htmlCT = "text/html; charset=utf-8"
 	cases := []struct {
-		name     string
-		captured string
-		want     string
+		name        string
+		contentType string
+		captured    string
+		want        string
 	}{
-		{"json object passes through", `{"a":1}`, `{"a":1}`},
-		{"json array passes through", `[1,2,3]`, `[1,2,3]`},
-		{"json null stays null", `null`, `null`},
-		{"surrounding whitespace is trimmed", "  {\"a\":1}\n", `{"a":1}`},
-		{"empty body becomes json null", ``, `null`},
-		{"whitespace only becomes json null", "  \n", `null`},
-		{"non-json is wrapped as a json string", `plain text`, `"plain text"`},
+		{"json object passes through", jsonCT, `{"a":1}`, `{"a":1}`},
+		{"json array passes through", jsonCT, `[1,2,3]`, `[1,2,3]`},
+		{"json null stays null", jsonCT, `null`, `null`},
+		{"json string literal stays raw", jsonCT, `"quoted"`, `"quoted"`},
+		{"json surrounding whitespace is trimmed", jsonCT, "  {\"a\":1}\n", `{"a":1}`},
+		{"empty body becomes json null", jsonCT, ``, `null`},
+		{"non-json plain text is wrapped", textCT, `plain text`, `"plain text"`},
+		{"non-json null literal is wrapped, not stored as json null", textCT, `null`, `"null"`},
+		// The bug the reviewer reproduced: a non-JSON body that is a valid JSON
+		// string literal must NOT be stored raw, or the replay cannot tell it
+		// apart from a wrapped body and strips the quotes.
+		{"non-json quoted literal is wrapped", textCT, `"quoted"`, `"\"quoted\""`},
+		// Whitespace-only must survive: the old trim-then-check stored `null`.
+		{"non-json whitespace is preserved", textCT, "  ", `"  "`},
+		{"empty non-json body becomes json null", textCT, ``, `null`},
 		// encoding/json HTML-escapes <, > and & by default. That is still the
 		// same string once parsed, and it is the safe form to keep in a JSONB
 		// column, so the escaping is expected rather than a defect.
-		{"html is wrapped, html-escaped", `<h1>hi</h1>`, `"<h1>hi</h1>"`},
+		{"non-json html is wrapped, html-escaped", htmlCT, `<h1>hi</h1>`, `"<h1>hi</h1>"`},
+		{"empty content type behaves as json", ``, `{"a":1}`, `{"a":1}`},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			got := string(replayableBody([]byte(tc.captured)))
-			if tc.name == "html is wrapped, html-escaped" {
+			got := string(replayableBody(tc.contentType, []byte(tc.captured)))
+			if tc.name == "non-json html is wrapped, html-escaped" {
 				// Compare after a JSON round-trip so the assertion is about the
 				// VALUE, not about encoding/json's escaping policy.
 				var wantAny, gotAny interface{}
@@ -521,17 +548,49 @@ func TestReplayableBodyKeepsInsertValid(t *testing.T) {
 					t.Fatalf("bad expectation %q: %v", tc.want, err)
 				}
 				if err := json.Unmarshal([]byte(got), &gotAny); err != nil {
-					t.Fatalf("replayableBody(%q) = %q, not valid JSON: %v", tc.captured, got, err)
+					t.Fatalf("replayableBody(%q, %q) = %q, not valid JSON: %v", tc.contentType, tc.captured, got, err)
 				}
 				if gotAny != wantAny {
-					t.Errorf("replayableBody(%q) decoded to %v, want %v", tc.captured, gotAny, wantAny)
+					t.Errorf("replayableBody(%q, %q) decoded to %v, want %v", tc.contentType, tc.captured, gotAny, wantAny)
 				}
 			} else if got != tc.want {
-				t.Errorf("replayableBody(%q) = %q, want %q", tc.captured, got, tc.want)
+				t.Errorf("replayableBody(%q, %q) = %q, want %q", tc.contentType, tc.captured, got, tc.want)
 			}
 			if !json.Valid([]byte(got)) {
-				t.Errorf("replayableBody(%q) = %q, which is not valid JSON and would fail the JSONB INSERT",
-					tc.captured, got)
+				t.Errorf("replayableBody(%q, %q) = %q, which is not valid JSON and would fail the JSONB INSERT",
+					tc.contentType, tc.captured, got)
+			}
+		})
+	}
+}
+
+// TestNonJSONReplayRoundTripsExactBytes is the byte-for-byte property the
+// reviewer's counterexamples broke: for every non-JSON body — including a valid
+// JSON string literal and whitespace-only bytes — storing then replaying must
+// return the exact original bytes. It exercises the same store/replay functions
+// the middleware calls.
+func TestNonJSONReplayRoundTripsExactBytes(t *testing.T) {
+	cases := []struct {
+		name string
+		body string
+	}{
+		{"plain text", "OK, plain text payload"},
+		{"valid json string literal", `"quoted"`},
+		{"whitespace only", "  "},
+		{"json null literal", "null"},
+		{"html-significant bytes", `<h1>hi</h1> & <b>bye</b>`},
+		{"empty", ""},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			const ct = "text/plain; charset=utf-8"
+			stored := replayableBody(ct, []byte(tc.body))
+			if !json.Valid(stored) {
+				t.Fatalf("stored %q is not valid JSONB and the INSERT would fail", stored)
+			}
+			got := string(replayBody(ct, json.RawMessage(stored)))
+			if got != tc.body {
+				t.Errorf("round-trip = %q, want the exact original %q", got, tc.body)
 			}
 		})
 	}
@@ -624,50 +683,71 @@ func TestIdempotencyNonJSONBodyIsStoredWithoutChangingTheResponse(t *testing.T) 
 	}
 }
 
-// TestIdempotencyNonJSONReplayIsJSONQuoted pins the documented (imperfect)
-// replay fidelity for a non-JSON body, so replayableBody's comment cannot rot
-// again. The replay is c.AbortWithStatusJSON — json.Marshal under
-// Content-Type: application/json — so the stored JSON string comes back quoted
-// and re-escaped, NOT as the exact bytes the client originally received. Only
-// JSON objects/arrays round-trip byte-for-byte (pinned by
-// TestIdempotencyReplayReturnsTheOriginalBody). Faithful replay needs the
-// original Content-Type, i.e. a response_content_type column and c.Data.
-func TestIdempotencyNonJSONReplayIsJSONQuoted(t *testing.T) {
-	gin.SetMode(gin.TestMode)
-	const text = "OK, plain text payload"
-
-	first := &fakeStore{}
-	r := gin.New()
-	r.Use(func(c *gin.Context) { c.Set("user_id", "user-1"); c.Next() })
-	r.Use(idempotencyWithStore(first))
-	r.GET("/x", func(c *gin.Context) { c.String(http.StatusOK, text) })
-	req := httptest.NewRequest(http.MethodGet, "/x", nil)
-	req.Header.Set("Idempotency-Key", "k-text-replay")
-	r.ServeHTTP(httptest.NewRecorder(), req)
-
-	second := &fakeStore{
-		count:      1,
-		loadStatus: first.storeStatus,
-		loadBody:   append(json.RawMessage(nil), first.storeBody...),
+// TestIdempotencyNonJSONReplayIsFaithful is the bug #17 payoff: a replay must
+// echo the ORIGINAL Content-Type and the ORIGINAL bytes. The stored JSONB body
+// goes through the JSON-string form for a non-JSON handler, so the middleware
+// has to unwrap it rather than call AbortWithStatusJSON (which JSON-quoted a
+// text/plain body and \u-escaped HTML-significant bytes).
+func TestIdempotencyNonJSONReplayIsFaithful(t *testing.T) {
+	cases := []struct {
+		name        string
+		contentType string
+		body        string
+	}{
+		{"plain text", "text/plain; charset=utf-8", "OK, plain text payload"},
+		{"html is not json-escaped", "text/html; charset=utf-8", `<h1>hi</h1> & <b>bye</b>`},
+		// The reviewer's counterexamples: a non-JSON body that is itself a valid
+		// JSON string literal, and whitespace-only bytes.
+		{"valid json string literal", "text/plain; charset=utf-8", `"quoted"`},
+		{"whitespace only", "text/plain; charset=utf-8", "  "},
+		{"empty", "text/plain; charset=utf-8", ""},
 	}
-	r2 := gin.New()
-	r2.Use(func(c *gin.Context) { c.Set("user_id", "user-1"); c.Next() })
-	r2.Use(idempotencyWithStore(second))
-	r2.GET("/x", func(c *gin.Context) { c.String(http.StatusOK, "a different body") })
-	req2 := httptest.NewRequest(http.MethodGet, "/x", nil)
-	req2.Header.Set("Idempotency-Key", "k-text-replay")
-	w2 := httptest.NewRecorder()
-	r2.ServeHTTP(w2, req2)
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			gin.SetMode(gin.TestMode)
+			first := &fakeStore{}
+			r := gin.New()
+			r.Use(func(c *gin.Context) { c.Set("user_id", "user-1"); c.Next() })
+			r.Use(idempotencyWithStore(first))
+			r.GET("/x", func(c *gin.Context) { c.Data(http.StatusOK, tc.contentType, []byte(tc.body)) })
+			req := httptest.NewRequest(http.MethodGet, "/x", nil)
+			req.Header.Set("Idempotency-Key", "k-nonjson")
+			r.ServeHTTP(httptest.NewRecorder(), req)
 
-	if second.loadCalls != 1 {
-		t.Fatalf("Load called %d times, want 1", second.loadCalls)
-	}
-	if got := w2.Body.String(); got != `"`+text+`"` {
-		t.Errorf("replay body = %q, want the JSON-quoted %q (documented: replays go through json.Marshal)",
-			got, `"`+text+`"`)
-	}
-	if ct := w2.Header().Get("Content-Type"); ct != "application/json; charset=utf-8" {
-		t.Errorf("replay Content-Type = %q, want application/json, not the original text/plain", ct)
+			if first.storeCalls != 1 {
+				t.Fatalf("first Store calls = %d, want 1", first.storeCalls)
+			}
+			if first.storeCT != tc.contentType {
+				t.Errorf("stored Content-Type = %q, want the handler's %q", first.storeCT, tc.contentType)
+			}
+
+			// Second request, same key: replay the recorded pair exactly as the
+			// real store would return it.
+			second := &fakeStore{
+				count:           1,
+				loadStatus:      first.storeStatus,
+				loadContentType: first.storeCT,
+				loadBody:        append(json.RawMessage(nil), first.storeBody...),
+			}
+			r2 := gin.New()
+			r2.Use(func(c *gin.Context) { c.Set("user_id", "user-1"); c.Next() })
+			r2.Use(idempotencyWithStore(second))
+			r2.GET("/x", func(c *gin.Context) { c.String(http.StatusOK, "a different body") })
+			req2 := httptest.NewRequest(http.MethodGet, "/x", nil)
+			req2.Header.Set("Idempotency-Key", "k-nonjson")
+			w2 := httptest.NewRecorder()
+			r2.ServeHTTP(w2, req2)
+
+			if second.loadCalls != 1 {
+				t.Fatalf("Load called %d times, want 1", second.loadCalls)
+			}
+			if got := w2.Body.String(); got != tc.body {
+				t.Errorf("replay body = %q, want the original %q (not JSON-quoted/escaped)", got, tc.body)
+			}
+			if got := w2.Header().Get("Content-Type"); got != tc.contentType {
+				t.Errorf("replay Content-Type = %q, want the original %q", got, tc.contentType)
+			}
+		})
 	}
 }
 

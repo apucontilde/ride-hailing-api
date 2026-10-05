@@ -47,8 +47,32 @@ class _LoginScreenState extends ConsumerState<LoginScreen> {
 
     final email = _emailController.text.trim();
     final password = _passwordController.text;
+    final notifier = ref.read(authProvider.notifier);
 
-    await ref.read(authProvider.notifier).login(email, password);
+    if (notifier.needsAccountSwitch(email)) {
+      final currentEmail = ref.read(authProvider).user?.email ?? 'your account';
+      final confirmed = await showDialog<bool>(
+        context: context,
+        builder: (dialogContext) => AlertDialog(
+          title: const Text('Switch account?'),
+          content: Text('Sign out of $currentEmail and sign in as $email?'),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.of(dialogContext).pop(false),
+              child: const Text('Cancel'),
+            ),
+            FilledButton(
+              onPressed: () => Navigator.of(dialogContext).pop(true),
+              child: const Text('Switch account'),
+            ),
+          ],
+        ),
+      );
+      if (confirmed != true) return;
+      await notifier.switchAccount(email, password);
+    } else {
+      await notifier.login(email, password);
+    }
 
     if (_rememberMe) {
       await ref.read(authProvider.notifier).setRememberedEmail(email);

@@ -1,6 +1,10 @@
 package handler
 
-import "ride-hailing-api/internal/model"
+import (
+	"time"
+
+	"ride-hailing-api/internal/model"
+)
 
 // ErrorDetail is the structured error body returned for non-2xx responses.
 type ErrorDetail struct {
@@ -16,6 +20,21 @@ type ErrorResponse struct {
 // MessageResponse is a simple success envelope carrying a message.
 type MessageResponse struct {
 	Message string `json:"message"`
+}
+
+// FeedbackResponse is returned by POST /api/v1/feedback. Feedback echoes the
+// persisted row, including its client-supplied `type`, so the classification
+// round-trips instead of being dropped (api_plans/STATUS.md bug #20).
+type FeedbackResponse struct {
+	Message  string         `json:"message"`
+	Feedback model.Feedback `json:"feedback"`
+}
+
+// DeviceResponse is returned by POST /api/v1/devices (and its /device-tokens
+// alias). Device is the persisted row after the upsert/reassignment.
+type DeviceResponse struct {
+	Message string            `json:"message"`
+	Device  model.DeviceToken `json:"device"`
 }
 
 // UserSummary is the public-facing user representation.
@@ -65,6 +84,17 @@ type RideResponse struct {
 	Ride *model.Ride `json:"ride"`
 }
 
+// RideWithStopsResponse is a ride plus its ordered itinerary (migration 016).
+//
+// Stops is a SIBLING of `ride`, never a new field inside it: a client that
+// predates multi-stop keeps parsing `ride` unchanged and simply ignores the
+// extra key. `stops` is always present (an empty array when the ride has none)
+// so a client never has to distinguish "no stops" from "field missing".
+type RideWithStopsResponse struct {
+	Ride  *model.Ride      `json:"ride"`
+	Stops []model.RideStop `json:"stops"`
+}
+
 // RideListResponse is the paginated ride history envelope.
 type RideListResponse struct {
 	Rides      interface{} `json:"rides"`
@@ -72,6 +102,32 @@ type RideListResponse struct {
 	Page       int         `json:"page"`
 	PerPage    int         `json:"per_page"`
 	TotalPages int         `json:"total_pages"`
+	// Stops is the itinerary of every ride on the page, keyed by ride id and
+	// fetched in ONE query. It is a sibling of `rides`, so `rides` stays the flat
+	// array an older client already parses. A ride with no itinerary maps to an
+	// empty array, never a missing key.
+	Stops map[string][]model.RideStop `json:"stops"`
+}
+
+// RatingItem is the public shape of one submitted rating. Deliberately omits
+// ratee_id: the caller is the rater, so it is the mirror of their own id.
+type RatingItem struct {
+	ID        string    `json:"id"`
+	RideID    string    `json:"ride_id"`
+	RaterRole string    `json:"rater_role"`
+	Score     int       `json:"score"`
+	Comment   string    `json:"comment"`
+	CreatedAt time.Time `json:"created_at"`
+}
+
+// RatingListResponse is the paginated submitted-ratings envelope returned by
+// GET /api/v1/rider/ratings and GET /api/v1/driver/ratings.
+type RatingListResponse struct {
+	Ratings    []RatingItem `json:"ratings"`
+	Total      int          `json:"total"`
+	Page       int          `json:"page"`
+	PerPage    int          `json:"per_page"`
+	TotalPages int          `json:"total_pages"`
 }
 
 // RideReceiptResponse is returned by GET /api/v1/rides/:id/receipt.

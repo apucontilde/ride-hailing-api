@@ -18,6 +18,7 @@ type DeviceToken struct {
 	Platform  string    `db:"platform" json:"platform"`
 	IsActive  bool      `db:"is_active" json:"is_active"`
 	CreatedAt time.Time `db:"created_at" json:"created_at"`
+	UpdatedAt time.Time `db:"updated_at" json:"updated_at"`
 }
 
 type Promotion struct {
@@ -45,9 +46,12 @@ type SOSAlert struct {
 }
 
 type Feedback struct {
-	ID        string    `db:"id" json:"id"`
-	UserID    string    `db:"user_id" json:"user_id"`
-	RideID    *string   `db:"ride_id" json:"ride_id"`
+	ID     string  `db:"id" json:"id"`
+	UserID string  `db:"user_id" json:"user_id"`
+	RideID *string `db:"ride_id" json:"ride_id"`
+	// Type is the client-supplied classification (e.g. "app_issue"). Optional:
+	// a body without it stores "" so pre-existing clients keep working.
+	Type      string    `db:"type" json:"type"`
 	Message   string    `db:"message" json:"message"`
 	CreatedAt time.Time `db:"created_at" json:"created_at"`
 }

@@ -1,31 +1,8 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
+import '../data/rated_rides_provider.dart';
 import '../data/rides_repository.dart';
-
-/// Ride ids the driver has already rated, in this app session.
-///
-/// ⚠️ There is no server-side record to read back: `GET /driver/ratings` is a
-/// `StubPayment` (`internal/router/router.go:144`) and the ride history carries
-/// no "rated by driver" flag, so this set is the *only* thing preventing a
-/// second prompt or a double submit. It is in-memory by design — a relaunch
-/// forgets it, and the guard has to be re-derived from the fact that the
-/// server happily accepts a second rating for the same ride.
-final ratedRideIdsProvider = StateProvider<Set<String>>((ref) => <String>{});
-
-/// Whether [rideId] has been rated in this session.
-///
-/// This is a plain read: it does **not** subscribe the caller, so a widget that
-/// must react to a rating has to `watch` [ratedRideIdsProvider] instead.
-bool isRated(WidgetRef ref, String rideId) =>
-    ref.read(ratedRideIdsProvider).contains(rideId);
-
-/// Marks [rideId] as rated.
-void markRated(WidgetRef ref, String rideId) {
-  final rated = ref.read(ratedRideIdsProvider);
-  if (rated.contains(rideId)) return;
-  ref.read(ratedRideIdsProvider.notifier).state = {...rated, rideId};
-}
 
 /// Opens the rating sheet for a completed ride (US-D10).
 Future<void> showRateSheet(BuildContext context, WidgetRef ref,
@@ -81,7 +58,9 @@ class _RateSheetState extends ConsumerState<RateSheet> {
             comment: _comment.text,
           );
       if (!mounted) return;
-      markRated(ref, widget.rideId);
+      // The server has the rating now; retire the prompt immediately rather
+      // than waiting for the rated-rides list to catch up with it.
+      ref.read(ratedRidesProvider.notifier).markRated(widget.rideId);
       Navigator.of(context).pop();
       ScaffoldMessenger.of(context).showSnackBar(
         const SnackBar(content: Text('Thanks — rating sent')),
