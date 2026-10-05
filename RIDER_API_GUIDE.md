@@ -402,12 +402,14 @@ client must therefore treat `is_estimate` as a per-response flag it checks, not 
 promise the API makes for every out-of-coverage pin — and must still handle a `5xx` as
 "no road route available".
 
-The reason for the 5xx-not-4xx rule is the clients: both apps react to *any* error status
-by drawing a straight pickup→dropoff line, so a route outage misreported as a `4xx` would
-render a confident, road-less route instead of anything visible to the rider. The driver
-app now draws that line dashed (`driver_app/lib/features/trip/presentation/trip_screen.dart:285-294`,
-for both a failed request and an `is_estimate` answer); the rider app is still tracked by
-`rider_app_plans/01_[map]_route_fallback_honesty.md`.
+The reason for the 5xx-not-4xx rule is the clients: both apps treat *any* error status as a
+route failure, so a route outage misreported as a `4xx` is indistinguishable from a legitimate
+client error. The driver app draws a straight line dashed (`driver_app/lib/features/trip/presentation/trip_screen.dart:285-294`,
+for both a failed request and an `is_estimate` answer). The rider app now draws a grey dashed
+line and surfaces the message + a Retry (`rider_app/lib/features/home/presentation/home_screen.dart:179-195,440-474`),
+so an outage is no longer silent; the remaining honesty gap (the error branch still synthesizes
+a line instead of showing nothing, and `is_estimate` uses client geometry) is tracked by
+`rider_app_plans/[map]_route_failure_honesty.md`.
 
 ## Platform and Utility
 

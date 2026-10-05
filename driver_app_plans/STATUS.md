@@ -69,15 +69,18 @@ unambiguous; Go and cross-package paths are repo-relative. Never cite a bare
 | 7 | (Fixed by `[nav]_app_wide_drawer.md`) The sidebar is no longer `/home`-only: a `ShellRoute` wraps the five top-level sections in one `DriverShell` Scaffold, so switching sections needs no back-press. `/trip` and `/safety` stay outside; `/safety` keeps its own back arrow. | `driver_app/lib/features/navigation/driver_shell.dart:26`; `driver_app/lib/core/router/app_router.dart:77-110`; `driver_app/test/features/navigation/driver_shell_test.dart` | resolved | [nav] |
 | 8 | (Fixed by `01_[dispatch]_keepalive_and_offer_reliability.md`, landed/deleted) No driver-side keep-alive: `WebSocketService` now owns an opt-in `heartbeatInterval` loop (driver opts into 25 s via `webSocketServiceProvider`), armed on connect/`setOnline`, stopped on disconnect/dispose, and re-armed with an immediate `ping` on reconnect; `availability.onOnlineChanged = websocket.setOnline` keeps it in lockstep with the status switch and `websocket.onReconnected = () => publishLastPosition()` re-publishes the last fix. `isConnected` stays "open, not alive" by design (documented at `shared/lib/src/network/websocket_service.dart:62-70`). | `shared/lib/src/network/websocket_service.dart:37,112,148,177,204`; `driver_app/lib/core/network/websocket_service.dart:17,45,78`; `driver_app/lib/core/location/location_service.dart:245,249` | resolved | [dispatch] |
 | 9 | (Closed — api bug #20 landed) The backend `POST /api/v1/feedback` now persists the client's `type` (`feedback.type`, migration `018`), so the app's `type:'app_issue'` is retained instead of silently ignored. The app already sent it, so no client change was needed. | `internal/handler/platform.go:118-145`; `internal/repository/feedback_repo.go:30`; `internal/database/migrations/018_push_pipeline.up.sql:31`; `driver_app/lib/features/safety/data/safety_repository.dart:26-34` | resolved | [safety] |
-| 10 | Documented bound: the server-backed rated-rides walk stops at `ratedRidesMaxPages` (20) × `ratedRidesPageSize` (50) = 1000 newest ratings, because the server clamps `per_page` to ≤50 and offers no cursor. A driver with >1000 submitted ratings could have an older already-rated ride read as `unrated` (the loaded set is then the truth) and be prompted again. Low severity until real volumes approach the bound; the fix is a cursor/`total`-driven fetch or an "I rated this" endpoint. | `driver_app/lib/features/rides/data/rated_rides_provider.dart:15,156`; `internal/handler/ride.go:436-438` | low | [history] |
+| 10 | Documented bound: the server-backed rated-rides walk stops at `ratedRidesMaxPages` (20) × `ratedRidesPageSize` (50) = 1000 newest ratings, because the server clamps `per_page` to ≤50 and offers no cursor. A driver with >1000 submitted ratings could have an older already-rated ride read as `unrated` (the loaded set is then the truth) and be prompted again. Low severity until real volumes approach the bound; the fix is a cursor/`total`-driven fetch or an "I rated this" endpoint. Owned by `01_[history]_rated_pagination_past_cap.md` (shares the open `api_plans/[history]_rating_existence_endpoint.md` prerequisite with rider bug #11) | `driver_app/lib/features/rides/data/rated_rides_provider.dart:15,156`; `internal/handler/ride.go:436-438` | low | [history] |
 
 ## Open plans
 
-None — all four earlier wave plans (`[profile]_profile_settings_tests.md`, `[safety]_sos_feedback.md`,
+| File | Tag | Depends on | What remains |
+| --- | --- | --- | --- |
+| `01_[history]_rated_pagination_past_cap.md` | history | `api_plans/[history]_rating_existence_endpoint.md` | Honest `unknown` past the 20 × 50 walk bound so an over-cap driver is never re-prompted (bug #10); resolve a specific ride via the open `ride_id`-filter prerequisite, or keep the app-only truncated⇒`unknown` fix (independent of it) |
+| `[push]_device_token_registration.md` | push | landed `[push]` API pipeline (no open plan) | Register/refresh a device token and unregister on sign-out so fan-out stops reaching zero devices; seam-only (deferrable) until a real FCM/APNs provider is wired server-side |
+
+All four earlier wave plans (`[profile]_profile_settings_tests.md`, `[safety]_sos_feedback.md`,
 `01_[session]_switch_and_cancel_session.md`, `[nav]_app_wide_drawer.md`) landed and were deleted, and
 the server-backed rated-rides work that closed bug #4 landed without a surviving plan file.
-The remaining follow-ups are tracked above as bugs #3, #5, #6, #9 and #10; none needs a multi-step
-design plan yet.
 
 ## Skip list (authoritative)
 

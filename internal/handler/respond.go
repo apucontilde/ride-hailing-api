@@ -134,9 +134,12 @@ func registerJSONFieldNames() {
 //
 // The status split is the part that matters. Guessing wrong towards 5xx (a
 // 500 for a typo) is recoverable: they retry. Guessing wrong towards 4xx is
-// not: the rider app draws a straight line on EVERY error status
-// (home_screen.dart:157), so a 4xx-for-an-outage silently renders a
-// confident road-less route instead of showing anything is wrong.
+// not: both apps treat any error status as a route failure, so a
+// 4xx-for-an-outage is indistinguishable from a legitimate client error. The
+// rider Home preview now surfaces the message + Retry and draws a grey dashed
+// line (rider_app/lib/features/home/presentation/home_screen.dart:179-195,440-474),
+// so it is no longer silent; its residual honesty gap is tracked by
+// rider_app_plans/[map]_route_failure_honesty.md.
 func respondRepo(c *gin.Context, err error, notFound, conflict, internal string) {
 	switch {
 	case errors.Is(err, repository.ErrNotFound):

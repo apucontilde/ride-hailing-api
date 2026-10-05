@@ -190,13 +190,20 @@ unless they cross a package, in which case they are repo-relative
 | 8 | `current_ride_provider` poll only self-stopped on `no_driver_available`; cancel/complete relied on screen navigation — **FIXED**: self-stops on any terminal status | `features/home/data/current_ride_provider.dart:90-93,111-113` | low | [tracking] |
 | 9 | Sidebar existed only on `/home`; `AppSidebar.selectedRoute` wired but unconsumed — **FIXED**: app-wide `RiderShell` `ShellRoute` consumes `selectedRoute`; flow routes stay drawer-free | `features/navigation/rider_shell.dart:26-92`; `core/router/app_router.dart:56-86` | low | [nav] |
 | 10 | Place autocomplete fired one request per keystroke (no debounce) AND up to 4 sequential requests per query via the `_radiusSteps` 1000/3000/10000/30000 m loop — **FIXED** by `[search]_throttle_place_autocomplete.md`: 350 ms `placeSearchDebounceProvider` (`features/home/data/home_provider.dart:53-54`) with cancel-then-rearm `_debounceTimer` (`features/home/presentation/location_search_screen.dart:28,37-43`), and a single `_searchRadiusM = 30000.0` request (`features/home/data/home_provider.dart:51,56-74`) | pre-fix `features/home/presentation/location_search_screen.dart:50-52`; `features/home/data/home_provider.dart:51,58-73` | medium | [search] |
-| 11 | `riderRatedRideIdsProvider` seed walk is a **documented bound**: `ratedRideIdsMaxPages` = 20 × 50 = 1000 rated rides. A rider past that ceiling could be re-prompted for an ancient completed ride — non-fatal, the prompt's 409 → `alreadyRated` guard swallows it | `features/home/data/ride_provider.dart:239,247-271` | low | [tracking] |
+| 11 | `riderRatedRideIdsProvider` seed walk is a **documented bound**: `ratedRideIdsMaxPages` = 20 × 50 = 1000 rated rides. A rider past that ceiling could be re-prompted for an ancient completed ride — non-fatal, the prompt's 409 → `alreadyRated` guard swallows it. Owned by `01_[history]_rated_seed_past_cap.md` (shares the open `api_plans/[history]_rating_existence_endpoint.md` prerequisite with driver bug #10) | `features/home/data/ride_provider.dart:239,247-271` | low | [history] |
 
 ## Open plans
 
-**None.** Both wave plans — `[tracking]_ride_detail_receipt_rating.md` (LC-3 + LC-4) and
-`01_[ontrip]_live_route_and_eta.md` — landed and were condensed into Landed above and deleted
-(2026-10-03). The rider domain has no open plans.
+| File | Tag | Depends on | What remains |
+| --- | --- | --- | --- |
+| `[map]_route_failure_honesty.md` | map | — | Home preview parity with the active trip: no straight line on any error status, estimate keeps the **API** geometry dashed + labeled, and a failed refresh must not swap in a straight line |
+| `01_[history]_rated_seed_past_cap.md` | history | `api_plans/[history]_rating_existence_endpoint.md` | `GET /rider/ratings` seed stops at 1000; detect truncation via the envelope's `total` and make loading / failed / partial `unknown` (never `unrated`), or resolve a specific ride via the open `ride_id`-filter prerequisite |
+| `[push]_device_token_registration.md` | push | — | Rider never registers a device token: permission + `POST /devices` (valid platform), refresh re-register, unregister **before** `logout()`. Inert until a real server push provider exists — may be deferred |
+| `[multi]_rider_stop_list_ui.md` | multi | — | **Outline only** (to be fleshed out): add/remove/reorder intermediate stops on Home + mid-trip destination change, consuming the landed API `[multi]` contract (`stops` sibling; `PUT /rides/:id/destination`) |
+
+Earlier wave plans — `[tracking]_ride_detail_receipt_rating.md` (LC-3 + LC-4) and
+`01_[ontrip]_live_route_and_eta.md` — landed, were condensed into Landed above, and were deleted
+(2026-10-03).
 
 ## Invariants
 
