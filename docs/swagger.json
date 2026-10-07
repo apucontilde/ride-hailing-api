@@ -86,10 +86,27 @@
         "base_fare": {
           "type": "number"
         },
+        "currency": {
+          "type": "string"
+        },
+        "demand_multiplier": {
+          "type": "number"
+        },
         "distance_fare": {
           "type": "number"
         },
         "distance_rate": {
+          "type": "number"
+        },
+        "grade_uplift_pct": {
+          "description": "GradeUpliftPct is the climb uplift applied to the estimate's distance leg.",
+          "type": "number"
+        },
+        "region_id": {
+          "description": "Additive [fare] fields (api_plans/STATUS.md [fare]). They\ndescribe WHICH card priced the estimate and how the multiplier was built;\nno client ever supplies a price.",
+          "type": "string"
+        },
+        "supply_multiplier": {
           "type": "number"
         },
         "surge_multiplier": {
@@ -357,8 +374,19 @@
             "base_fare": {
               "type": "number"
             },
+            "currency": {
+              "type": "string"
+            },
             "distance_fare": {
               "type": "number"
+            },
+            "grade_uplift_pct": {
+              "description": "GradeUpliftPct is the climb uplift APPLIED to the charged distance\nleg: the booked value before completion, the recomputed final value\nafter, so it reconciles with DistanceFare.",
+              "type": "number"
+            },
+            "region_id": {
+              "description": "RegionID names the pricing region; Currency is its IANA-priced\nISO-4217 currency. Both are empty for a ride booked before the pricing\nengine landed (SQL NULL).",
+              "type": "string"
             },
             "surge_multiplier": {
               "type": "number"
@@ -908,6 +936,13 @@
         "accepted_at": {
           "type": "string"
         },
+        "actual_distance_m": {
+          "type": "number"
+        },
+        "actual_duration_s": {
+          "description": "Actual trip actuals (migration 021, api_plans/[tracking]_actual_trip_distance.md).\nBoth are pointers because SQL NULL means \"no usable actual\", never a\nfabricated 0: a missing trace leaves ActualDistanceM nil and a missing\ntimestamp pair leaves ActualDurationS nil, and the later fare recompute\n(stage 02) falls back to the booked values. They are additive JSON fields.",
+          "type": "integer"
+        },
         "base_fare": {
           "type": "number"
         },
@@ -939,6 +974,24 @@
           "type": "number"
         },
         "dropoff_lng": {
+          "type": "number"
+        },
+        "fare_currency": {
+          "type": "string"
+        },
+        "fare_rate_id": {
+          "type": "string"
+        },
+        "fare_region_id": {
+          "description": "Fare audit (migration 019, api_plans/STATUS.md [fare]).\nThese snapshot WHICH region's card and WHICH card version priced the\nride, so stage 02 can recompute from the BOOKED card rather than the\ncurrent one. They are pointers because a ride booked before 019 (or one\nwhose region had no card) has SQL NULL: scanning NULL into a string would\nfail. The fare_* DOUBLE columns above stay major currency units at this\nJSON boundary; the audit columns are metadata, not money.",
+          "type": "string"
+        },
+        "grade_ascent_m": {
+          "description": "GradeAscentM is the RAW ascent the applied uplift was derived from\n(migration 020). NULL means no uplift was applied (the fail-flat case),\nnever a fabricated 0; the same pointer discipline as the fare_* audit\ncolumns.",
+          "type": "number"
+        },
+        "grade_uplift_pct": {
+          "description": "GradeUpliftPct is the climb uplift APPLIED to the charged distance leg,\nas a fraction (0.12 == +12%). Like the money columns it holds the BOOKED\nvalue until completion, then the value RECOMPUTED on the actual distance,\nso a completed ride's `grade_uplift_pct` reconciles with its final\ndistance_fare. The booked snapshot is preserved in\nQuotedGradeUpliftPct (migration 023).",
           "type": "number"
         },
         "id": {
@@ -1885,7 +1938,7 @@
     },
     "/api/v1/driver/ratings": {
       "get": {
-        "description": "Returns a paginated list of ratings the current rider or driver submitted.",
+        "description": "Returns a paginated list of ratings the current rider or driver submitted. Pass ride_id to scope the answer to one ride's existence check (0 or 1 row).",
         "operationId": "getDriver-ratings",
         "parameters": [
           {
@@ -1901,6 +1954,13 @@
             "in": "query",
             "name": "per_page",
             "type": "integer"
+          },
+          {
+            "description": "Only the rating for this ride",
+            "format": "uuid",
+            "in": "query",
+            "name": "ride_id",
+            "type": "string"
           }
         ],
         "produces": [
@@ -1911,6 +1971,12 @@
             "description": "OK",
             "schema": {
               "$ref": "#/definitions/handler.RatingListResponse"
+            }
+          },
+          "422": {
+            "description": "Invalid ride_id",
+            "schema": {
+              "$ref": "#/definitions/handler.ErrorResponse"
             }
           },
           "500": {
@@ -3412,7 +3478,7 @@
     },
     "/api/v1/rider/ratings": {
       "get": {
-        "description": "Returns a paginated list of ratings the current rider or driver submitted.",
+        "description": "Returns a paginated list of ratings the current rider or driver submitted. Pass ride_id to scope the answer to one ride's existence check (0 or 1 row).",
         "operationId": "getRider-ratings",
         "parameters": [
           {
@@ -3428,6 +3494,13 @@
             "in": "query",
             "name": "per_page",
             "type": "integer"
+          },
+          {
+            "description": "Only the rating for this ride",
+            "format": "uuid",
+            "in": "query",
+            "name": "ride_id",
+            "type": "string"
           }
         ],
         "produces": [
@@ -3438,6 +3511,12 @@
             "description": "OK",
             "schema": {
               "$ref": "#/definitions/handler.RatingListResponse"
+            }
+          },
+          "422": {
+            "description": "Invalid ride_id",
+            "schema": {
+              "$ref": "#/definitions/handler.ErrorResponse"
             }
           },
           "500": {

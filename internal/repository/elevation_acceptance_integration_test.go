@@ -24,32 +24,42 @@ import (
 // failure is reproducible run to run.
 //
 // The committed tests use a reduced sample (see `sampleN`) so `make
-// test-integration` stays sane. The WEIGHT RESPONSE / GATE RESULT numbers in
-// api_plans/[elevation]_calibration_and_rollout_gate.md were produced by THIS
-// N=100 committed sweep plus a fuller N=250 scratch sweep
+// test-integration` stays sane. The historical WEIGHT RESPONSE / GATE RESULT
+// numbers in api_plans/[elevation]_calibration_and_rollout_gate.md were
+// produced by THIS N=100 committed sweep plus a fuller N=250 scratch sweep
 // (internal/repository/zz_sweep2_test.go). The plan's full N=2000 sample was
-// NEVER run; running it is a remaining-work item recorded in that plan. Both
-// committed helpers use the same fixed seed, so the tests guard the
-// *properties* the recorded blocks assert.
+// subsequently run by Stage 2 of the now-condensed deadband-calibrate-and-flip
+// execution plan (condensed in api_plans/STATUS.md under [elevation])
+// (internal/repository/zz_stage2_sweep_test.go, gated behind RUN_STAGE2_SWEEP=1)
+// and settled G2/G5 at asc12_db3.8. Both committed helpers use the same fixed
+// seed, so the tests guard the *properties* the recorded blocks assert.
 
 // sampleN is the committed-test sample size for the province-wide tests. It
 // keeps the acceptance suite inside `go test`'s default 10-minute package
-// timeout alongside the other integration tests. The recorded gate numbers
-// (WEIGHT RESPONSE / GATE RESULT) came from this N=100 sweep and a fuller N=250
-// scratch run — NOT from the plan's N=2000 sample; these committed tests guard
-// the same *properties* at reduced resolution.
+// timeout alongside the other integration tests. The historical gate numbers
+// came from this N=100 sweep and a fuller N=250 scratch run; the N=2000 Stage-2
+// run (zz_stage2_sweep_test.go) is the settled result. These committed tests
+// guard the same *properties* at reduced resolution and stay fast.
 const sampleN = 100
 
 // provinceBBox is the San José province clip the importer produces
 // (download-osm.sh), verified against the live 152,665-vertex import.
 var provinceBBox = [4]float64{8.99, -84.54, 10.24, -83.39}
 
-// defaultWeights is the shipped provisional default (config.go). Confirmed inert
-// on the typical trip by the recorded sweep: median ascent/meters ratio 1.0000.
+// defaultWeights is the recorded PRE-calibration provisional default that
+// produced the historical N=100/N=250 sweep tables in the gate plan. It is kept
+// frozen as a historical probe so those recorded numbers stay attributable and
+// so TestElevationFlatAreaInvariance keeps being measured at the weights its
+// recorded 97.0% result was taken at. The SHIPPED default is now the calibrated
+// operating point asc12_db3.8 (AscentW=12, DeadbandM=3.8); Stage 2 of the
+// now-condensed deadband-calibrate-and-flip execution plan re-ran the full sweep
+// at that point (see zz_stage2_sweep_test.go and the gate plan's Stage-2 block).
 var defaultWeights = routing.CostWeights{AscentW: 1.5, DescentW: 0.3, MaxGrade: 0.15, DeadbandM: 3}
 
-// ascentHeavy is the usable operating point the recorded sweep found: median
-// ascent ratio ~0.94 with median meters ratio still < 1.01.
+// ascentHeavy is the by-eye operating point the historical sweep found: median
+// ascent ratio ~0.94 with median meters ratio still < 1.01. Kept frozen as the
+// db=8 probe; the SHIPPED point is asc12 at the calibrated db=3.8, which the
+// Stage-2 N=2000 sweep found at least as good (168 vs 150 qualifying pairs).
 var ascentHeavy = routing.CostWeights{AscentW: 12, DescentW: 0.3, MaxGrade: 0.15, DeadbandM: 8}
 
 // pair is a fixed, seeded origin/destination used by every sub-test.
@@ -323,6 +333,96 @@ func TestElevationWeightsSweep(t *testing.T) {
 type sweepPoint struct {
 	name string
 	w    routing.CostWeights
+}
+
+// G6 — the certified-flat-street Δz estimator. The estimator is SPLIT in two:
+//
+//   - the pure statistic and the flatness certification live in
+//     navigation_repo.go (flatEdgeDeadbandM / sampleQuantile / flatEdgeAbsDz),
+//     DB-free and unit-tested on synthetic Δz sets; and
+//   - this collector, which alone touches the live graph: it loads the two
+//     tables and hands them to the pure certifier.
+//
+// See flatEdgeAbsDz for the flatness rule. It is deliberately NOT "sort by
+// |Δz|" (that is circular — it would always read a tiny spread): it certifies
+// TERRAIN (9-cell local relief, computed from the whole vertex set) around the
+// edge's endpoints, independently of the edge's own Δz.
+
+// collectFlatEdgeAbsDz loads the region's vertices and edges and returns the
+// |Δz| samples of its certified-flat edges. Empty means the rule certified
+// nothing (a real finding, never silently treated as a zero deadband — the pure
+// estimator falls back instead).
+func collectFlatEdgeAbsDz(t *testing.T, db *sqlx.DB, regionID string) []float64 {
+	t.Helper()
+	var verts []roadNode
+	if err := db.Select(&verts, `
+		SELECT id, lat, lng, elevation_m
+		FROM road_network_vertices_pgr
+		WHERE region_id = $1`, regionID); err != nil {
+		t.Fatalf("load vertices for %q: %v", regionID, err)
+	}
+	var edges []roadEdge
+	if err := db.Select(&edges, `
+		SELECT source, target, cost
+		FROM road_network_edges_pgr
+		WHERE region_id = $1`, regionID); err != nil {
+		t.Fatalf("load edges for %q: %v", regionID, err)
+	}
+	return flatEdgeAbsDz(verts, edges)
+}
+
+// defaultRegionID returns the region the resolver falls back to, so the
+// calibration measures the same graph production routes on.
+func defaultRegionID(t *testing.T, db *sqlx.DB) string {
+	t.Helper()
+	regions, err := loadRegisteredRegions(db)
+	if err != nil {
+		t.Fatalf("load routing regions: %v", err)
+	}
+	for _, r := range regions {
+		if r.Default {
+			return r.RegionID
+		}
+	}
+	if len(regions) > 0 {
+		return regions[0].RegionID
+	}
+	t.Skip("no routing regions registered")
+	return ""
+}
+
+// TestElevationDeadbandCalibration is the G6 MEASUREMENT run: it collects the
+// certified-flat |Δz| samples from the live graph and reports the calibrated
+// DeadbandM that was written into config.go. It asserts only that the result is
+// a usable, finite value of plausible magnitude; the value itself is recorded in
+// api_plans/[elevation]_calibration_and_rollout_gate.md.
+func TestElevationDeadbandCalibration(t *testing.T) {
+	db := connectPG(t)
+	regionID := defaultRegionID(t, db)
+	samples := collectFlatEdgeAbsDz(t, db, regionID)
+	if len(samples) == 0 {
+		t.Fatalf("no certified-flat edges in region %q", regionID)
+	}
+
+	floor := sampleQuantile(append([]float64(nil), samples...), 0.50)
+	measured := flatEdgeDeadbandM(samples)
+
+	sorted := append([]float64(nil), samples...)
+	sort.Float64s(sorted)
+	at := func(q float64) float64 { return sorted[int(q*float64(len(sorted)-1))] }
+
+	t.Logf("G6 flat-street calibration (%s): rule h<=%.0fm AND 3x3(%.3f deg) relief<=%.0fm; n=%d",
+		regionID, flatEdgeMaxLengthM, flatReliefCellDeg, flatReliefMaxM, len(samples))
+	t.Logf("  |dz| p50=%.3f p90=%.3f p95=%.3f p99=%.3f max=%.3f (DEM noise floor p50=%.3f)",
+		at(0.50), at(0.90), at(0.95), at(0.99), sorted[len(sorted)-1], floor)
+	t.Logf("  calibrated DeadbandM = p95 = %.1f m", measured)
+
+	if math.IsNaN(measured) || math.IsInf(measured, 0) || measured <= 0 {
+		t.Fatalf("calibrated deadband %v is not a usable value", measured)
+	}
+	if measured > 20 {
+		t.Errorf("calibrated deadband %.1f m is implausibly large for certified-flat streets", measured)
+	}
 }
 
 // BenchmarkRouteRealSJ is the real-data cost benchmark (Part 5): absolute

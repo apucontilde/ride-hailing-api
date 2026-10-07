@@ -126,7 +126,7 @@ void main() {
     ));
   }
 
-  void stubPut(String status) {
+  void stubPut(String status, {double totalFare = 13.2}) {
     when(() => mockDio.put(any(), data: any(named: 'data'))).thenAnswer(
       (_) async => jsonResponse({
         'ride': {
@@ -134,7 +134,7 @@ void main() {
           'status': status,
           'pickup_lat': pickupLat,
           'dropoff_lat': dropoffLat,
-          'total_fare': 13.2,
+          'total_fare': totalFare,
         },
       }),
     );
@@ -305,14 +305,118 @@ void main() {
       );
       await tester.pump();
 
-      expect(find.text('\$11.80'), findsOneWidget);
-      expect(find.text('\$2.50'), findsOneWidget);
+      // No currency on the fare, so the amount renders bare — never invented.
+      expect(find.text('11.80'), findsOneWidget);
+      expect(find.text('2.50'), findsOneWidget);
 
       await tester.tap(find.byKey(const Key('trip-done-button')));
       await tester.pumpAndSettle();
 
       expect(find.text('home screen'), findsOneWidget);
       expect(rideState.state.currentRide, isNull);
+    });
+
+    testWidgets('shows the API currency, conditions multiplier and climb note',
+        (tester) async {
+      await pumpTrip(tester);
+      broadcast(
+        status: 'completed',
+        fare: {
+          'base_fare': 2.5,
+          'distance_fare': 6.0,
+          'time_fare': 3.3,
+          'surge_multiplier': 1.2,
+          'total': 11.8,
+          'currency': 'USD',
+          'grade_uplift_pct': 0.05,
+        },
+      );
+      await tester.pump();
+
+      expect(find.text('USD11.80'), findsOneWidget);
+      expect(find.text('USD2.50'), findsOneWidget);
+      expect(find.text('Conditions multiplier'), findsOneWidget);
+      expect(find.text('×1.20'), findsOneWidget);
+      expect(find.text('climb +5.0%'), findsOneWidget);
+    });
+
+    testWidgets('omits the currency, uplift and multiplier when absent',
+        (tester) async {
+      await pumpTrip(tester);
+      broadcast(
+        status: 'completed',
+        fare: {
+          'base_fare': 2.5,
+          'distance_fare': 6.0,
+          'time_fare': 3.3,
+          'total': 11.8,
+        },
+      );
+      await tester.pump();
+
+      expect(find.textContaining('USD'), findsNothing);
+      expect(find.textContaining('climb'), findsNothing);
+      expect(find.text('Conditions multiplier'), findsNothing);
+    });
+  });
+
+  group('final charge on completion', () {
+    testWidgets('the completion broadcast replaces the booked fare with the final',
+        (tester) async {
+      await pumpTrip(tester);
+      // While the trip runs the held ride carries the booked quote, which the
+      // driver must never see after completion.
+      broadcast(
+        status: 'in_progress',
+        fare: {'base_fare': 2.0, 'total': 10.0},
+      );
+      await tester.pump();
+
+      // The completion event carries the fare recomputed from actuals.
+      broadcast(
+        status: 'completed',
+        fare: {
+          'base_fare': 2.5,
+          'distance_fare': 6.0,
+          'time_fare': 3.3,
+          'total': 13.2,
+        },
+      );
+      await tester.pump();
+
+      expect(find.text('13.20'), findsOneWidget);
+      expect(find.text('2.50'), findsOneWidget);
+      expect(find.text('10.00'), findsNothing);
+    });
+
+    testWidgets('the REST completion response flows its final total to the screen',
+        (tester) async {
+      await pumpTrip(tester);
+      broadcast(status: 'in_progress', fare: {'total': 10.0});
+      await tester.pump();
+      stubPut('completed', totalFare: 13.2);
+
+      await tester.tap(find.byKey(const Key('trip-primary-button')));
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('Confirm'));
+      await tester.pump();
+      await tester.pump();
+
+      expect(find.text('Trip completed'), findsOneWidget);
+      expect(find.text('13.20'), findsOneWidget);
+      expect(find.text('10.00'), findsNothing);
+    });
+
+    testWidgets('a completion with no fare keeps the placeholder',
+        (tester) async {
+      await pumpTrip(tester);
+      broadcast(status: 'completed');
+      await tester.pump();
+
+      // Every row is null, so every row shows the placeholder — never a
+      // fabricated 0.00.
+      expect(find.text('—'), findsNWidgets(4));
+      expect(find.textContaining('0.00'), findsNothing);
     });
   });
 
@@ -328,6 +432,9 @@ void main() {
       await pumpTrip(tester);
       completeTrip();
       await tester.pump();
+      // The tri-state is resolved by a FutureProvider now: it needs one more
+      // microtask to turn the loaded seed into an `unrated` prompt.
+      await tester.pump();
 
       expect(find.byKey(const Key('trip-rate-button')), findsOneWidget);
       expect(find.text('Rate the rider'), findsOneWidget);
@@ -337,6 +444,7 @@ void main() {
         (tester) async {
       await pumpTrip(tester);
       completeTrip();
+      await tester.pump();
       await tester.pump();
 
       await tester.tap(find.byKey(const Key('trip-rate-button')));

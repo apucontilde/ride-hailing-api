@@ -14,6 +14,8 @@ class ApiEndpoints {
   static const String currentRide = '$prefix/rides/current';
   static String rideById(String id) => '$prefix/rides/$id';
   static String cancelRide(String id) => '$prefix/rides/$id/cancel';
+  static String changeDestination(String id) =>
+      '$prefix/rides/$id/destination';
   static String rateRide(String id) => '$prefix/rides/$id/rate';
   static String tipRide(String id) => '$prefix/rides/$id/tip';
   static String receipt(String id) => '$prefix/rides/$id/receipt';
@@ -29,5 +31,11 @@ class ApiEndpoints {
   static const String ridesHistory = '$prefix/rides/history';
   static const String navigationRoute = '$prefix/navigation/route';
   static const String sos = '$prefix/sos';
+
+  // Device / push token registration (`POST /devices`, `DELETE /devices/:token`)
+  static const String devices = '$prefix/devices';
+  static String deviceUnregister(String token) =>
+      '$prefix/devices/${Uri.encodeComponent(token)}';
+
   static const String ws = '/ws';
 }

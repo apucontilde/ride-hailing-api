@@ -14,6 +14,31 @@ import '../model/ride_detail.dart';
 /// showing a failure banner over a ride the rider already scored.
 enum RatingOutcome { none, submitted, alreadyRated, failed }
 
+/// Whether one ride has already been rated, as the server can prove it.
+///
+/// Mirrors `driver_app/lib/features/rides/data/rated_rides_provider.dart`. The
+/// set this replaced answered "not rated" for every lookup while the seed was
+/// loading, failed, or truncated (past the 1000-row walk bound) — so an ancient
+/// rated ride could be offered again. [unknown] is the honest answer when the
+/// server truth for this ride is not in hand, and it must never collapse into
+/// [unrated]. Since the API grew a `ride_id` existence filter, a ride outside
+/// the fetched window is resolved directly instead of guessed.
+enum RatingStatus {
+  /// The server (or the seeded list) says this ride is rated.
+  rated,
+
+  /// The server definitively says this ride is not rated. The only state in
+  /// which a rating prompt may be shown.
+  unrated,
+
+  /// The server truth has not landed, the load failed, or a truncated seed
+  /// could not be resolved for this ride.
+  unknown;
+
+  /// Whether a rating prompt may be shown. True only for [unrated].
+  bool get canRate => this == RatingStatus.unrated;
+}
+
 class RideDetailState {
   final bool loading;
   final RideDetail? detail;
@@ -62,9 +87,15 @@ class RideDetailState {
     );
   }
 
-  /// Whether [rideId] can still be rated: nothing is in flight and this ride is
-  /// not already in [ratedRideIds] (seeded from `GET /rider/ratings`, or
-  /// recorded after a successful POST / a swallowed 409).
+  /// Whether [rideId] can still be rated from this notifier's session-local
+  /// state: nothing is in flight and this ride is not already known-rated here
+  /// (seeded from `GET /rider/ratings`, or recorded after a successful POST /
+  /// a swallowed 409).
+  ///
+  /// This is **not** the seed-honesty gate. The authoritative per-ride answer
+  /// (server truth, with loading/failure/truncation resolved to `unknown`) is
+  /// [riderRideRatingStatusProvider]; the prompt consults that and uses this
+  /// only for the in-session double-submit guard.
   ///
   /// Deliberately **ride-scoped**: [rating] is only the transient outcome of
   /// the last submit and must never gate a different ride. A global
@@ -238,17 +269,33 @@ const int ratedRideIdsPageSize = 50;
 /// `driver_app/lib/features/rides/data/rated_rides_provider.dart` uses.
 const int ratedRideIdsMaxPages = 20;
 
+/// The rated ride ids a seed walk collected, plus whether it was cut short.
+///
+/// [partial] is true when the envelope's `total` exceeds what the bounded walk
+/// can hold ([ratedRideIdsMaxPages] × [ratedRideIdsPageSize]); the ids in
+/// [rideIds] are then only the newest slice and absence of a ride is **not**
+/// evidence it is unrated.
+class RatedRideSeed {
+  final Set<String> rideIds;
+  final bool partial;
+
+  const RatedRideSeed(this.rideIds, {this.partial = false});
+}
+
 /// The ride ids this rider has already rated, from every page of
-/// `GET /rider/ratings` (`internal/handler/ride.go:GetRatings`).
+/// `GET /rider/ratings` (`internal/handler/ride.go:GetRatings`), as a fast path.
 ///
 /// Walking only page 1 would let a rider with more than [ratedRideIdsPageSize]
-/// ratings be re-prompted for an old ride; the prompt's 409 guard is a backstop,
-/// not the contract. Paged like `/rides/history`.
-final riderRatedRideIdsProvider = FutureProvider<Set<String>>((ref) async {
+/// ratings be re-prompted for an old ride. The walk stays bounded; when it
+/// truncates, [RatedRideSeed.partial] tells [riderRideRatingStatusProvider] to
+/// resolve a specific ride with the server's `ride_id` filter instead of
+/// treating its absence as "unrated".
+final riderRatedRideIdsProvider = FutureProvider<RatedRideSeed>((ref) async {
   final dio = ref.read(apiClientProvider).dio;
   final ids = <String>{};
   var page = 1;
   var totalPages = 1;
+  var total = 0;
   do {
     final response = await dio.get(
       ApiEndpoints.riderRatings,
@@ -263,10 +310,71 @@ final riderRatedRideIdsProvider = FutureProvider<Set<String>>((ref) async {
       final id = json['ride_id'] as String?;
       if (id != null && id.isNotEmpty) ids.add(id);
     }
+    // `total` is the server's count for the whole (unfiltered) list; the
+    // largest one seen is the honest denominator for the truncation check.
+    final reportedTotal = data?['total'];
+    if (reportedTotal is int && reportedTotal > total) total = reportedTotal;
     // `total_pages` is authoritative; 0/absent (empty history) means one page.
     final reported = data?['total_pages'];
     totalPages = reported is int && reported > 0 ? reported : 1;
     page++;
   } while (page <= totalPages && page <= ratedRideIdsMaxPages);
-  return ids;
+  final truncated = total > ratedRideIdsMaxPages * ratedRideIdsPageSize;
+  return RatedRideSeed(Set.unmodifiable(ids), partial: truncated);
 });
+
+/// Whether [rideId] has already been rated, the one source of truth for the
+/// completion prompt.
+///
+/// Resolution order, most definitive first:
+///  1. a rating submitted (or a 409 swallowed) in this session — [rated],
+///  2. the seeded list contains the ride — [rated],
+///  3. the seed is complete and does not contain the ride — [unrated],
+///  4. the seed was truncated — ask the server directly with the `ride_id`
+///     existence filter (`GET /rider/ratings?ride_id=<uuid>`): one row is
+///     [rated], zero rows is [unrated], any failure is [unknown].
+///
+/// Loading the seed and a failed seed both fall to [unknown]; there is no path
+/// that turns "not fetched yet" into [unrated].
+final riderRideRatingStatusProvider =
+    FutureProvider.family<RatingStatus, String>((ref, rideId) async {
+  if (rideId.isEmpty) return RatingStatus.unknown;
+
+  // A rating recorded in this session is definitive even before the seed list
+  // reflects it (the seed response may have been requested before the POST).
+  final ratedInSession =
+      ref.watch(rideDetailProvider.select((state) => state.ratedRideIds));
+  if (ratedInSession.contains(rideId)) return RatingStatus.rated;
+
+  final RatedRideSeed seed;
+  try {
+    seed = await ref.watch(riderRatedRideIdsProvider.future);
+  } catch (_) {
+    return RatingStatus.unknown;
+  }
+  if (seed.rideIds.contains(rideId)) return RatingStatus.rated;
+  if (!seed.partial) return RatingStatus.unrated;
+
+  return _resolveRideRating(ref, rideId);
+});
+
+/// The server's per-ride answer via `GET /rider/ratings?ride_id=<uuid>`: a
+/// definitive [RatingStatus.rated] / [RatingStatus.unrated], or [unknown] when
+/// the request fails (including a `422` for a malformed id, which the app must
+/// never read as unrated).
+Future<RatingStatus> _resolveRideRating(Ref ref, String rideId) async {
+  try {
+    final response = await ref.read(apiClientProvider).dio.get(
+      ApiEndpoints.riderRatings,
+      queryParameters: {'ride_id': rideId},
+    );
+    final data = response.data as Map<String, dynamic>?;
+    final ratings = data?['ratings'] as List<dynamic>? ?? const [];
+    final rated = ratings
+        .whereType<Map<String, dynamic>>()
+        .any((json) => (json['ride_id'] as String?) == rideId);
+    return rated ? RatingStatus.rated : RatingStatus.unrated;
+  } catch (_) {
+    return RatingStatus.unknown;
+  }
+}

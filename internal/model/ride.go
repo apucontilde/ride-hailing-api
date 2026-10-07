@@ -23,6 +23,56 @@ type Ride struct {
 	SurgeMultiplier float64 `db:"surge_multiplier" json:"surge_multiplier"`
 	TotalFare       float64 `db:"total_fare" json:"total_fare"`
 
+	// Fare audit (migration 019, api_plans/STATUS.md [fare]).
+	// These snapshot WHICH region's card and WHICH card version priced the
+	// ride, so stage 02 can recompute from the BOOKED card rather than the
+	// current one. They are pointers because a ride booked before 019 (or one
+	// whose region had no card) has SQL NULL: scanning NULL into a string would
+	// fail. The fare_* DOUBLE columns above stay major currency units at this
+	// JSON boundary; the audit columns are metadata, not money.
+	FareRegionID *string `db:"fare_region_id" json:"fare_region_id"`
+	FareRateID   *string `db:"fare_rate_id" json:"fare_rate_id"`
+	FareCurrency *string `db:"fare_currency" json:"fare_currency"`
+	// GradeUpliftPct is the climb uplift APPLIED to the charged distance leg,
+	// as a fraction (0.12 == +12%). Like the money columns it holds the BOOKED
+	// value until completion, then the value RECOMPUTED on the actual distance,
+	// so a completed ride's `grade_uplift_pct` reconciles with its final
+	// distance_fare. The booked snapshot is preserved in
+	// QuotedGradeUpliftPct (migration 023).
+	GradeUpliftPct *float64 `db:"grade_uplift_pct" json:"grade_uplift_pct"`
+	// GradeAscentM is the RAW ascent the applied uplift was derived from
+	// (migration 020). NULL means no uplift was applied (the fail-flat case),
+	// never a fabricated 0; the same pointer discipline as the fare_* audit
+	// columns.
+	GradeAscentM *float64 `db:"grade_ascent_m" json:"grade_ascent_m"`
+
+	// Actual trip actuals (migration 021, api_plans/[tracking]_actual_trip_distance.md).
+	// Both are pointers because SQL NULL means "no usable actual", never a
+	// fabricated 0: a missing trace leaves ActualDistanceM nil and a missing
+	// timestamp pair leaves ActualDurationS nil, and the later fare recompute
+	// (stage 02) falls back to the booked values. They are additive JSON fields.
+	ActualDurationS *int     `db:"actual_duration_s" json:"actual_duration_s"`
+	ActualDistanceM *float64 `db:"actual_distance_m" json:"actual_distance_m"`
+
+	// Quote-vs-final split (migration 022,
+	// api_plans/01_[fare]_actuals_recompute_on_completion.md). On completion the
+	// pre-completion money columns (BaseFare/…/TotalFare) are copied here and
+	// then overwritten with the recomputed FINAL charge, so the plain money
+	// columns always hold what the rider is charged and these hold what was
+	// quoted. They are audit metadata and are deliberately hidden from the ride
+	// JSON (`json:"-"`): the product decision shows the final charge only, never
+	// a separate quoted line. NULL means "no quote was ever captured" (the ride
+	// never completed, or predates migration 022), never a fabricated 0.
+	QuotedBaseFare        *float64 `db:"quoted_base_fare" json:"-"`
+	QuotedDistanceFare    *float64 `db:"quoted_distance_fare" json:"-"`
+	QuotedTimeFare        *float64 `db:"quoted_time_fare" json:"-"`
+	QuotedSurgeMultiplier *float64 `db:"quoted_surge_multiplier" json:"-"`
+	QuotedTotalFare       *float64 `db:"quoted_total_fare" json:"-"`
+	// QuotedGradeUpliftPct is the booked climb-uplift audit companion
+	// (migration 023), captured at completion exactly like the quoted_* money
+	// columns. Hidden from the wire; the applied value rides in GradeUpliftPct.
+	QuotedGradeUpliftPct *float64 `db:"quoted_grade_uplift_pct" json:"-"`
+
 	RequestedAt     *time.Time `db:"requested_at" json:"requested_at"`
 	AcceptedAt      *time.Time `db:"accepted_at" json:"accepted_at"`
 	DriverArrivedAt *time.Time `db:"driver_arrived_at" json:"driver_arrived_at"`
@@ -38,6 +88,18 @@ type Ride struct {
 	// `stops` envelope instead, which cannot change the shape of `ride` for a
 	// client that ignores it.
 	Stops []RideStop `db:"-" json:"-"`
+}
+
+// RideTrackPoint is one driver location fix recorded while a ride was
+// in_progress (migration 021). The sequence of points is the raw trace the
+// actual driven distance is summed from; it also carries the driven polyline
+// should a later stage expose it. RecordedAt is server receive time.
+type RideTrackPoint struct {
+	ID         string    `db:"id" json:"id"`
+	RideID     string    `db:"ride_id" json:"ride_id"`
+	Lat        float64   `db:"lat" json:"lat"`
+	Lng        float64   `db:"lng" json:"lng"`
+	RecordedAt time.Time `db:"recorded_at" json:"recorded_at"`
 }
 
 type RideEvent struct {

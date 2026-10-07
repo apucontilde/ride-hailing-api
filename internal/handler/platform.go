@@ -409,14 +409,19 @@ func (h *PlatformHandler) EstimatesPrice(c *gin.Context) {
 			return
 		}
 		estimates = append(estimates, Estimate{
-			VehicleType:     vt,
-			BaseFare:        est.BaseFare,
-			DistanceRate:    est.DistanceRate,
-			TimeRate:        est.TimeRate,
-			DistanceFare:    est.DistanceFare,
-			TimeFare:        est.TimeFare,
-			SurgeMultiplier: est.SurgeMultiplier,
-			Total:           est.Total,
+			VehicleType:      vt,
+			BaseFare:         est.BaseFare,
+			DistanceRate:     est.DistanceRate,
+			TimeRate:         est.TimeRate,
+			DistanceFare:     est.DistanceFare,
+			TimeFare:         est.TimeFare,
+			SurgeMultiplier:  est.SurgeMultiplier,
+			Total:            est.Total,
+			RegionID:         est.RegionID,
+			Currency:         est.Currency,
+			DemandMultiplier: est.DemandMultiplier,
+			SupplyMultiplier: est.SupplyMultiplier,
+			GradeUpliftPct:   est.GradeUpliftPct,
 		})
 	}
 

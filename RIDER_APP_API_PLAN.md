@@ -15,7 +15,7 @@ Audited against: backend at `051ecaf` (see `USER_STORIES.md` v2 for the authorit
 | `GET /rider/me` | `auth_provider.dart:56` (checkAuth) | ✅ used, but profile screen renders static mock |
 | `POST /auth/forgot-password` | — | ❌ declared, screen is fake UI |
 | `GET /geo/nearby-drivers` | `home_provider.dart:10` | ❌ **dead code** — nothing consumes the provider |
-| `GET /estimates/price` | `home_screen.dart:432` | ✅ used (backend returns hardcoded rates — acceptable) |
+| `GET /estimates/price` | `home_screen.dart:432` | ✅ used (backend prices from region-scoped DB `fare_rates`) |
 | `GET /places/autocomplete` | `location_search_screen.dart` | ✅ used |
 | `POST /rides` (+ `Idempotency-Key`) | `home_provider.dart:104` | ✅ used, but new key generated per call (see LC-0) |
 | `GET /ws` (receive) | `websocket_service.dart` + `ride_status_provider.dart` | ⚠️ connected, but event mapping is broken (see §3) |

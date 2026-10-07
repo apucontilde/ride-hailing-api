@@ -41,6 +41,7 @@ Operating rules for agents working in this repo. Read before changing anything.
 | Lint (Go) | `make lint` (golangci-lint v2; see fact 2) |
 | Docker PostGIS + Redis | `docker compose up -d` |
 | Re-seed places | `make seed` |
+| Seed region pricing (required per region) | `make seed-fares` (override `SEED_FARES_REGION`/`SEED_FARES_TIMEZONE`/`FARE_CURRENCY`) |
 | Import road network | `make import-osm` (or `make import-osm-force`) |
 | Backfill elevation (after `import-osm`) | `make import-elevation` |
 | Download/extract SJ OSM | `make download-osm` |
@@ -56,11 +57,23 @@ and gets a 200 `is_estimate`; `0` is the documented always-snap opt-in),
 `ROUTING_MAX_REGIONS_IN_MEMORY` (0 = keep all). Per-datasource pools read `routing_datasources` rows
 and take each city DB's password from `DATASOURCE_<ID>_PASSWORD` (id uppercased, `-`→`_`) or
 `~/.pgpass` — never the row; `ROUTING_DATASOURCE_SSLMODE`/`ROUTING_DATASOURCE_MAX_CONNS` tune them.
-Elevation (`[elevation]`, default **off**): `ROUTING_ELEVATION` (`on`/`off`; anything else fails
-closed to off), `ROUTING_ASCENT_WEIGHT` 1.5, `ROUTING_DESCENT_WEIGHT` 0.3, `ROUTING_MAX_GRADE` 0.15,
-`ROUTING_ELEV_DEADBAND_M` 3.0, `ROUTING_ELEV_MIN_COVERAGE` 0.99. Numeric defaults are proposals until
-the calibration stage lands; inert with `ROUTING_ENGINE=pgrouting` (warned at boot).
+Elevation (`[elevation]`, default **on** for the native engine at the measured operating point;
+unset/empty also means on, garbage fails closed to off): `ROUTING_ELEVATION` (`on`/`off`),
+`ROUTING_ASCENT_WEIGHT` **12**, `ROUTING_DESCENT_WEIGHT` 0.3, `ROUTING_MAX_GRADE` 0.15,
+`ROUTING_ELEV_DEADBAND_M` **3.8** (calibrated, gate G6), `ROUTING_ELEV_MIN_COVERAGE` 0.99. The
+ship point is the Stage-2 N=2000 sweep (median ascent 0.9314, 168/2000 qualifying, G3/G4 inside
+ceilings, real-graph hot path 1.34×); it is a product decision with the accepted G1 risk that
+flat-invariance is uncertified on this import. Inert with `ROUTING_ENGINE=pgrouting` (warned at
+boot).
 Containers: `ride-hailing-db` (`pgrouting/pgrouting:16-3.5-4.0`), `ride-hailing-redis` (`redis:7-alpine`).
+
+Pricing (`api_plans [fare]`): `FARE_CURRENCY` (**USD** default) and `FARE_MAX_MULTIPLIER`
+(**3.0** default) cap the unified `conditions_multiplier` (region-local demand × driver supply,
+floored at 1.0). Rate cards live in `fare_rates` (integer **cents**, `per_km_cents` includes fuel),
+region attributes (currency + IANA timezone) in `fare_regions`; `RouteInfo.RegionID` is the resolved
+region the price is keyed to (empty on estimates/legacy → the `default_region=TRUE` row). **No
+cross-region fallback**: a region with no active card fails closed (5xx), so `make seed-fares` is a
+required per-region deploy step. Money is cents internally, major units on the ride JSON boundary.
 
 ## Environment facts agents MUST know
 
@@ -99,7 +112,10 @@ Containers: `ride-hailing-db` (`pgrouting/pgrouting:16-3.5-4.0`), `ride-hailing-
 5. **Road graph is cached in-process.** After `make import-osm` (or any change to
    `road_network_*_pgr`) restart the API or the route endpoint serves the old graph. Same after any
    elevation backfill: the graph holds `EleM` values loaded at boot, and `make import-osm` never
-   writes `elevation_m`, so a re-import yields zero elevation coverage by construction.
+   writes `elevation_m`, so a re-import yields zero elevation coverage by construction. Since the
+   elevation flip this is no longer a no-op: a re-import without a following `make import-elevation`
+   silently yields **flat routing on the default path** (coverage 0 → the runtime gate degrades to
+   flat), where pre-flip it changed nothing.
 6. **`scripts/init-pgrouting.sh`** is idempotent and control-file-guarded (numeric PG version dir,
    skips unpackaged extensions, PostGIS before pgRouting). Re-run:
    `docker exec -i ride-hailing-db sh -s < scripts/init-pgrouting.sh` (it's a shell script, not

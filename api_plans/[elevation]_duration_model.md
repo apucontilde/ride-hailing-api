@@ -1,16 +1,18 @@
 ---
 tag: elevation
-depends_on: ["[elevation]_calibration_and_rollout_gate.md"]
+depends_on: ["elevation directional cost model + DEM ingest + default-on flip (STATUS.md, landed)"]
 status: open
 ---
 
-# Stage 01 — Grade-aware `total_duration_s` (Item B of the retired duration/API-surface plan)
+# Grade-aware `total_duration_s` (Item B of the retired duration/API-surface plan)
 
-> **Numbering.** This is stage **01** of the elevation chain: it depends on the open unnumbered
-> head `[elevation]_calibration_and_rollout_gate.md` (`.opencode/skills/plan-management/SKILL.md`).
-> It replaces Item B of `01_[elevation]_duration_and_api_surface.md`, whose Item A (additive
-> response fields) **landed** and which has been deleted as a landed plan. Item C is split out as
-> the unnumbered `[elevation]_pgrouting_parity.md`.
+> **Unnumbered.** Its only *plan* prerequisite (the calibration/flip chain) is resolved, so this
+> plan no longer names an open plan and does **not** earn an `NN_` prefix
+> (`.opencode/skills/plan-management/SKILL.md`). The real blocker is a dataset that does not exist
+> in this repo yet (see *Calibration data prerequisite*); `depends_on` names the landed elevation
+> capability it builds on. It replaces Item B of `01_[elevation]_duration_and_api_surface.md`,
+> whose Item A (additive response fields) **landed** and which has been deleted as a landed plan.
+> Item C is split out as the unnumbered `[elevation]_pgrouting_parity.md`.
 
 **Status: OPEN — blocked on calibration data that does not exist in this repo yet.**
 
@@ -25,8 +27,8 @@ from a speed-vs-grade model, on the native engine. Distance stays true meters (s
 only the time component changes.
 
 Today: `avgSpeedMps = 11` at `internal/service/navigation.go:18`; `RouteInfo.DurationSecs` is set
-from `totalDistance / avgSpeedMps` in `routeInfo` (`internal/service/navigation.go:281`) and
-`estimateRoute` (`:300`). One flat ~40 km/h for every edge, flat or 15 % grade.
+from `totalDistance / avgSpeedMps` in `routeInfo` (`internal/service/navigation.go:295,313`) and
+`estimateRoute` (`:325,333`). One flat ~40 km/h for every edge, flat or 15 % grade.
 
 ## The model (all constants PROVISIONAL until calibrated)
 
@@ -57,10 +59,10 @@ lesson (a provisional 3.0 shipped untested) is the precedent not to repeat.
 
 1. **`routing.Path`** gains `DurationS float64`, accumulated in the same edge walk
    (`internal/routing/routing.go`, the `RouteWithWeights` search). `Path` currently carries
-   `Nodes/Meters/Cost/AscentM/DescentM/Expanded` (`internal/routing/elevation.go:37`).
+   `Nodes/Meters/Cost/AscentM/DescentM/Expanded` (`internal/routing/elevation.go:42`).
 2. **`repository.RouteResult`** gains `DurationS` (last-row convention, like `AggCost` / the
    elevation totals) at `internal/repository/navigation_repo.go:15`, populated in `routeResults`
-   (`:651-666`).
+   (`:749`).
 3. **`tests/testutil/mock_navigation_repo.go` must explicitly emit 454 s**
    (`(5000 m)/11 = 454.54 → 454`). It currently emits only `AggCost=5000`
    (`tests/testutil/mock_navigation_repo.go:13-17`), so a duration field left at zero would
@@ -71,8 +73,8 @@ lesson (a provisional 3.0 shipped untested) is the precedent not to repeat.
    not (0). Without it, the estimate path and every mock silently report 0 s. Do not delete
    `avgSpeedMps`: it stays the fallback constant.
 5. **`FareService` time component** prices from it — `timeFare = (dur/60)·timeRate`
-   (`internal/service/fare.go:40-42`). The quoted fare is **snapshotted onto the ride at booking**
-   (`internal/service/ride.go:36-53`), so a wrong duration model is wrong **money**,
+   (`internal/service/fare.go:159`). The quoted fare is **snapshotted onto the ride at booking**
+   (`internal/service/ride.go:217,239-247`), so a wrong duration model is wrong **money**,
    permanently, for every ride quoted while it is deployed. Both apps display duration and need
    no code change, but riders will notice.
 

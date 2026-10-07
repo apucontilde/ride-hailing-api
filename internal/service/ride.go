@@ -136,6 +136,26 @@ func invalidf(format string, args ...interface{}) *ValidationError {
 	return &ValidationError{Message: fmt.Sprintf(format, args...)}
 }
 
+// CoordinateOutOfRange names the first dimension of (lat, lng) that is outside
+// its valid range — "latitude" for lat ∉ [-90, 90], then "longitude" for lng ∉
+// [-180, 180] — or "" when both are real coordinates.
+//
+// It is the ONE definition of the coordinate bounds, shared by the top-level
+// create pickup/dropoff pair, the change-destination pair and BuildItinerary's
+// stops, so the four magic numbers cannot drift apart. Callers own the public
+// wording; the returned token is for composing it (and labels the field when
+// several coordinates are wrong).
+func CoordinateOutOfRange(lat, lng float64) string {
+	switch {
+	case lat < -90 || lat > 90:
+		return "latitude"
+	case lng < -180 || lng > 180:
+		return "longitude"
+	default:
+		return ""
+	}
+}
+
 // BuildItinerary normalizes a client-sent `stops` array into the ordered stops
 // a ride stores, and reports the first problem as a public sentence.
 //
@@ -175,11 +195,8 @@ func BuildItinerary(reqStops []StopInput, dropoffLat, dropoffLng float64, dropof
 		default:
 			return nil, invalidf("stop %d: kind must be omitted or %q", i+1, model.StopKind)
 		}
-		if in.Lat < -90 || in.Lat > 90 {
-			return nil, invalidf("stop %d: latitude out of range", i+1)
-		}
-		if in.Lng < -180 || in.Lng > 180 {
-			return nil, invalidf("stop %d: longitude out of range", i+1)
+		if dim := CoordinateOutOfRange(in.Lat, in.Lng); dim != "" {
+			return nil, invalidf("stop %d: %s out of range", i+1, dim)
 		}
 		stops = append(stops, model.RideStop{
 			Sequence: i + 1,
@@ -219,6 +236,19 @@ func (s *RideService) RequestRide(riderID string, pickupLat, pickupLng, dropoffL
 		return nil, fmt.Errorf("failed to calculate fare estimate: %w", err)
 	}
 
+	// Snapshot the booked card's identity alongside the money (migration 019).
+	// Stage 02 recomputes from these, not from whatever card is active then.
+	fareRegionID := estimate.RegionID
+	fareRateID := estimate.RateID
+	fareCurrency := estimate.Currency
+	gradeUpliftPct := estimate.GradeUpliftPct
+	// Snapshot the RAW ascent ONLY when an uplift was actually applied, so the
+	// NULL column means "no climb priced this ride" rather than a fabricated 0.
+	var gradeAscentM *float64
+	if estimate.GradeUpliftPct > 0 {
+		gradeAscentM = &estimate.AscentM
+	}
+
 	ride := &model.Ride{
 		RiderID:         riderID,
 		PickupLat:       pickupLat,
@@ -234,6 +264,11 @@ func (s *RideService) RequestRide(riderID string, pickupLat, pickupLng, dropoffL
 		TimeFare:        estimate.TimeFare,
 		SurgeMultiplier: estimate.SurgeMultiplier,
 		TotalFare:       estimate.Total,
+		FareRegionID:    &fareRegionID,
+		FareRateID:      &fareRateID,
+		FareCurrency:    &fareCurrency,
+		GradeUpliftPct:  &gradeUpliftPct,
+		GradeAscentM:    gradeAscentM,
 		Stops:           stops,
 	}
 
@@ -360,25 +395,109 @@ func (s *RideService) AdvanceStatus(rideID, newStatus, actor string) (*model.Rid
 		},
 	}
 	if newStatus == "completed" {
-		// The final fare is the booked estimate, unchanged. No GPS odometer or
-		// completion duration is captured on the ride row (model.Ride carries the
-		// booking-time fare snapshot and status timestamps only), so manufacturing
-		// a different completion fare (e.g. a "10% markup") would be fabricated.
-		// GPS-based completion fares stay deferred until real odometer/duration
-		// telemetry exists; the same trigger is named in fare.go's getRates
-		// comment for moving the tariff into a versioned fare_rates table.
+		// Actuals (migration 021, api_plans/[tracking]_actual_trip_distance.md).
+		// Duration is derived from the status timestamps; driven distance is
+		// summed from the in_progress location trace with a noise/teleport gate.
+		//
+		// An unusable trace leaves ActualDistanceM nil (never a fabricated
+		// number) and the fare recompute below falls back to the booked quote.
+		// Actuals are only exposed once persisted, so a failed write never
+		// advertises values a subsequent ride read would not return.
+		actualDuration := ActualDurationSeconds(ride.StartedAt, &now)
+		var actualDistance *float64
+		if points, perr := s.rideRepo.FindRideTrackPoints(rideID); perr != nil {
+			// The completion itself is already committed; a trace read failure
+			// must not fail the transition. Distance stays NULL (honest "no
+			// usable actual"), never a fabricated 0.
+			log.Printf("ride %s: completed but track points could not be read; distance actual omitted: %v", rideID, perr)
+		} else {
+			actualDistance = DrivenDistanceMeters(points)
+		}
+		if aerr := s.rideRepo.SetRideActuals(rideID, actualDuration, actualDistance); aerr != nil {
+			log.Printf("ride %s: completed but actuals could not be persisted: %v", rideID, aerr)
+			actualDuration, actualDistance = nil, nil
+		} else {
+			ride.ActualDurationS = actualDuration
+			ride.ActualDistanceM = actualDistance
+		}
+
+		// Final charge (migrations 022/023,
+		// api_plans/01_[fare]_actuals_recompute_on_completion.md): recompute from
+		// the ACTUALS against the BOOKED card and overwrite the money columns
+		// with it, snapshotting the quote into quoted_*. Product decision
+		// (2026-10-06): the recomputed actual REPLACES the quote uncapped and is
+		// the only charge shown.
+		//
+		// The final starts as the booked quote and is replaced only by a real
+		// recompute. Every failure — no usable actual, an unavailable booked
+		// card, a persistence outage — keeps the quote as the charge rather than
+		// fabricating one; a failed transition is never an option because the
+		// completion is already committed. FinalizeRideFare still runs in the
+		// fallback so every completed ride captures its quote exactly once; its
+		// `quoted_total_fare IS NULL` guard, together with the status machine
+		// rejecting completed -> completed, makes a retry a no-op for the fare.
+		//
+		// GradeUpliftPct follows the same quote->final split as the money: the
+		// booked value is snapshotted by FinalizeRideFare into
+		// quoted_grade_uplift_pct and the ADVANCED value is the uplift actually
+		// used for the final distance leg, so the receipt/ride JSON
+		// `grade_uplift_pct` reconciles with the charged distance_fare (defect 1
+		// of the actuals review).
+		bookedGradeUplift := ride.GradeUpliftPct
+		finalBase, finalDistance := ride.BaseFare, ride.DistanceFare
+		finalTime, finalTotal := ride.TimeFare, ride.TotalFare
+		finalGradeUplift := bookedGradeUplift
+		if s.fareService != nil {
+			if est, rerr := s.fareService.RecomputeActualFare(ride); rerr != nil {
+				log.Printf("ride %s: completed but actual fare recompute failed; charging the booked quote: %v", rideID, rerr)
+			} else if est != nil {
+				finalBase, finalDistance = est.BaseFare, est.DistanceFare
+				finalTime, finalTotal = est.TimeFare, est.Total
+				uplift := est.GradeUpliftPct
+				finalGradeUplift = &uplift
+			}
+		}
+		if _, ferr := s.rideRepo.FinalizeRideFare(rideID, finalBase, finalDistance, finalTime, finalTotal, finalGradeUplift); ferr != nil {
+			log.Printf("ride %s: completed but final fare could not be persisted; charging the booked quote: %v", rideID, ferr)
+		} else {
+			// Reflect the final on the returned ride. GradeUpliftPct now carries
+			// the APPLIED uplift (final), matching the persisted column and the
+			// receipt; the booked value is retained only as the quoted audit.
+			ride.BaseFare, ride.DistanceFare = finalBase, finalDistance
+			ride.TimeFare, ride.TotalFare = finalTime, finalTotal
+			ride.GradeUpliftPct = finalGradeUplift
+			ride.QuotedGradeUpliftPct = bookedGradeUplift
+		}
+
+		fare := &websocket.FareInfo{
+			BaseFare:        ride.BaseFare,
+			DistanceFare:    ride.DistanceFare,
+			TimeFare:        ride.TimeFare,
+			SurgeMultiplier: ride.SurgeMultiplier,
+			Total:           ride.TotalFare,
+		}
+		// Additive fare identity/applied fields so the driver app's reads of
+		// `fare.currency` and `fare.grade_uplift_pct` are not dead (defect 4 of
+		// the actuals review). currency/region_id are empty for a legacy ride
+		// booked before 019; grade_uplift_pct is the APPLIED uplift (final for a
+		// completed ride), never the raw booked one when a recompute ran.
+		if ride.FareCurrency != nil {
+			fare.Currency = *ride.FareCurrency
+		}
+		if ride.FareRegionID != nil {
+			fare.RegionID = *ride.FareRegionID
+		}
+		if ride.GradeUpliftPct != nil {
+			fare.GradeUpliftPct = *ride.GradeUpliftPct
+		}
 
 		msg.Data = websocket.RideUpdateData{
-			RideID:    rideID,
-			Status:    newStatus,
-			Timestamp: time.Now(),
-			Fare: &websocket.FareInfo{
-				BaseFare:        ride.BaseFare,
-				DistanceFare:    ride.DistanceFare,
-				TimeFare:        ride.TimeFare,
-				SurgeMultiplier: ride.SurgeMultiplier,
-				Total:           ride.TotalFare,
-			},
+			RideID:          rideID,
+			Status:          newStatus,
+			Timestamp:       now,
+			Fare:            fare,
+			ActualDurationS: actualDuration,
+			ActualDistanceM: actualDistance,
 		}
 	}
 	s.hub.SendToUser(ride.RiderID, msg)
@@ -400,11 +519,14 @@ func (s *RideService) AdvanceStatus(rideID, newStatus, actor string) (*model.Rid
 // ride. Only the ride's own rider may do it, and only while the itinerary is
 // open (see destinationChangeable).
 //
-// It deliberately does NOT touch the fare snapshot: the booking-time estimate
-// is what the completion path pays out, and repricing a trip the driver has
-// already started would silently change the agreed price. It also does not
-// re-route: route cost stays meters and the routing contract is frozen, so
-// the client re-requests GET /navigation/route for the new leg.
+// It deliberately does NOT touch the fare snapshot: a destination change alone
+// never moves the booked quote, and repricing a trip the driver has already
+// started would silently change the agreed price. The completion recompute
+// prices the ACTUAL driven trace against the booked card, so a mid-trip
+// detour is charged by the distance actually driven, not by re-estimating the
+// itinerary here. It also does not re-route: route cost stays meters and the
+// routing contract is frozen, so the client re-requests
+// GET /navigation/route for the new leg.
 func (s *RideService) ChangeDestination(rideID, riderID string, dest model.RideStop) (*model.Ride, error) {
 	ride, err := s.rideRepo.FindByID(rideID)
 	if err != nil {

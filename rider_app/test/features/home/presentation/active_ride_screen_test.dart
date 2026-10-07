@@ -14,6 +14,7 @@ import 'package:rider_app/features/home/data/driver_tracking_provider.dart';
 import 'package:rider_app/features/home/data/location_ping_service.dart';
 import 'package:rider_app/features/home/data/ride_status_provider.dart';
 import 'package:rider_app/features/home/data/trip_route_provider.dart';
+import 'package:rider_app/features/home/model/place.dart';
 import 'package:rider_app/features/home/presentation/active_ride_screen.dart';
 
 /// Records only the lifecycle the screen drives; the real throttled stream and
@@ -245,6 +246,7 @@ void main() {
   Widget buildRouter({
     FakeLocationPingService? ping,
     Duration routeRefreshInterval = const Duration(seconds: 30),
+    Place? changeDestinationResult,
   }) {
     final router = GoRouter(
       initialLocation: '/active-ride',
@@ -272,6 +274,22 @@ void main() {
             ),
           ),
         ),
+        // The destination-change round trip: production routes this to the real
+        // search screen; the test pops a fixed `Place`.
+        if (changeDestinationResult != null)
+          GoRoute(
+            path: '/location-search',
+            builder: (_, _) => Builder(
+              builder: (context) {
+                WidgetsBinding.instance.addPostFrameCallback((_) {
+                  if (context.mounted) {
+                    context.pop<Place>(changeDestinationResult);
+                  }
+                });
+                return const Scaffold(body: SizedBox.shrink());
+              },
+            ),
+          ),
       ],
     );
     return ProviderScope(
@@ -1019,6 +1037,71 @@ void main() {
     expect(routeRequests.length, greaterThanOrEqualTo(2));
     expect(routeRequests.last['to_lat'], 9.96);
     expect(routeRequests.last['to_lng'], -84.13);
+
+    await settleAndDispose(tester);
+  });
+
+  testWidgets('changing destination searches then PUTs the picked place',
+      (WidgetTester tester) async {
+    fixture();
+    const newDestination = Place(
+      id: 'new-dest',
+      name: 'New Destination',
+      address: 'New Rd',
+      lat: 9.97,
+      lng: -84.14,
+    );
+    final putBodies = <Map<String, dynamic>>[];
+    dioAdapter.onPut(
+      '/api/v1/rides/ride-1/destination',
+      (server) => server.replyCallback(200, (options) {
+        putBodies.add(Map<String, dynamic>.from(options.data as Map));
+        return {'ride': rideJson(status: 'in_progress')};
+      }),
+      // A body-carrying PUT never matches a route registered without a body
+      // expectation under the default matcher; the real body is asserted from
+      // the captured `RequestOptions` instead.
+      data: Matchers.any,
+    );
+    emit(acceptedEvent());
+
+    await tester.pumpWidget(
+      buildRouter(changeDestinationResult: newDestination),
+    );
+    await tester.pump();
+
+    final button =
+        find.byKey(const ValueKey<String>('change-destination-button'));
+    expect(button, findsOneWidget, reason: 'accepted rides are changeable');
+    await tester.tap(button);
+    await tester.pump();
+    await tester.pump();
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 10));
+
+    expect(putBodies, hasLength(1));
+    expect(putBodies.single, {
+      'lat': 9.97,
+      'lng': -84.14,
+      'address': 'New Rd',
+    });
+    expect(find.text('Destination updated'), findsOneWidget);
+
+    await settleAndDispose(tester);
+  });
+
+  testWidgets('the change-destination entry is absent outside changeable statuses',
+      (WidgetTester tester) async {
+    fixture();
+
+    await tester.pumpWidget(buildRouter());
+    await tester.pump();
+
+    // `idle` is not in the API's changeable set, so no entry is offered.
+    expect(
+      find.byKey(const ValueKey<String>('change-destination-button')),
+      findsNothing,
+    );
 
     await settleAndDispose(tester);
   });

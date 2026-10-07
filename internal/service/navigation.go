@@ -25,6 +25,14 @@ type RouteInfo struct {
 	// straight-line estimate instead of a road-following route (api_plans/05).
 	// The field is additive: existing clients keep reading the other three.
 	IsEstimate bool
+	// RegionID is the resolved region that OWNS this route (api_plans/STATUS.md
+	// [fare]): the region the fare layer must price
+	// against. It is set on the region-scoped path from fromRegion.RegionID and
+	// is EMPTY on estimateRoute and the legacy/unscoped path — an uncovered or
+	// cross-region pin has no owning region, and an estimate must never invent
+	// one. A consumer that sees "" falls back to the registry's
+	// default_region = TRUE row (never to another region's card).
+	RegionID string
 	// AscentM/DescentM are the RAW metres the route climbed/descended
 	// (api_plans [elevation] stage 01), 0 when elevation routing is off or the
 	// region has no coverage. ElevationAware is per-response: with the
@@ -167,7 +175,16 @@ func (s *NavigationService) GetRoute(fromLat, fromLng, toLat, toLng float64) (*R
 		}
 		return nil, rerr
 	}
-	return routeInfo(fromLat, fromLng, toLat, toLng, nodes)
+	info, err := routeInfo(fromLat, fromLng, toLat, toLng, nodes)
+	if err != nil {
+		return nil, err
+	}
+	// The region the resolver picked is the ONLY region the fare layer may
+	// price against. It is set here, on the region-scoped path, so the fare
+	// never re-resolves the pin (a second bbox/snapping decision could
+	// disagree). estimateRoute and legacyRoute deliberately leave it empty.
+	info.RegionID = fromRegion.RegionID
+	return info, nil
 }
 
 // routingDataGap reports whether a routing error is a DATA gap — the pins or

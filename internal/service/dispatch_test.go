@@ -114,7 +114,7 @@ func (r *fakeRideRepo) FindRidesByRider(string, int, int) ([]model.Ride, int, er
 func (r *fakeRideRepo) FindRidesByDriver(string, int, int) ([]model.Ride, int, error) {
 	return nil, 0, nil
 }
-func (r *fakeRideRepo) FindRatingsByRater(string, string, int, int) ([]model.Rating, int, error) {
+func (r *fakeRideRepo) FindRatingsByRater(string, string, string, int, int) ([]model.Rating, int, error) {
 	return nil, 0, nil
 }
 func (r *fakeRideRepo) CreateEvent(*model.RideEvent) error { return nil }
@@ -128,6 +128,16 @@ func (r *fakeRideRepo) FindStopsByRideIDs([]string) (map[string][]model.RideStop
 func (r *fakeRideRepo) ReplaceDestination(string, model.RideStop) error { return nil }
 func (r *fakeRideRepo) FindVehicleByDriverID(string) (*model.DriverVehicle, error) {
 	return nil, repository.ErrNotFound
+}
+func (r *fakeRideRepo) InsertRideTrackPoint(string, float64, float64, time.Time) error {
+	return nil
+}
+func (r *fakeRideRepo) FindRideTrackPoints(string) ([]model.RideTrackPoint, error) {
+	return nil, nil
+}
+func (r *fakeRideRepo) SetRideActuals(string, *int, *float64) error { return nil }
+func (r *fakeRideRepo) FinalizeRideFare(string, float64, float64, float64, float64, *float64) (bool, error) {
+	return false, nil
 }
 func (r *fakeRideRepo) UpdateRideStatus(rideID, status string, _ *time.Time) error {
 	r.mu.Lock()

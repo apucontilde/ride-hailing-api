@@ -631,3 +631,140 @@ func TestGetCurrentRideDistinguishesNotFoundFromOutage(t *testing.T) {
 		}
 	})
 }
+
+// TestCreateRideZeroCoordinateIsValid pins the first half of STATUS.md bug #23:
+// a literal 0 is a real coordinate (the equator / prime meridian), not a
+// missing field. The old `binding:"required"` on a plain float64 rejected it
+// with 422 because go-playground's `required` means "non-zero" for numbers.
+func TestCreateRideZeroCoordinateIsValid(t *testing.T) {
+	riderToken := registerAndLogin(t, "rider.zerocoord@test.com", "+7903000116")
+
+	resp := ts.DoRequest("POST", "/api/v1/rides", riderToken, map[string]interface{}{
+		"pickup_lat": 0, "pickup_lng": 0,
+		"dropoff_lat": 0, "dropoff_lng": 0,
+		"dropoff_address": "Gulf of Guinea",
+	})
+	resp.AssertStatus(t, http.StatusCreated)
+
+	got := decodeRideWithStops(t, resp.Body)
+	if got.Ride == nil {
+		t.Fatal("no ride in the create response")
+	}
+	if got.Ride.PickupLat != 0 || got.Ride.PickupLng != 0 ||
+		got.Ride.DropoffLat != 0 || got.Ride.DropoffLng != 0 {
+		t.Errorf("zero coordinates did not round-trip through create: %+v", got.Ride)
+	}
+
+	// And they are durable, not just echoed: the authoritative read must still
+	// see 0, so a value that only survives binding but is dropped in the DB
+	// would fail here.
+	readBack := decodeRideWithStops(t,
+		ts.DoRequest("GET", "/api/v1/rides/"+got.Ride.ID, riderToken, nil).Body)
+	if readBack.Ride.DropoffLat != 0 || readBack.Ride.DropoffLng != 0 {
+		t.Errorf("persisted dropoff_* = %v/%v, want 0/0",
+			readBack.Ride.DropoffLat, readBack.Ride.DropoffLng)
+	}
+}
+
+// TestCreateRideCoordinateRangeValidation pins the second half of bug #23: the
+// top-level pickup/dropoff were never range-checked, so e.g. dropoff_lat: 999
+// was accepted 201 and written. Every field now answers 422 VALIDATION_ERROR
+// with a human message naming it.
+func TestCreateRideCoordinateRangeValidation(t *testing.T) {
+	riderToken := registerAndLogin(t, "rider.coordrange@test.com", "+7903000117")
+
+	tests := []struct {
+		name    string
+		field   string
+		value   float64
+		wantMsg string
+	}{
+		{"pickup latitude above range", "pickup_lat", 999, "Pickup latitude out of range"},
+		{"pickup latitude below range", "pickup_lat", -91, "Pickup latitude out of range"},
+		{"pickup longitude above range", "pickup_lng", 181, "Pickup longitude out of range"},
+		{"pickup longitude below range", "pickup_lng", -181, "Pickup longitude out of range"},
+		{"drop-off latitude above range", "dropoff_lat", 999, "Drop-off latitude out of range"},
+		{"drop-off latitude below range", "dropoff_lat", -91, "Drop-off latitude out of range"},
+		{"drop-off longitude above range", "dropoff_lng", 181, "Drop-off longitude out of range"},
+		{"drop-off longitude below range", "dropoff_lng", -181, "Drop-off longitude out of range"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			body := map[string]interface{}{
+				"pickup_lat": 40.7128, "pickup_lng": -74.0060,
+				"dropoff_lat": 40.7580, "dropoff_lng": -73.9855,
+			}
+			body[tt.field] = tt.value
+
+			resp := ts.DoRequest("POST", "/api/v1/rides", riderToken, body)
+			resp.AssertStatus(t, http.StatusUnprocessableEntity)
+
+			gotErr := decodeErrorBody(t, resp.Body)
+			if gotErr.Error.Code != "VALIDATION_ERROR" {
+				t.Errorf("code = %q, want VALIDATION_ERROR", gotErr.Error.Code)
+			}
+			if gotErr.Error.Message != tt.wantMsg {
+				t.Errorf("message = %q, want %q (public text: rendered verbatim)",
+					gotErr.Error.Message, tt.wantMsg)
+			}
+			// `message` is public; the internal cause must never leak.
+			if contains(string(resp.Body), "out of range (lat=") {
+				t.Errorf("response leaked the internal cause: %s", resp.Body)
+			}
+		})
+	}
+}
+
+// TestCreateRideMissingCoordinateIs422 pins bug #23 item 4: making 0 valid must
+// not turn an ABSENT coordinate into 0. The required tag still catches a nil
+// pointer and names the field.
+func TestCreateRideMissingCoordinateIs422(t *testing.T) {
+	riderToken := registerAndLogin(t, "rider.missingcoord@test.com", "+7903000118")
+
+	tests := []struct {
+		name    string
+		omit    string
+		wantMsg string
+	}{
+		{"pickup latitude", "pickup_lat", "Invalid Pickup latitude"},
+		{"pickup longitude", "pickup_lng", "Invalid Pickup longitude"},
+		{"drop-off latitude", "dropoff_lat", "Invalid Drop-off latitude"},
+		{"drop-off longitude", "dropoff_lng", "Invalid Drop-off longitude"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			body := map[string]interface{}{
+				"pickup_lat": 40.7128, "pickup_lng": -74.0060,
+				"dropoff_lat": 40.7580, "dropoff_lng": -73.9855,
+			}
+			delete(body, tt.omit)
+
+			resp := ts.DoRequest("POST", "/api/v1/rides", riderToken, body)
+			resp.AssertStatus(t, http.StatusUnprocessableEntity)
+
+			gotErr := decodeErrorBody(t, resp.Body)
+			if gotErr.Error.Code != "VALIDATION_ERROR" || gotErr.Error.Message != tt.wantMsg {
+				t.Errorf("error = %+v, want VALIDATION_ERROR / %q", gotErr.Error, tt.wantMsg)
+			}
+		})
+	}
+}
+
+// TestCreateRideMalformedBodyIs400 pins the last edge: a malformed body is a
+// BAD_REQUEST, not a 422 and not an outage, even though the coordinates are now
+// validated by hand rather than by the binding tag alone.
+func TestCreateRideMalformedBodyIs400(t *testing.T) {
+	riderToken := registerAndLogin(t, "rider.malformedbody@test.com", "+7903000119")
+
+	// json.Marshal of the string yields the JSON literal `"not an object"`,
+	// which cannot decode into the request struct: a malformed body, not a
+	// missing field.
+	resp := ts.DoRequest("POST", "/api/v1/rides", riderToken, "not an object")
+	resp.AssertStatus(t, http.StatusBadRequest)
+
+	if code := decodeErrorBody(t, resp.Body).Error.Code; code != "BAD_REQUEST" {
+		t.Errorf("code = %q, want BAD_REQUEST", code)
+	}
+}

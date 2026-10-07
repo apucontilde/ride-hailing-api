@@ -11,6 +11,7 @@ export 'src/network/websocket_service.dart';
 export 'src/theme/app_theme.dart';
 export 'src/utils/validators.dart';
 export 'src/utils/location_helper.dart';
+export 'src/utils/money.dart';
 export 'src/models/auth_user.dart';
 export 'src/models/ride.dart';
 export 'src/navigation/app_nav_destination.dart';

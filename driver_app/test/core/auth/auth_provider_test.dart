@@ -8,12 +8,14 @@ import 'package:driver_app/core/api/api_client.dart';
 import 'package:driver_app/core/api/api_exceptions.dart';
 import 'package:driver_app/core/api/endpoints.dart';
 import 'package:driver_app/core/network/websocket_service.dart';
+import 'package:driver_app/core/push/device_token_service.dart';
 import 'package:driver_app/features/driver/model/driver_profile.dart';
 
 class MockAuthStorage extends Mock implements AuthStorage {}
 class MockApiClient extends Mock implements ApiClient {}
 class MockDio extends Mock implements Dio {}
 class MockWebSocketService extends Mock implements WebSocketService {}
+class MockDeviceTokenService extends Mock implements DeviceTokenService {}
 
 void main() {
   late MockAuthStorage mockStorage;
@@ -296,6 +298,68 @@ void main() {
         await authNotifier.logout();
 
         expect(container.read(driverProfileProvider), isNull);
+      });
+
+      test('unregisters the device token before clearing the access token',
+          () async {
+        // The shared logout clears the bearer BEFORE onLoggedOut runs, so an
+        // authenticated DELETE issued from there would 401. The driver override
+        // must unregister first, then defer to super.logout().
+        final deviceService = MockDeviceTokenService();
+        when(() => deviceService.unregister()).thenAnswer((_) async {});
+        final local = ProviderContainer(
+          overrides: [
+            authStorageProvider.overrideWithValue(mockStorage),
+            apiClientProvider.overrideWithValue(mockApiClient),
+            webSocketServiceProvider.overrideWithValue(mockWebSocketService),
+            deviceTokenServiceProvider.overrideWithValue(deviceService),
+          ],
+        );
+        addTearDown(local.dispose);
+        final notifier = local.read(authProvider.notifier);
+
+        when(() => mockStorage.clearTokens()).thenAnswer((_) async {});
+        when(() => mockStorage.getRefreshToken())
+            .thenAnswer((_) async => 'refresh-123');
+        when(() => mockDio.post(
+              any(),
+              data: any(named: 'data'),
+            )).thenAnswer((_) async => Response(
+              requestOptions: RequestOptions(path: '/auth/logout'),
+              statusCode: 200,
+              data: {},
+            ));
+
+        await notifier.logout();
+
+        verifyInOrder([
+          () => deviceService.unregister(),
+          () => mockApiClient.setToken(null),
+        ]);
+      });
+
+      test('a throwing unregister does not block sign-out', () async {
+        final deviceService = MockDeviceTokenService();
+        when(() => deviceService.unregister())
+            .thenThrow(StateError('unregister failed'));
+        final local = ProviderContainer(
+          overrides: [
+            authStorageProvider.overrideWithValue(mockStorage),
+            apiClientProvider.overrideWithValue(mockApiClient),
+            webSocketServiceProvider.overrideWithValue(mockWebSocketService),
+            deviceTokenServiceProvider.overrideWithValue(deviceService),
+          ],
+        );
+        addTearDown(local.dispose);
+        final notifier = local.read(authProvider.notifier);
+
+        when(() => mockStorage.clearTokens()).thenAnswer((_) async {});
+        when(() => mockStorage.getRefreshToken())
+            .thenAnswer((_) async => null);
+
+        await expectLater(notifier.logout(), completes);
+        expect(notifier.state.status, AuthStatus.unauthenticated);
+        verify(() => mockStorage.clearTokens()).called(1);
       });
     });
   });

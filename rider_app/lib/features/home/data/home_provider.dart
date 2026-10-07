@@ -190,23 +190,36 @@ class RideCreationNotifier extends StateNotifier<RideCreationState> {
     required double dropoffLng,
     required String dropoffAddress,
     required String vehicleType,
+    List<Place> stops = const [],
   }) async {
     state = state.copyWith(isLoading: true, error: null);
     // LC-0: reuse one key per booking attempt so retries replay the same
     // ride instead of creating duplicates. Cleared on success.
     _attemptKey ??= _generateIdempotencyKey();
+    final body = <String, dynamic>{
+      'pickup_lat': pickupLat,
+      'pickup_lng': pickupLng,
+      'pickup_address': pickupAddress,
+      'dropoff_lat': dropoffLat,
+      'dropoff_lng': dropoffLng,
+      'dropoff_address': dropoffAddress,
+      'vehicle_type': vehicleType,
+    };
+    // `[multi]`: the ordered intermediate stops are a top-level sibling of the
+    // ride fields. Order in the array **is** the sequence (the API derives it);
+    // `kind` is never sent — a client `kind:"destination"` is a 422, and the
+    // final destination stays the top-level `dropoff_*`. An empty list is
+    // omitted so the single-stop payload is byte-for-byte unchanged.
+    if (stops.isNotEmpty) {
+      body['stops'] = [
+        for (final stop in stops)
+          {'lat': stop.lat, 'lng': stop.lng, 'address': stop.address},
+      ];
+    }
     try {
       final response = await _apiClient.dio.post(
         ApiEndpoints.rides,
-        data: {
-          'pickup_lat': pickupLat,
-          'pickup_lng': pickupLng,
-          'pickup_address': pickupAddress,
-          'dropoff_lat': dropoffLat,
-          'dropoff_lng': dropoffLng,
-          'dropoff_address': dropoffAddress,
-          'vehicle_type': vehicleType,
-        },
+        data: body,
         options: Options(
           headers: {'Idempotency-Key': _attemptKey},
         ),

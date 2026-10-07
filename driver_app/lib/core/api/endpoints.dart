@@ -46,5 +46,10 @@ class ApiEndpoints {
   static const String sos = '$prefix/sos';
   static const String feedback = '$prefix/feedback';
 
+  // Device / push token registration (`POST /devices`, `DELETE /devices/:token`)
+  static const String devices = '$prefix/devices';
+  static String deviceUnregister(String token) =>
+      '$prefix/devices/${Uri.encodeComponent(token)}';
+
   static const String ws = '/ws';
 }

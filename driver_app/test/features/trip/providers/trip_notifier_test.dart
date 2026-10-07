@@ -248,6 +248,34 @@ void main() {
       expect(notifier.state.currentRide!.totalFare, 13.2);
     });
 
+    test('completion adopts the final total over the held booked quote',
+        () async {
+      seedAcceptedRide();
+      // The booked quote the driver already holds.
+      broadcast(status: 'in_progress', fare: {'total': 10.0});
+      expect(notifier.state.currentRide!.totalFare, 10.0);
+      when(() => mockDio.put(any(), data: any(named: 'data'))).thenAnswer(
+        (_) async => jsonResponse({
+          'ride': {'id': 'r1', 'status': 'completed', 'total_fare': 13.2},
+        }),
+      );
+
+      await notifier.advance();
+
+      expect(notifier.state.currentRide!.totalFare, 13.2);
+    });
+
+    test('a completion broadcast replaces the booked total with the final', () {
+      seedAcceptedRide();
+      broadcast(status: 'in_progress', fare: {'total': 10.0});
+      expect(notifier.state.currentRide!.totalFare, 10.0);
+
+      broadcast(status: 'completed', fare: {'total': 13.2});
+
+      expect(notifier.state.stage, TripStage.post);
+      expect(notifier.state.currentRide!.totalFare, 13.2);
+    });
+
     test('an illegal transition is refused before the network', () async {
       seedAcceptedRide();
       broadcast(status: 'completed');

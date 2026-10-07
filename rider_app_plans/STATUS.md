@@ -18,17 +18,14 @@
   `cancelled` / `completed`) `features/home/data/current_ride_provider.dart:90-93`, checked after
   every poll `:111-113`; `@visibleForTesting isPolling` `:87-88`; tests
   `test/features/home/data/current_ride_provider_test.dart:62-99`.
-- Ride detail + receipt + rating (LC-3) — `features/home/data/ride_provider.dart` `fetchRide:90`,
-  `fetchReceipt:116`, `resolveFare:137`, `rateRide:156` (per-ride `RatingOutcome`, a 409
-  `UNIQUE(ride_id, rater_role)` maps to `alreadyRated`, not failure); **ride-scoped** `canRate:73`
+- Ride detail + receipt + rating (LC-3) — `features/home/data/ride_provider.dart` `fetchRide:121`,
+  `fetchReceipt:147`, `resolveFare:168`, `rateRide:187` (per-ride `RatingOutcome`, a 409
+  `UNIQUE(ride_id, rater_role)` maps to `alreadyRated`, not failure); **ride-scoped** `canRate:104`
   (`!isRating && !ratedRideIds.contains(rideId)`; `ratingRideId` scopes the transient outcome so a
   rated ride no longer suppresses every later ride). `rating_prompt_dialog.dart:27-37` disables all
   five stars for the in-flight window (double-submit guard over an unhardened backend); completion
-  flow `active_ride_screen.dart:205-219`, receipt dialog `:225-322`, rating prompt `:289-301`;
-  tests `test/features/home/data/ride_provider_test.dart`.
-- Already-rated seed walk — `riderRatedRideIdsProvider` reads **every** page of `GET /rider/ratings`
-  (per_page 50), bounded by `ratedRideIdsMaxPages` = 20 (1000 ratings) —
-  `features/home/data/ride_provider.dart:232-272`; wired `active_ride_screen.dart:80,142-145`.
+  flow `active_ride_screen.dart:207-222`, receipt dialog `:227-286`, manual receipt `:323-333`,
+  rating prompt `:297-314`; tests `test/features/home/data/ride_provider_test.dart`.
 - Typed live driver tracking (LC-4) — `features/home/data/driver_tracking_provider.dart`
   (`pollInterval` 5 s `:57`, `wsSilenceTimeout` 10 s `:58`, `noteWsLocation:97`, `pollNow:123`
   folding the fix back into `rideStatusProvider` so WS and HTTP share one marker source); screen
@@ -48,6 +45,36 @@
   "unknown" and rendered as `ETA unavailable`, never rounded into a fake time
   (`active_ride_screen.dart:552-556`); tests `test/features/home/data/trip_route_provider_test.dart`.
 
+### [multi]
+- Pre-booking stop list (Home) — ordered `List<Place> _stops` with add/remove/reorder:
+  `features/home/presentation/stop_list.dart:13` (`applyStopReorder`), `:30` (`StopList`);
+  `features/home/presentation/home_screen.dart:45` (state), `:118-145` (`_addStop` /
+  `_removeStop` / `_reorderStops`), `:410-416` (render + fare note). Order in the list **is**
+  the itinerary (no client `sequence`); stop markers join the camera fit `:76-100`, `:251-261`.
+- Multi-leg honest preview (pickup → stops → destination) — `features/home/data/multi_leg_route_provider.dart:89-129`
+  routes each consecutive pair through `GET /navigation/route` and concatenates the **API**
+  geometry (`_fetchLeg:131-146`); any `is_estimate` leg makes the whole preview an estimate, any
+  failed/malformed leg fails it with **no** polyline (`:105-121`). Consumed by Home through the
+  unchanged `HomeRoutePreview.fromAsync` (`home_screen.dart:176-182`). No client straight-line
+  fallback.
+- `POST /rides` stop payload — `features/home/data/home_provider.dart:185-218`: `stops` param
+  `:193`, top-level `stops[]` sibling in list order with no `kind`/`sequence` `:208-218`, key
+  omitted when empty `:213`; call site `home_screen.dart:647-665` (`:664`). Tests
+  `test/features/home/data/home_provider_test.dart:229-297`.
+- Mid-trip change destination — `features/home/data/change_destination_provider.dart:15-22`
+  (`isDestinationChangeable` mirrors the API's changeable set), `:50-80`
+  (`PUT /rides/:id/destination` `:59-62`, API `message` with 409/404 fallbacks `:66-71`);
+  endpoint constant `core/api/endpoints.dart:17-18`; UI entry `active_ride_screen.dart:201-233`
+  (`_changeDestination`), gated `:716-719`, button `:745-770`. Re-route relies on the existing
+  `ride.updated` re-read; no client reprice/re-route. Tests
+  `test/features/home/data/change_destination_provider_test.dart`,
+  `test/features/home/presentation/active_ride_screen_test.dart:1010,1093`.
+- Fare honesty for stops (API gap, client-honest) — `home_screen.dart:474-499`
+  (`stops-fare-note`): the estimate stays the single-leg API number and the limitation is named;
+  no client stop surcharge. Tests `test/features/home/presentation/stop_list_test.dart`,
+  `test/features/home/data/multi_leg_route_provider_test.dart:66-140`,
+  `test/features/home/presentation/home_screen_test.dart:343+`.
+
 ### [web]
 - Ride creation on web/CORS: backend allows `Idempotency-Key`
   (`internal/router/router.go:55`; asserted `internal/router/router_test.go:32`); shared
@@ -55,24 +82,52 @@
   dispatch pushes `no_driver_available` (`internal/service/dispatch.go:59-64,67-76,92`).
 
 ### [map]
-- Zoom-to-fit pickup + dropoff — `features/home/presentation/home_screen.dart:32-40`
-  (`_fitBounds` / `CameraFit.bounds`).
-- Dropoff marker refresh — `home_screen.dart:139-140` (MarkerLayer gate includes `_destination`).
-- Server route polyline — `features/home/data/home_provider.dart:77-135` (`NavigationRoute`,
-  `navigationRouteProvider`); `home_screen.dart:82,110-138` watches and renders it.
-- Route fallback honesty (`01_[map]_route_fallback_honesty.md`): `NavigationRoute.isEstimate`
-  parsed (`home_provider.dart:81,94`); grey dashed `StrokePattern.dashed(segments: [12,8])`
-  drawn for error/loading/estimate/<2 points (`home_screen.dart:149-195`); solid blue only
-  for non-estimate `data`; `"Estimated "` prefixed in `_buildRouteInfo` (`home_screen.dart:451`);
-  error surfaced via `apiErrorMessage` + Retry button (`home_screen.dart:412-445`); tests
-  in `test/features/home/data/home_provider_test.dart` (`is_estimate` true/false) and
-  `test/features/home/presentation/home_screen_test.dart`.
+- Zoom-to-fit the whole itinerary (pickup → stops → destination) —
+  `features/home/presentation/home_screen.dart:76-100` (`_fitItinerary` / `CameraFit.bounds`;
+  every stop marker and the destination are in the fitted point set).
+- Dropoff + stop marker refresh — `home_screen.dart:223-274` (MarkerLayer gate includes
+  `_stops`/`_destination`).
+- Server route polyline — `features/home/data/home_provider.dart:83-107` (`NavigationRoute`,
+  `isEstimate` parsed `:104`), `:131-144` (`navigationRouteProvider`). Home now routes the
+  preview through the multi-leg provider instead — `features/home/data/multi_leg_route_provider.dart:89-129`
+  (same `NavigationRoute` vocabulary, one API leg per consecutive pair) — watched at
+  `home_screen.dart:176-182` (`navigationRouteProvider` is retained but no longer consumed by
+  Home; see Landed `[multi]`).
+- Route-preview failure honesty (`[map]_route_failure_honesty.md`): a single
+  `HomeRoutePreview.fromAsync` (`features/home/data/home_route_preview.dart:68-115`) derives one
+  status from the `AsyncValue<NavigationRoute>` reusing `TripRouteStatus`
+  (`features/home/data/trip_route_provider.dart:21`), and both the `PolylineLayer` and the info
+  row consume it, so the map and the numbers cannot disagree. `ready` → solid blue **API**
+  geometry (`home_screen.dart:210-222`); `estimate` → grey dashed **API** geometry + `"Estimated "`
+  (`:210-222,543`); `unavailable` (an error, or a `<2`-point body) → **no polyline** + the API
+  message (`apiErrorMessage`) + Retry (`home_route_preview.dart:72-94`,
+  `home_screen.dart:505-522`); `loading` → no polyline + a quiet `Finding route…` row (`:524-537`);
+  a failed refresh with a retained value keeps the previous **road** geometry and surfaces the
+  error (`isStale`, `home_route_preview.dart:66,82-114`) instead of swapping in a straight line.
+  No client-synthesized straight line remains; this supersedes the earlier straight-line fallback,
+  and the `[multi]` multi-leg preview above reuses the same derivation unchanged.
+  Tests `test/features/home/data/home_route_preview_test.dart` (9),
+  `test/features/home/presentation/home_screen_test.dart` (9, incl. the 2 `[multi]` cases), plus
+  `is_estimate` parsing in `test/features/home/data/home_provider_test.dart:299-319`.
 
 ### [routing]
 - Routing data in the API — landed/superseded by the `api_plans/` series (A* engine
   `internal/routing/`, the OSM import script / `make import-osm`, strict param validation
   `internal/handler/platform.go:516-527`). Structural note: the plan specified
   `internal/service/router/`; the engine lives in `internal/routing/`.
+
+### [fare]
+- Pre-booking estimate shows the API **total** + a receipt-style breakdown — `RideEstimate` maps
+  `total` and the additive legs (`distance_fare`/`time_fare`/`demand_multiplier`/
+  `supply_multiplier`/`grade_uplift_pct`/`currency`) and no longer parses the dead `price` field
+  `features/home/model/ride_estimate.dart:37,32-40,47,49,60`; the selected option renders
+  `formattedTotal` plus base/distance/time/conditions/total lines, with a `climb +x%` note on the
+  distance leg only when the uplift is non-zero and **no fuel line** —
+  `features/home/presentation/ride_estimate_sheet.dart:110,126-152` (climb `:134-136`); currency
+  comes from the API and an absent code renders the bare amount (`ride_estimate.dart:60`); tests
+  `test/features/home/model/ride_estimate_test.dart`,
+  `test/features/home/presentation/ride_estimate_sheet_test.dart`,
+  `test/features/home/data/home_provider_test.dart:304-366`.
 
 ### [auth]
 - Real rider profile / account — `rider_app/lib/core/auth/auth_provider.dart:20,38-99`
@@ -86,6 +141,21 @@
   `features/auth/presentation/forgot_password_screen.dart:38-64` drives success/error via
   `mapStatusCodeToException`; test
   `rider_app/test/features/auth/presentation/forgot_password_screen_test.dart`.
+
+### [push]
+- Rider device-token registration seam (register on every authenticated transition, unregister
+  **before** the bearer is cleared, best-effort): `PushTokenSource` interface +
+  `DevicePlatform`/`currentDevicePlatform` `core/push/push_token_source.dart:8,24,46,59`;
+  `DeviceTokenService` (`register:52`, `registerToken:64` → `POST /devices {token,platform}`,
+  `unregister:80` → `DELETE /devices/{token}`) `core/push/device_token_service.dart:52,64,80`,
+  provider `:103`; endpoints `core/api/endpoints.dart:34-36`; auth wiring — register on
+  authenticated `core/auth/auth_provider.dart:64`, unregister before `super.logout()`
+  `:89,93`; service materialized for the app lifetime `app.dart:15`. Tests
+  `test/core/push/device_token_service_test.dart` (15). **Deferred:** `pushTokenSourceProvider`
+  still ships `NoopPushTokenSource` (`push_token_source.dart:71-73`) — no FCM/APNs SDK in the
+  workspace, so no token is minted and the whole service degrades to a no-op; installing a real
+  source is a single provider override. Server delivery stays inert until a real `MultiProvider`
+  is wired (api_plans `[push]`).
 
 ### [nav]
 - Shared sidebar / settings / profile core + theme tokens — the first UI in `shared/` (17 files under
@@ -138,6 +208,17 @@
   loading `:50-52` / error+Retry `:53-62` / empty `:63-68` states; tests
   `test/features/home/data/history_provider_test.dart:94-149`,
   `test/features/home/presentation/history_screen_test.dart`.
+- Honest already-rated seed past the 1000-row cap (bug #11) — rider
+  `RatingStatus{rated,unrated,unknown}` with `canRate` true only for `unrated`
+  (`features/home/data/ride_provider.dart:26-40`); `riderRatedRideIdsProvider` returns a
+  `RatedRideSeed` and flags `partial` when the envelope `total` exceeds 20 × 50 (`:272-324`);
+  `riderRideRatingStatusProvider` resolves in-session → a seed hit → a complete-seed miss
+  (`unrated`) → the truncated-seed `GET /rider/ratings?ride_id=<uuid>` existence lookup
+  (`rated`/`unrated`) → `unknown` on any failure, so loading / failure / partial can never become
+  a prompt (`:326-380`). `active_ride_screen.dart` seeds the fast path and gates the prompt on that
+  provider (`:139-151,297-314`). Per-ride lookup uses the landed API `[history]` `ride_id` filter
+  (`api_plans/STATUS.md` → Landed `[history]`; handler `internal/handler/ride.go:483-486`); tests
+  `test/features/home/data/ride_provider_test.dart:455-792`.
 
 ### [geo]
 - Rider-location ping (bug #7): `features/home/data/location_ping_service.dart` — 5 s throttle
@@ -181,7 +262,7 @@ unless they cross a package, in which case they are repo-relative
 | # | Issue | Evidence | Severity | Owner |
 | --- | --- | --- | --- | --- |
 | 1 | `ActiveRideScreen` read invented `driver_lat`/`driver_lng`/`driver_name`/`car_model` instead of typed `RideState.driver`/`driverLocation` — **FIXED** by LC-4: typed driver card + marker bound to `driverLocation`; no invented key reads remain (only comments) | `features/home/presentation/active_ride_screen.dart:396-399,449-455,537-556` | high | [tracking] |
-| 2 | `home_screen.dart` route `error: (_, _)` branch still fires on **every** error status and discards the exception; it now draws the honest grey dashed fallback (not a confident blue line) and the error text/Retry is surfaced, but narrowing the branch to 5xx-only is a logged follow-up | `features/home/presentation/home_screen.dart:179-195` (post-fix) | low | [map] |
+| 2 | Home route `error: (_, _)` branch fired on **every** error status, drew a **client-synthesized straight** fallback, and discarded the exception; an `is_estimate` body also used the client's straight line instead of the API geometry — **FIXED** by `[map]_route_failure_honesty.md`: the branch is gone, no polyline is drawn on any error status, and the estimate uses the API geometry dashed + labeled | `features/home/data/home_route_preview.dart:68-115`; `features/home/presentation/home_screen.dart:210-222,505-522` | low | [map] |
 | 3 | Forgot-password was a local `setState` fake; `ApiEndpoints.forgotPassword` dead — **FIXED**: `AuthNotifier.forgotPassword` POSTs the real endpoint and the screen drives success/error | `rider_app/lib/core/auth/auth_provider.dart:44-51`; `features/auth/presentation/forgot_password_screen.dart:38-64` | medium | [auth] |
 | 4 | History screen hardcoded "No rides yet" — **FIXED**: paginated `historyProvider` + pull-to-refresh/infinite-scroll list with distinct empty/error states | `features/home/data/history_provider.dart:56-102`; `features/home/presentation/history_screen.dart:46,53-68` | medium | [history] |
 | 5 | Security/SOS screen placeholder; `ApiEndpoints.sos` dead — **FIXED**: confirm-dialog SOS POST with the ack-only caption | `features/home/data/security_provider.dart:36-68`; `features/home/presentation/security_screen.dart:8-29,58-84` | medium | [safety] |
@@ -190,16 +271,14 @@ unless they cross a package, in which case they are repo-relative
 | 8 | `current_ride_provider` poll only self-stopped on `no_driver_available`; cancel/complete relied on screen navigation — **FIXED**: self-stops on any terminal status | `features/home/data/current_ride_provider.dart:90-93,111-113` | low | [tracking] |
 | 9 | Sidebar existed only on `/home`; `AppSidebar.selectedRoute` wired but unconsumed — **FIXED**: app-wide `RiderShell` `ShellRoute` consumes `selectedRoute`; flow routes stay drawer-free | `features/navigation/rider_shell.dart:26-92`; `core/router/app_router.dart:56-86` | low | [nav] |
 | 10 | Place autocomplete fired one request per keystroke (no debounce) AND up to 4 sequential requests per query via the `_radiusSteps` 1000/3000/10000/30000 m loop — **FIXED** by `[search]_throttle_place_autocomplete.md`: 350 ms `placeSearchDebounceProvider` (`features/home/data/home_provider.dart:53-54`) with cancel-then-rearm `_debounceTimer` (`features/home/presentation/location_search_screen.dart:28,37-43`), and a single `_searchRadiusM = 30000.0` request (`features/home/data/home_provider.dart:51,56-74`) | pre-fix `features/home/presentation/location_search_screen.dart:50-52`; `features/home/data/home_provider.dart:51,58-73` | medium | [search] |
-| 11 | `riderRatedRideIdsProvider` seed walk is a **documented bound**: `ratedRideIdsMaxPages` = 20 × 50 = 1000 rated rides. A rider past that ceiling could be re-prompted for an ancient completed ride — non-fatal, the prompt's 409 → `alreadyRated` guard swallows it. Owned by `01_[history]_rated_seed_past_cap.md` (shares the open `api_plans/[history]_rating_existence_endpoint.md` prerequisite with driver bug #10) | `features/home/data/ride_provider.dart:239,247-271` | low | [history] |
+| 11 | `riderRatedRideIdsProvider` seed walk is a **documented bound**: `ratedRideIdsMaxPages` = 20 × 50 = 1000 rated rides. A rider past that ceiling could be re-prompted for an ancient completed ride — **FIXED** by `01_[history]_rated_seed_past_cap.md`: the seed is `partial` when `total > 1000` and a ride outside it is resolved with the `ride_id` filter; a truncated / loading / failed seed is `unknown`, never `unrated` | pre-fix `features/home/data/ride_provider.dart:239,247-271`; post-fix `features/home/data/ride_provider.dart:26-40,272-380` | low | [history] |
+| 12 | Pre-booking estimate sheet showed the fixed `base_fare` instead of the computed `total`, and `RideEstimate` parsed a dead `price` JSON field the API never sends (always 0, unused) — **FIXED** by `[fare]_estimate_total_and_breakdown.md`: maps `total` + breakdown legs, removes `price`, renders the total with a receipt-style breakdown and API currency | post-fix `features/home/model/ride_estimate.dart:37,49,60`; `features/home/presentation/ride_estimate_sheet.dart:110,126-152`; pre-fix sheet `:108`, model `:26,58`; API sends `total`/`grade_uplift_pct` `internal/handler/responses.go:185,194` | medium | [fare] |
+| 13 | **API gap (not rider work):** there is no waypoint-aware fare. `POST /rides` computes the quote from `pickup → dropoff` only and ignores the `stops[]` itinerary (`internal/service/ride.go:234`), and `GET /estimates/price` takes no stops — so a multi-stop trip is priced short. The rider UI is deliberately honest (single-leg API estimate + the `stops-fare-note` caveat) rather than inventing a client surcharge; fixing it is a future `api_plans [fare]` item | `internal/service/ride.go:234`; `features/home/presentation/home_screen.dart:474-499` | low | api_plans `[fare]` |
 
 ## Open plans
 
-| File | Tag | Depends on | What remains |
-| --- | --- | --- | --- |
-| `[map]_route_failure_honesty.md` | map | — | Home preview parity with the active trip: no straight line on any error status, estimate keeps the **API** geometry dashed + labeled, and a failed refresh must not swap in a straight line |
-| `01_[history]_rated_seed_past_cap.md` | history | `api_plans/[history]_rating_existence_endpoint.md` | `GET /rider/ratings` seed stops at 1000; detect truncation via the envelope's `total` and make loading / failed / partial `unknown` (never `unrated`), or resolve a specific ride via the open `ride_id`-filter prerequisite |
-| `[push]_device_token_registration.md` | push | — | Rider never registers a device token: permission + `POST /devices` (valid platform), refresh re-register, unregister **before** `logout()`. Inert until a real server push provider exists — may be deferred |
-| `[multi]_rider_stop_list_ui.md` | multi | — | **Outline only** (to be fleshed out): add/remove/reorder intermediate stops on Home + mid-trip destination change, consuming the landed API `[multi]` contract (`stops` sibling; `PUT /rides/:id/destination`) |
+**None.** `rider_app_plans/` has no open plan files (checked 2026-10-06). The last open plan,
+`[multi]_rider_stop_list_ui.md`, landed and was condensed into Landed `[multi]` above and deleted.
 
 Earlier wave plans — `[tracking]_ride_detail_receipt_rating.md` (LC-3 + LC-4) and
 `01_[ontrip]_live_route_and_eta.md` — landed, were condensed into Landed above, and were deleted
@@ -219,15 +298,17 @@ Earlier wave plans — `[tracking]_ride_detail_receipt_rating.md` (LC-3 + LC-4) 
   variant).
 - Tests use `mocktail` + `http_mock_adapter`, mirroring the existing suites.
 - Don't remove public providers used by other screens; extend them.
-- The API never answers an outage with 4xx: the rider's route `error: (_, _)` branch still fires on
-  every error status (`home_screen.dart:179-195`), so an outage must be 5xx or `is_estimate: true`.
+- The API never answers an outage with 4xx: it answers 5xx or `200 is_estimate: true`. Since
+  `[map]_route_failure_honesty.md` the Home preview draws **no** polyline on *any* error status
+  (`home_route_preview.dart:72-94`; `home_screen.dart:210-222`), so a misclassified 4xx can no longer
+  render a fake route — but the error contract (and the active trip) still require it.
 - **The active trip never draws a confident road-less route.** `TripRouteState.unavailable` carries
   no polyline and the screen renders only the "Route unavailable" banner; `isEstimate` is grey +
   dashed behind an explicit banner; solid blue is reserved for `ready`
   (`active_ride_screen.dart:420-466`). An `etaSeconds` of `300` is "unknown", never a rendered ETA
   (`trip_eta.dart:5`).
 
-### Skip list (backend still STUB — do NOT build UI) — authoritative
+### Skip list (backend STUB / delivery inert — do NOT build UI) — authoritative
 
 | Area | Endpoints | Why skip |
 |---|---|---|
@@ -236,10 +317,10 @@ Earlier wave plans — `[tracking]_ride_detail_receipt_rating.md` (LC-3 + LC-4) 
 | Promotions | `GET /promotions`, `POST /promotions/apply` | STUB (empty list / ack) |
 | Place details/geocode | `GET /places/geocode`, `GET /places/details` | STUB (`{"place":null}`) |
 | Analytics | `GET /geo/isochrone`, `GET /heatmap` | STUB/placeholder |
-| Devices/push | `POST /devices`, `DELETE /devices/:token` | no push pipeline |
+| Devices/push | `POST /devices`, `DELETE /devices/:token` | endpoints real (rider registration seam landed — see Landed `[push]`); delivery inert (no FCM/APNs provider), no rider UI to build |
 | Feedback | `POST /feedback` | ack only |
 | Social/verify | `POST /auth/social`, `verify-email`, `verify-phone` | STUB/PARTIAL (code ignored) |
-| Destination change | `PUT /rides/:id/destination` | STUB (ack, no mutation) |
+| Destination change | `PUT /rides/:id/destination` | **Not a stub** — real mutation landed in `api_plans [multi]` (`internal/service/ride.go:530-540`), and the rider UI landed `[multi]` (see Landed): `change_destination_provider.dart` + `active_ride_screen.dart:745-770` |
 | Driver side | all `/driver/*` + `ride.accept`/`ride.decline` | different role/app |
 
 ## Verification
@@ -254,5 +335,25 @@ melos run test
 Windows `melos.bat` through `cmd.exe`, which cannot `cd` into the UNC path. Native Melos 8 is at
 `~/.pub-cache/bin/melos`.)
 
-Last wave (LC-3 + LC-4 + `[ontrip]`, 2026-10-03): rider 274 tests green, `melos run analyze` clean.
-LC-3/LC-4 and `[ontrip]` landing claims adversarially reviewed before condensing.
+Last wave (`[map]_route_failure_honesty.md`, 2026-10-05): rider 298 tests green, `melos run analyze`
+clean (Linux FVM SDK + native Melos 8). Earlier wave (LC-3 + LC-4 + `[ontrip]`, 2026-10-03): rider
+274 tests green. Landing claims adversarially reviewed before condensing.
+
+`[push]` condensation (2026-10-06): static `file:line` evidence verified; 15 unit tests present
+(`test/core/push/device_token_service_test.dart`). Runtime `melos run analyze` / `melos run test`
+were **not** re-run during this condensation (UNVERIFIABLE here) — run them to close.
+
+`[history]` rated-seed condensation (2026-10-05): static `file:line` evidence verified and the
+superseded `[tracking]` seed-walk citation refreshed; the API `ride_id` prerequisite is landed
+(`api_plans/STATUS.md` → Landed `[history]`). Runtime `melos run analyze` / `melos run test` were
+**not** re-run during this condensation (UNVERIFIABLE here) — the implementing agent reports rider
+319 / driver 323 / shared 151 green; run them to close.
+
+`[multi]` stop-list condensation (2026-10-06): static `file:line` evidence verified against the
+post-landing tree and the moved `[map]` Home-preview citations refreshed. `flutter analyze` on the
+five touched sources is clean, and `flutter test` on the six relevant files
+(`stop_list_test`, `multi_leg_route_provider_test`, `change_destination_provider_test`,
+`home_screen_test`, `active_ride_screen_test`, `home_provider_test`) passed 74/74 (Linux FVM SDK).
+The implementing agent reports the full suite rider 347 / driver 337 / shared 151 green; the full
+`melos run test` was **not** re-run here. A concurrent `antagonistic-reviewer` verdict was still in
+flight at condense time; this entry records only what the code shows and does not pre-empt it.

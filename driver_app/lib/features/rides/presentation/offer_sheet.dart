@@ -175,7 +175,10 @@ class _OfferSheetState extends ConsumerState<OfferSheet> {
               'Fare',
               _ride!.totalFare == null
                   ? '-'
-                  : '\$${_ride!.totalFare!.toStringAsFixed(0)}',
+                  : formatMoney(
+                      _ride!.totalFare!,
+                      currency: _ride!.fareCurrency,
+                    ),
             ),
             const SizedBox(height: 8),
           ],

@@ -327,6 +327,9 @@ func TestGetRouteLegacyRepoUnchanged(t *testing.T) {
 	if got.DistanceMeters != 5000 || got.DurationSecs != 5000/11 {
 		t.Errorf("got %d m / %d s, want 5000 m / %d s", got.DistanceMeters, got.DurationSecs, 5000/11)
 	}
+	if got.RegionID != "" {
+		t.Errorf("the legacy unscoped path must carry no region, got %q", got.RegionID)
+	}
 	want := []model.LatLng{
 		{Lat: sjPin[0], Lng: sjPin[1]}, // pinned origin
 		{Lat: 9.9400, Lng: -84.0800},
@@ -392,6 +395,9 @@ func TestGetRouteNoCoverageIsEstimate(t *testing.T) {
 	if !got.IsEstimate {
 		t.Error("IsEstimate must be true when no region covers the pins")
 	}
+	if got.RegionID != "" {
+		t.Errorf("an estimate must never invent a region, got %q", got.RegionID)
+	}
 
 	straight := routing.HaversineMeters(pacificPin[0], pacificPin[1], toLat, toLng)
 	wantDist := int(math.Round(straight))
@@ -434,6 +440,9 @@ func TestGetRouteRoutesInResolvedRegion(t *testing.T) {
 	}
 	if len(repo.routeIDs) != 1 || repo.routeIDs[0].RegionID != "cr-sj" {
 		t.Fatalf("RouteInRegion calls = %+v, want one call in cr-sj", repo.routeIDs)
+	}
+	if got.RegionID != "cr-sj" {
+		t.Errorf("RouteInfo.RegionID = %q, want the resolved cr-sj so the fare layer prices the right card", got.RegionID)
 	}
 	if got.DistanceMeters != 2094 || got.DurationSecs != 2094/11 {
 		t.Errorf("got %d m / %d s, want 2094 m / %d s", got.DistanceMeters, got.DurationSecs, 2094/11)
@@ -513,6 +522,11 @@ func TestGetRouteRegionSourceWithoutRouterUsesLegacyPath(t *testing.T) {
 	}
 	if got.DistanceMeters != 1500 || got.IsEstimate {
 		t.Errorf("got %+v, want a non-estimate 1500 m route", got)
+	}
+	// It resolved a region even though it routed unscoped, so the region is
+	// still exposed to the fare layer.
+	if got.RegionID != "cr-sj" {
+		t.Errorf("RouteInfo.RegionID = %q, want cr-sj", got.RegionID)
 	}
 	if len(repo.pathIDs) != 1 {
 		t.Errorf("expected the unscoped GetShortestPath fallback, got %v", repo.pathIDs)

@@ -13,6 +13,7 @@ Ride completed(
   required double fare,
   String? completedAt,
   String status = 'completed',
+  String? currency,
 }) {
   return Ride(
     id: id,
@@ -21,6 +22,7 @@ Ride completed(
     pickupAddress: 'Pickup $id',
     dropoffAddress: 'Dropoff $id',
     totalFare: fare,
+    fareCurrency: currency,
     completedAt: completedAt,
     requestedAt: '2026-01-01T00:00:00Z',
   );
@@ -243,6 +245,36 @@ void main() {
       expect(state.page, 1);
     });
 
+    test('a refresh replaces a booked value with the completion final',
+        () async {
+      // Loaded while still open, the row carries the booked quote.
+      when(() => repo.history(page: 1, perPage: historyPageSize)).thenAnswer(
+        (_) async => page([
+          Ride(
+            id: 'r1',
+            riderId: 'u1',
+            status: 'in_progress',
+            totalFare: 10.0,
+            requestedAt: '2026-01-01T00:00:00Z',
+          ),
+        ], total: 1),
+      );
+      await history().refresh();
+      expect(container.read(historyProvider).rides.single.totalFare, 10.0);
+
+      // It completes with the recomputed final; the refresh picks that up.
+      when(() => repo.history(page: 1, perPage: historyPageSize)).thenAnswer(
+        (_) async => page([
+          completed('r1', fare: 13.2, completedAt: '2026-09-01T10:00:00Z'),
+        ], total: 1),
+      );
+      await history().refresh();
+
+      final state = container.read(historyProvider);
+      expect(state.rides.single.status, 'completed');
+      expect(state.rides.single.totalFare, 13.2);
+    });
+
     test('a silent refresh keeps the list on screen while it reloads',
         () async {
       when(() => repo.history(page: 1, perPage: historyPageSize)).thenAnswer(
@@ -371,6 +403,71 @@ void main() {
       expect(summary.loadedTotal, 10);
     });
 
+    test('carries the single currency every loaded fare agrees on', () {
+      final summary = EarningsSummary.from([
+        completed(
+          'a',
+          fare: 10,
+          completedAt: '2026-09-02T10:00:00Z',
+          currency: 'CRC',
+        ),
+        completed(
+          'b',
+          fare: 15.5,
+          completedAt: '2026-09-20T10:00:00Z',
+          currency: 'CRC',
+        ),
+      ], now: now);
+
+      expect(summary.currency, 'CRC');
+      expect(summary.months.single.currency, 'CRC');
+    });
+
+    test('omits the currency when the loaded fares disagree', () {
+      final summary = EarningsSummary.from([
+        completed(
+          'a',
+          fare: 10,
+          completedAt: '2026-09-02T10:00:00Z',
+          currency: 'CRC',
+        ),
+        completed(
+          'b',
+          fare: 15.5,
+          completedAt: '2026-09-20T10:00:00Z',
+          currency: 'USD',
+        ),
+      ], now: now);
+
+      // Mixed currencies have no single honest unit, so the aggregate claims
+      // none rather than printing one region's symbol over another's money.
+      expect(summary.currency, isNull);
+      expect(summary.months.single.currency, isNull);
+    });
+
+    test('no currency at all stays null rather than a guessed default', () {
+      final summary = EarningsSummary.from([
+        completed('a', fare: 10, completedAt: '2026-09-02T10:00:00Z'),
+      ], now: now);
+
+      expect(summary.currency, isNull);
+      expect(summary.months.single.currency, isNull);
+    });
+
+    test('a blank currency code is not treated as a currency', () {
+      final summary = EarningsSummary.from([
+        completed(
+          'a',
+          fare: 10,
+          completedAt: '2026-09-02T10:00:00Z',
+          currency: 'CRC',
+        ),
+        completed('b', fare: 5, completedAt: '2026-09-03T10:00:00Z'),
+      ], now: now);
+
+      expect(summary.currency, 'CRC');
+    });
+
     test('treats a null fare as zero rather than dropping the trip', () {
       final summary = EarningsSummary.from([
         Ride(
@@ -413,6 +510,27 @@ void main() {
       expect(summary.loadedTotal, 9);
       expect(summary.months, isEmpty);
       expect(summary.monthTotal, 0);
+    });
+
+    test('sums the final charge of completed rides, not an open ride stake', () {
+      final summary = EarningsSummary.from([
+        completed('a', fare: 13.2, completedAt: '2026-09-02T10:00:00Z'),
+        completed('b', fare: 7.0, completedAt: '2026-09-03T10:00:00Z'),
+        // An in-progress ride still carries the booked quote; it has no final
+        // charge and must not be paid out.
+        Ride(
+          id: 'c',
+          riderId: 'u1',
+          status: 'in_progress',
+          totalFare: 99,
+          requestedAt: '2026-09-04T10:00:00Z',
+        ),
+      ], now: now);
+
+      expect(summary.completedTrips, 2);
+      expect(summary.monthTrips, 2);
+      expect(summary.monthTotal, 20.2);
+      expect(summary.loadedTotal, 20.2);
     });
 
     test('earningsProvider sums whatever history is loaded', () async {

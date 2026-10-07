@@ -54,6 +54,26 @@ Map<String, dynamic> receiptJson({double total = 2800.0}) => {
       },
     };
 
+/// One row of the `GET /rider/ratings` envelope.
+Map<String, dynamic> ratingRow(String rideId) => {
+      'id': 'rating-$rideId',
+      'ride_id': rideId,
+      'rater_role': 'rider',
+      'score': 5,
+      'comment': '',
+      'created_at': '2026-03-01T11:00:00Z',
+    };
+
+/// The seeded-list envelope for a walk that was cut short: `total` is past the
+/// 1000-row bound, so absence of a ride is not evidence it is unrated.
+Map<String, dynamic> truncatedSeedBody(int page) => {
+      'ratings': <dynamic>[],
+      'total': 1001,
+      'page': page,
+      'per_page': 50,
+      'total_pages': 21,
+    };
+
 void main() {
   group('RideDetailNotifier.fetchRide', () {
     late ApiClient apiClient;
@@ -471,7 +491,8 @@ void main() {
 
       final rated = await container.read(riderRatedRideIdsProvider.future);
 
-      expect(rated, {'ride-1', 'ride-2'});
+      expect(rated.rideIds, {'ride-1', 'ride-2'});
+      expect(rated.partial, isFalse);
     });
 
     test('an empty history yields an empty set', () async {
@@ -492,7 +513,9 @@ void main() {
       );
       addTearDown(container.dispose);
 
-      expect(await container.read(riderRatedRideIdsProvider.future), isEmpty);
+      expect(
+          (await container.read(riderRatedRideIdsProvider.future)).rideIds,
+          isEmpty);
     });
 
     test('walks every page so a rating past page 1 is not missed [FIX-D]',
@@ -548,7 +571,7 @@ void main() {
       final rated = await container.read(riderRatedRideIdsProvider.future);
 
       expect(requestedPages, [1, 2]);
-      expect(rated, {'ride-1', 'ride-51'});
+      expect(rated.rideIds, {'ride-1', 'ride-51'});
     });
 
     test('a lying total_pages cannot make the seed walk unbounded [FIX-D]',
@@ -576,6 +599,195 @@ void main() {
       await container.read(riderRatedRideIdsProvider.future);
 
       expect(calls, ratedRideIdsMaxPages);
+    });
+
+    test('a total past the 1000-row bound marks the seed partial', () async {
+      final apiClient = ApiClient(baseUrl: 'http://localhost:8080');
+      final dioAdapter = DioAdapter(dio: apiClient.dio);
+      dioAdapter.onGet(
+        '/api/v1/rider/ratings',
+        (server) => server.reply(200, {
+          'ratings': [ratingRow('ride-1')],
+          'total': 1001,
+          'page': 1,
+          'per_page': 50,
+          'total_pages': 21,
+        }),
+      );
+      final container = ProviderContainer(
+        overrides: [apiClientProvider.overrideWithValue(apiClient)],
+      );
+      addTearDown(container.dispose);
+
+      final seed = await container.read(riderRatedRideIdsProvider.future);
+
+      expect(seed.partial, isTrue);
+    });
+  });
+
+  group('riderRideRatingStatusProvider', () {
+    const beyondCap = '11111111-1111-1111-1111-111111111111';
+    const otherRide = '22222222-2222-2222-2222-222222222222';
+
+    ProviderContainer containerWith(ApiClient apiClient) {
+      final container = ProviderContainer(
+        overrides: [apiClientProvider.overrideWithValue(apiClient)],
+      );
+      addTearDown(container.dispose);
+      return container;
+    }
+
+    /// A `GET /rider/ratings` mock that answers the seed walk with a truncated
+    /// envelope and the per-ride `ride_id` filter from [filterBody].
+    void mockTruncatedSeedWithFilter(
+      DioAdapter dioAdapter,
+      Map<String, dynamic> Function(String rideId) filterBody, {
+      void Function(Map<String, dynamic> query)? onFilter,
+    }) {
+      dioAdapter.onGet('/api/v1/rider/ratings', (server) {
+        return server.replyCallback(200, (options) {
+          final params = Map<String, dynamic>.from(options.queryParameters);
+          if (params.containsKey('ride_id')) {
+            onFilter?.call(params);
+            return filterBody(params['ride_id'] as String);
+          }
+          return truncatedSeedBody(
+            int.tryParse(params['page'].toString()) ?? 1,
+          );
+        });
+      });
+    }
+
+    Map<String, dynamic> emptyFilter(String rideId) => {
+          'ratings': <dynamic>[],
+          'total': 0,
+          'page': 1,
+          'per_page': 20,
+          'total_pages': 0,
+        };
+
+    test('a rated ride beyond the seed cap is still rated [the bug]',
+        () async {
+      final apiClient = ApiClient(baseUrl: 'http://localhost:8080');
+      final dioAdapter = DioAdapter(dio: apiClient.dio);
+      final filterQueries = <Map<String, dynamic>>[];
+      mockTruncatedSeedWithFilter(
+        dioAdapter,
+        (rideId) => {
+          'ratings': [ratingRow(rideId)],
+          'total': 1,
+          'page': 1,
+          'per_page': 20,
+          'total_pages': 1,
+        },
+        onFilter: filterQueries.add,
+      );
+      final container = containerWith(apiClient);
+
+      final status =
+          await container.read(riderRideRatingStatusProvider(beyondCap).future);
+
+      expect(status, RatingStatus.rated);
+      expect(status.canRate, isFalse);
+      // The filter asks for exactly this ride, nothing else.
+      expect(filterQueries, [
+        {'ride_id': beyondCap}
+      ]);
+    });
+
+    test('an unrated ride beyond the cap stays unrated', () async {
+      final apiClient = ApiClient(baseUrl: 'http://localhost:8080');
+      final dioAdapter = DioAdapter(dio: apiClient.dio);
+      final filterQueries = <Map<String, dynamic>>[];
+      mockTruncatedSeedWithFilter(
+        dioAdapter,
+        emptyFilter,
+        onFilter: filterQueries.add,
+      );
+      final container = containerWith(apiClient);
+
+      final status =
+          await container.read(riderRideRatingStatusProvider(beyondCap).future);
+
+      expect(status, RatingStatus.unrated);
+      expect(status.canRate, isTrue);
+      expect(filterQueries.single, {'ride_id': beyondCap});
+    });
+
+    test('a complete seed answers unrated without a filter request', () async {
+      final apiClient = ApiClient(baseUrl: 'http://localhost:8080');
+      final dioAdapter = DioAdapter(dio: apiClient.dio);
+      var filterCalls = 0;
+      dioAdapter.onGet('/api/v1/rider/ratings', (server) {
+        return server.replyCallback(200, (options) {
+          if (options.queryParameters.containsKey('ride_id')) {
+            filterCalls++;
+            return emptyFilter(otherRide);
+          }
+          return {
+            'ratings': [ratingRow('ride-1')],
+            'total': 1,
+            'page': 1,
+            'per_page': 50,
+            'total_pages': 1,
+          };
+        });
+      });
+      final container = containerWith(apiClient);
+
+      final status =
+          await container.read(riderRideRatingStatusProvider(otherRide).future);
+
+      expect(status, RatingStatus.unrated);
+      expect(filterCalls, 0,
+          reason: 'a complete seed is already a definitive answer');
+    });
+
+    test('a 422 on the per-ride filter is unknown, never unrated', () async {
+      final apiClient = ApiClient(baseUrl: 'http://localhost:8080');
+      final dioAdapter = DioAdapter(dio: apiClient.dio);
+      // The seed first (matches any query), the filter second: the matcher
+      // keeps the last registered match, so a `ride_id` request hits the filter.
+      dioAdapter.onGet('/api/v1/rider/ratings', (server) {
+        return server.replyCallback(200, (options) {
+          return truncatedSeedBody(
+            int.tryParse(options.queryParameters['page']?.toString() ?? '1') ??
+                1,
+          );
+        });
+      });
+      dioAdapter.onGet(
+        '/api/v1/rider/ratings',
+        (server) => server.reply(422, {
+          'error': {'code': 'VALIDATION_ERROR', 'message': 'invalid ride_id'},
+        }),
+        queryParameters: {'ride_id': beyondCap},
+      );
+      final container = containerWith(apiClient);
+
+      final status =
+          await container.read(riderRideRatingStatusProvider(beyondCap).future);
+
+      expect(status, RatingStatus.unknown);
+      expect(status.canRate, isFalse);
+    });
+
+    test('a failed seed walk is unknown, never unrated', () async {
+      final apiClient = ApiClient(baseUrl: 'http://localhost:8080');
+      final dioAdapter = DioAdapter(dio: apiClient.dio);
+      dioAdapter.onGet(
+        '/api/v1/rider/ratings',
+        (server) => server.reply(500, {
+          'error': {'code': 'INTERNAL', 'message': 'failed to load ratings'},
+        }),
+      );
+      final container = containerWith(apiClient);
+
+      final status =
+          await container.read(riderRideRatingStatusProvider(beyondCap).future);
+
+      expect(status, RatingStatus.unknown);
+      expect(status.canRate, isFalse);
     });
   });
 }

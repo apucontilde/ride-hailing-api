@@ -23,10 +23,25 @@ type RideRepository interface {
 	FindRidesByRider(riderID string, limit, offset int) ([]model.Ride, int, error)
 	FindRidesByDriver(driverID string, limit, offset int) ([]model.Ride, int, error)
 	UpdateRideStatus(rideID, status string, timestamp *time.Time) error
+	// Actuals (migration 021, api_plans/[tracking]_actual_trip_distance.md).
+	InsertRideTrackPoint(rideID string, lat, lng float64, at time.Time) error
+	FindRideTrackPoints(rideID string) ([]model.RideTrackPoint, error)
+	SetRideActuals(rideID string, durationS *int, distanceM *float64) error
+	// FinalizeRideFare captures the current money columns AND the booked climb
+	// uplift as the quote and overwrites them with the recomputed final charge
+	// (migrations 022/023,
+	// api_plans/01_[fare]_actuals_recompute_on_completion.md). gradeUpliftPct is
+	// the uplift APPLIED to the final distance leg (nil for a legacy ride with
+	// no uplift); the booked value is preserved in quoted_grade_uplift_pct. It
+	// is once-only: the UPDATE is guarded on quoted_total_fare IS NULL, so a
+	// second call is a no-op that reports finalized=false. That guard is what
+	// makes finalization idempotent even if two completions race the service's
+	// status machine.
+	FinalizeRideFare(rideID string, baseFare, distanceFare, timeFare, totalFare float64, gradeUpliftPct *float64) (finalized bool, err error)
 	AssignDriver(rideID, driverID string) error
 	CreateEvent(event *model.RideEvent) error
 	CreateRating(rating *model.Rating) error
-	FindRatingsByRater(raterID, raterRole string, limit, offset int) ([]model.Rating, int, error)
+	FindRatingsByRater(raterID, raterRole, rideID string, limit, offset int) ([]model.Rating, int, error)
 	FindVehicleByDriverID(driverID string) (*model.DriverVehicle, error)
 }
 
@@ -63,12 +78,17 @@ func (r *RideRepo) CreateRide(ride *model.Ride) error {
 
 	query := `
 		INSERT INTO rides (rider_id, pickup_lat, pickup_lng, dropoff_lat, dropoff_lng,
-			pickup_address, dropoff_address, vehicle_type, idempotency_key, status, requested_at)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, 'pending', NOW())
+			pickup_address, dropoff_address, vehicle_type, idempotency_key, status, requested_at,
+			base_fare, distance_fare, time_fare, surge_multiplier, total_fare,
+			fare_region_id, fare_rate_id, fare_currency, grade_uplift_pct, grade_ascent_m)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, 'pending', NOW(),
+			$10, $11, $12, $13, $14, $15, $16, $17, $18, $19)
 		RETURNING id, status, created_at, updated_at`
 	if err := tx.QueryRow(query, ride.RiderID, ride.PickupLat, ride.PickupLng,
 		ride.DropoffLat, ride.DropoffLng, ride.PickupAddress, ride.DropoffAddress,
-		ride.VehicleType, ride.IdempotencyKey).
+		ride.VehicleType, ride.IdempotencyKey,
+		ride.BaseFare, ride.DistanceFare, ride.TimeFare, ride.SurgeMultiplier, ride.TotalFare,
+		ride.FareRegionID, ride.FareRateID, ride.FareCurrency, ride.GradeUpliftPct, ride.GradeAscentM).
 		Scan(&ride.ID, &ride.Status, &ride.CreatedAt, &ride.UpdatedAt); err != nil {
 		return wrapDB("create ride", err)
 	}
@@ -305,6 +325,89 @@ func (r *RideRepo) UpdateRideStatus(rideID, status string, timestamp *time.Time)
 	return wrapDB("update ride status", err)
 }
 
+// InsertRideTrackPoint appends one accepted driver fix to the ride's trace
+// (migration 021). It is APPEND-ONLY on purpose: the hot location endpoint
+// never reads-then-writes rides.actual_distance_m, so concurrent pings cannot
+// lose a segment to a lost update. The distance is summed from these points on
+// the completed transition (service.DrivenDistanceMeters).
+//
+// at is the server receive time; the noise gate uses it to derive implied speed
+// and drop teleports.
+func (r *RideRepo) InsertRideTrackPoint(rideID string, lat, lng float64, at time.Time) error {
+	_, err := r.db.Exec(`
+		INSERT INTO ride_track_points (ride_id, lat, lng, recorded_at)
+		VALUES ($1, $2, $3, $4)`, rideID, lat, lng, at)
+	return wrapDB("insert ride track point", err)
+}
+
+// FindRideTrackPoints returns one ride's fixes in time order (recorded_at, then
+// id to break exact ties). A ride with no fixes yields an empty slice, never
+// nil, so a caller can range over it.
+func (r *RideRepo) FindRideTrackPoints(rideID string) ([]model.RideTrackPoint, error) {
+	points := []model.RideTrackPoint{}
+	if err := r.db.Select(&points, `
+		SELECT id, ride_id, lat, lng, recorded_at
+		FROM ride_track_points WHERE ride_id = $1
+		ORDER BY recorded_at, id`, rideID); err != nil {
+		return nil, wrapDB("load ride track points", err)
+	}
+	return points, nil
+}
+
+// SetRideActuals writes the computed actuals on the completed transition. Nil
+// arguments write SQL NULL, which is the honest "no usable actual" the later
+// fare recompute falls back from.
+func (r *RideRepo) SetRideActuals(rideID string, durationS *int, distanceM *float64) error {
+	_, err := r.db.Exec(`
+		UPDATE rides SET actual_duration_s=$1, actual_distance_m=$2, updated_at=NOW()
+		WHERE id=$3`, durationS, distanceM, rideID)
+	return wrapDB("set ride actuals", err)
+}
+
+// FinalizeRideFare snapshots the booked quote (money columns AND climb uplift)
+// and writes the final charge in ONE statement (migrations 022/023). The quote
+// is copied from the row's CURRENT columns, not from a caller-supplied value:
+// the service's loaded ride may be stale, but the guarded UPDATE reads the
+// pre-finalization row it is about to overwrite, so the quote can never be the
+// final charge.
+//
+// `grade_uplift_pct` follows the money split: it is snapshotted into
+// `quoted_grade_uplift_pct` and then overwritten with the uplift APPLIED to the
+// final distance leg, so every read path returns the value that reconciles with
+// the charged distance_fare.
+//
+// The `quoted_total_fare IS NULL` guard makes this once-only: a second call (a
+// racing completion, a retry that slipped past the status machine) affects zero
+// rows and reports finalized=false without touching the row. That is the
+// database-level half of the recompute's idempotency; the service half is the
+// completed->completed transition being rejected.
+func (r *RideRepo) FinalizeRideFare(rideID string, baseFare, distanceFare, timeFare, totalFare float64, gradeUpliftPct *float64) (bool, error) {
+	res, err := r.db.Exec(`
+		UPDATE rides
+		SET quoted_base_fare         = base_fare,
+		    quoted_distance_fare     = distance_fare,
+		    quoted_time_fare         = time_fare,
+		    quoted_surge_multiplier  = surge_multiplier,
+		    quoted_total_fare        = total_fare,
+		    quoted_grade_uplift_pct  = grade_uplift_pct,
+		    base_fare                = $2,
+		    distance_fare            = $3,
+		    time_fare                = $4,
+		    total_fare               = $5,
+		    grade_uplift_pct         = $6,
+		    updated_at               = NOW()
+		WHERE id = $1 AND quoted_total_fare IS NULL`,
+		rideID, baseFare, distanceFare, timeFare, totalFare, gradeUpliftPct)
+	if err != nil {
+		return false, wrapDB("finalize ride fare", err)
+	}
+	rows, err := res.RowsAffected()
+	if err != nil {
+		return false, wrapDB("finalize ride fare", err)
+	}
+	return rows == 1, nil
+}
+
 func (r *RideRepo) AssignDriver(rideID, driverID string) error {
 	res, err := r.db.Exec(`
 		UPDATE rides SET driver_id=$1, status='accepted', accepted_at=NOW(), updated_at=NOW()
@@ -351,18 +454,34 @@ func (r *RideRepo) CreateRating(rating *model.Rating) error {
 // FindRatingsByRater returns the ratings a single actor submitted (rater_role
 // disambiguates the UNIQUE(ride_id, rater_role) row pair), newest first, with
 // the total row count for pagination. Backed by idx_ratings_rater (015).
-func (r *RideRepo) FindRatingsByRater(raterID, raterRole string, limit, offset int) ([]model.Rating, int, error) {
+//
+// rideID is an optional per-ride existence filter: when non-empty the query is
+// further scoped to that ride, so a caller asking "did this rater rate this
+// ride?" gets 0 or 1 rows without walking a paginated list. The filter is
+// appended, not substituted, so the existing rater-scoped index path is
+// unchanged. The handler validates ride_id to the canonical UUID form, so the
+// bare column comparison can never receive a value Postgres would reject.
+func (r *RideRepo) FindRatingsByRater(raterID, raterRole, rideID string, limit, offset int) ([]model.Rating, int, error) {
+	filter := ""
+	args := []any{raterID, raterRole}
+	if rideID != "" {
+		filter = " AND ride_id = $3"
+		args = append(args, rideID)
+	}
+
 	var total int
 	if err := r.db.Get(&total,
-		"SELECT COUNT(*) FROM ratings WHERE rater_id = $1 AND rater_role = $2",
-		raterID, raterRole); err != nil {
+		"SELECT COUNT(*) FROM ratings WHERE rater_id = $1 AND rater_role = $2"+filter,
+		args...); err != nil {
 		return nil, 0, wrapDB("load ratings by rater", err)
 	}
 
 	var ratings []model.Rating
-	err := r.db.Select(&ratings, `
-		SELECT * FROM ratings WHERE rater_id = $1 AND rater_role = $2
-		ORDER BY created_at DESC LIMIT $3 OFFSET $4`, raterID, raterRole, limit, offset)
+	limitIdx := len(args) + 1
+	err := r.db.Select(&ratings, fmt.Sprintf(`
+		SELECT * FROM ratings WHERE rater_id = $1 AND rater_role = $2%s
+		ORDER BY created_at DESC LIMIT $%d OFFSET $%d`, filter, limitIdx, limitIdx+1),
+		append(args, limit, offset)...)
 	if err != nil {
 		return nil, 0, wrapDB("load ratings by rater", err)
 	}

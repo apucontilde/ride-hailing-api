@@ -105,6 +105,7 @@ func newTestServerE(geoRepo *MockGeoRepo, navRepo *MockNavigationRepo) (*TestSer
 	r := router.SetupWithRepos(cfg, userRepo, rideRepo, geoRepo, navRepo, placesRepo, nil,
 		router.WithDeviceTokenRepository(deviceRepo),
 		router.WithFeedbackRepository(feedbackRepo),
+		router.WithFareRepository(NewMockFareRepo()),
 	)
 
 	return &TestServer{

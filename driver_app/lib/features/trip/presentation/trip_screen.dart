@@ -173,8 +173,11 @@ class _TripScreenState extends ConsumerState<TripScreen> {
     // prompt appears only once the server's list of already-rated rides is on
     // screen and does not list this ride — while the list loads (and after it
     // fails) the answer is `unknown` and the prompt stays hidden rather than
-    // claiming the driver never rated this trip.
-    final ratingStatus = ref.watch(ratedRideStatusProvider(ride?.id ?? ''));
+    // claiming the driver never rated this trip. `valueOrNull` keeps a resolved
+    // answer across a refresh; an unresolved future is `unknown`.
+    final ratingStatus =
+        ref.watch(ratedRideStatusProvider(ride?.id ?? '')).valueOrNull ??
+            RatingStatus.unknown;
     final ratedRides = ref.watch(ratedRidesProvider);
     final canRate = ride != null &&
         ride.id.isNotEmpty &&
@@ -483,15 +486,40 @@ class _StageControls extends StatelessWidget {
                       padding: const EdgeInsets.all(12),
                       child: Column(
                         children: [
-                          _fareRow(context, 'Base fare', ride?.baseFare),
-                          _fareRow(context, 'Distance', ride?.distanceFare),
-                          _fareRow(context, 'Time', ride?.timeFare),
+                          _fareRow(
+                            context,
+                            'Base fare',
+                            ride?.baseFare,
+                            currency: ride?.fareCurrency,
+                          ),
+                          _fareRow(
+                            context,
+                            'Distance',
+                            ride?.distanceFare,
+                            currency: ride?.fareCurrency,
+                            note: (ride?.gradeUpliftPct ?? 0) != 0
+                                ? 'climb +${(ride!.gradeUpliftPct! * 100).toStringAsFixed(1)}%'
+                                : null,
+                          ),
+                          _fareRow(
+                            context,
+                            'Time',
+                            ride?.timeFare,
+                            currency: ride?.fareCurrency,
+                          ),
+                          if ((ride?.surgeMultiplier ?? 0) > 0)
+                            _lineRow(
+                              context,
+                              'Conditions multiplier',
+                              '×${ride!.surgeMultiplier!.toStringAsFixed(2)}',
+                            ),
                           const Divider(height: 16),
                           _fareRow(
                             context,
                             'Total',
                             ride?.totalFare,
                             bold: true,
+                            currency: ride?.fareCurrency,
                           ),
                         ],
                       ),
@@ -632,19 +660,53 @@ class _StageControls extends StatelessWidget {
     );
   }
 
-  Widget _fareRow(BuildContext context, String label, double? amount,
-      {bool bold = false}) {
+  Widget _fareRow(
+    BuildContext context,
+    String label,
+    double? amount, {
+    bool bold = false,
+    String? currency,
+    String? note,
+  }) {
+    return _lineRow(
+      context,
+      label,
+      // A missing/null fare keeps the placeholder; the currency comes from the
+      // API and is never invented.
+      amount == null ? '—' : formatMoney(amount, currency: currency),
+      bold: bold,
+      note: note,
+    );
+  }
+
+  Widget _lineRow(
+    BuildContext context,
+    String label,
+    String value, {
+    bool bold = false,
+    String? note,
+  }) {
     final style = bold
         ? Theme.of(context).textTheme.titleMedium
         : Theme.of(context).textTheme.bodyMedium;
     return Row(
       mainAxisAlignment: MainAxisAlignment.spaceBetween,
+      crossAxisAlignment: CrossAxisAlignment.start,
       children: [
-        Text(label, style: style),
-        Text(
-          amount == null ? '—' : '\$${amount.toStringAsFixed(2)}',
-          style: style,
+        Expanded(
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text(label, style: style),
+              if (note != null)
+                Text(
+                  note,
+                  style: Theme.of(context).textTheme.bodySmall,
+                ),
+            ],
+          ),
         ),
+        Text(value, style: style),
       ],
     );
   }

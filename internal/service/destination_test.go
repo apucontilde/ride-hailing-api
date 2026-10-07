@@ -42,10 +42,20 @@ func (s *stubRideRepo) FindRidesByDriver(string, int, int) ([]model.Ride, int, e
 	return nil, 0, nil
 }
 func (s *stubRideRepo) UpdateRideStatus(string, string, *time.Time) error { return nil }
-func (s *stubRideRepo) AssignDriver(string, string) error                 { return nil }
-func (s *stubRideRepo) CreateEvent(*model.RideEvent) error                { return nil }
-func (s *stubRideRepo) CreateRating(*model.Rating) error                  { return nil }
-func (s *stubRideRepo) FindRatingsByRater(string, string, int, int) ([]model.Rating, int, error) {
+func (s *stubRideRepo) InsertRideTrackPoint(string, float64, float64, time.Time) error {
+	return nil
+}
+func (s *stubRideRepo) FindRideTrackPoints(string) ([]model.RideTrackPoint, error) {
+	return nil, nil
+}
+func (s *stubRideRepo) SetRideActuals(string, *int, *float64) error { return nil }
+func (s *stubRideRepo) FinalizeRideFare(string, float64, float64, float64, float64, *float64) (bool, error) {
+	return false, nil
+}
+func (s *stubRideRepo) AssignDriver(string, string) error  { return nil }
+func (s *stubRideRepo) CreateEvent(*model.RideEvent) error { return nil }
+func (s *stubRideRepo) CreateRating(*model.Rating) error   { return nil }
+func (s *stubRideRepo) FindRatingsByRater(string, string, string, int, int) ([]model.Rating, int, error) {
 	return nil, 0, nil
 }
 func (s *stubRideRepo) FindVehicleByDriverID(string) (*model.DriverVehicle, error) {

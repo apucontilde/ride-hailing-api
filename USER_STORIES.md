@@ -52,13 +52,13 @@ Two tiers are tracked side by side. A feature can be real at one tier and missin
 | US-6 Wait for a driver | [IMPLEMENTED] dispatch loop + `no_driver_available` push | 🟢 WS `ride.updated` + current-poll wired; contract realigned | — n/a |
 | US-7 Track the matched driver | [IMPLEMENTED] driver.location streaming + polling real; ETA real | 🟡 WS parses typed driver/location but never renders; card reads invented keys | — n/a |
 | US-8 Ride in progress | [IMPLEMENTED] A\* nav real; destination-update real | 🟢 route polyline fetched + rendered (zoom-to-fit) | — n/a |
-| US-9 Trip complete & fare | [IMPLEMENTED] receipt real; completion fare is 1.1× | ⚪ receipt endpoint unused | — n/a |
+| US-9 Trip complete & fare | [IMPLEMENTED] receipt real; completion fare echoes the booked estimate | ⚪ receipt endpoint unused | — n/a |
 | US-10 Rate the driver | [IMPLEMENTED] rating persisted; read-back stub | ⚪ rate endpoint unused | — n/a |
 | US-11 Cancel a ride | [IMPLEMENTED] rider + driver cancel | 🟢 real `POST /rides/:id/cancel`; no 1 s mock | — n/a |
 | US-12 Send an SOS | [STUB] ack only | ⚪ sos endpoint unused | — n/a |
 | US-13 Profile & devices | [PARTIAL] rider profile real; devices **persist** (server), app registration ⚪ | 🟡 GET /rider/me used for auth; profile screen hardcoded; device registration not wired in-app | — n/a |
 | US-14 Ride history | [IMPLEMENTED] paginated DB query | ❌ fake "No rides yet" screen; ridesHistory unused | — n/a |
-| US-15 View the fare receipt | [IMPLEMENTED] receipt real; completion fare 1.1× | ⚪ receipt unused (plan 03) | — n/a |
+| US-15 View the fare receipt | [IMPLEMENTED] receipt real; completion fare echoes the booked estimate | ⚪ receipt unused (plan 03) | — n/a |
 | US-16 No driver available | [IMPLEMENTED] `no_driver_available` pushed + poll reliable | 🟢 current-poll wired + surfaces "no drivers" | — n/a |
 | US-17 Re-book from history | [IMPLEMENTED] history paginated | ⚪ not implemented (plan 04) | — n/a |
 
@@ -151,9 +151,9 @@ Two tiers are tracked side by side. A feature can be real at one tier and missin
   - `GET /api/v1/estimates/eta?from_lat&from_lng&to_lat&to_lng` → `{eta_seconds, distance_meters}` — route-based travel time before booking
   - `GET /api/v1/geo/eta` (same params) → voyage-computed; the matching driver's arrival ETA is also pushed live on accept: `ride.updated` carries real `eta_seconds` (driver position → pickup, US-6)
 - **Notes:** The fare engine (`FareService.CalculateEstimate`: base + distance + time + surge over real A\* routing, `internal/service/fare.go`) is wired into `estimates/price`. `eta_seconds` is no longer hardcoded — `geo/eta` + `estimates/eta` compute route-based ETA, and the accept payload computes driver→pickup ETA (300 s fallback when driver location/routing is unavailable, `service/dispatch.go:173-197`).
-  - **New gap (v3):** the price response's `distance_rate`/`time_rate` fields are populated with `distance_fare`/`time_fare` totals instead of the rate-card values (`handler/platform.go:327-330`); the `total` itself is correct. Fix before a client renders per-km/per-min rates.
-  - **Rate card is a deliberate code constant** (`service/fare.go:79-87`): the quoted fare is snapshotted onto the ride at booking, nothing edits the tariff at runtime, and `vehicle_type` is a closed enum — a DB `fare_rates` table would add infra with no behavior change. Revisit (move to a versioned DB table) when real GPS-time/distance completion fares, earnings/withdraw, or per-region/time-of-day pricing land.
-- **Code state:** `handler/platform.go:298` (price, rate-field bug `:328-329`), `handler/platform.go:356` (eta); dispatch ETA `service/dispatch.go:173-197`; rates `service/fare.go:79-87`. Covered by `tests/routing_test.go` (TestEstimates, TestGeoETA) and `tests/ride_lifecycle_test.go` (accept `eta_seconds`).
+  - The price response's `distance_rate`/`time_rate` fields now carry the real per-km/per-min card rates (`handler/platform.go:414-415`, `service/fare.go:164-165`) instead of the leg totals; the earlier v3 rate-field bug is fixed.
+  - **Rate card is DB-backed and region-scoped** (`fare_rates`, migration `019_region_fares`): the quoted fare is snapshotted onto the ride at booking (including `fare_region_id`/`fare_rate_id`), only the active version of a region's card prices a trip, and `vehicle_type` is a closed enum (unknown → sedan). Real GPS-time/distance completion fares and earnings/withdraw remain deferred; per-region/time-of-day pricing has landed (`api_plans/STATUS.md` [fare]).
+- **Code state:** `handler/platform.go:298` (price, rates `:414-415`), `handler/platform.go:356` (eta); dispatch ETA `service/dispatch.go:173-197`; rates `service/fare.go:112-176`. Covered by `tests/routing_test.go` (TestEstimates, TestGeoETA) and `tests/ride_lifecycle_test.go` (accept `eta_seconds`).
 - **Acceptance:** price renders the live response (no client-side fakes); ETA values render wherever surfaced (LC-4).
 
 ## US-5 Request the trip **[IMPLEMENTED]**
@@ -169,7 +169,7 @@ Two tiers are tracked side by side. A feature can be real at one tier and missin
     - Repeat key → correct status code returned, but the stored `response_body` is `{}`, so the replay returns an **empty body** (not the original ride).
     - No unique `(user, key)` guard: two concurrent same-key requests can both create a ride.
     - No automated test covers the header.
-- **Code state:** create `handler/ride.go:59-90` + `service/ride.go:33-89`; fare `service/fare.go:27-77` (surge `52-66`); idempotency middleware `middleware/idempotency.go:11-45`.
+- **Code state:** create `handler/ride.go:59-90` + `service/ride.go:33-89`; fare `service/fare.go:112-176` (unified multiplier `143-145`); idempotency middleware `middleware/idempotency.go:11-45`.
 
 ## US-6 Wait for a driver **[IMPLEMENTED]**
 - **App status:** Rider app 🟢 wired (WS contract realigned to `ride.updated`; no invented event names; current-ride poll drives the fallback + restore) · Driver app — n/a
@@ -227,8 +227,8 @@ Two tiers are tracked side by side. A feature can be real at one tier and missin
   - WebSocket: `ride.updated` → `status:"completed"` includes `fare {base_fare, distance_fare, time_fare, surge_multiplier, total}`.
   - `GET /api/v1/rides/:id/receipt` → `{receipt:{base_fare, distance_fare, time_fare, surge_multiplier, total}}` — durable, DB-backed
 - **Notes:**
-  - **The "actual-trip multiplier" is NOT real:** on completion the fare is inflated by a hard-coded **1.1×** (`ride.TotalFare * 1.1`) with a comment saying real distance/time would normally come from GPS logs (`service/ride.go:166-169`). Distance/time fare components are *not* recomputed.
-- **Code state:** `service/ride.go:158-190`; receipt `handler/ride.go:330-347`. Covered by `tests/ride_lifecycle_test.go`.
+  - **Completion echoes the booked estimate unchanged:** the final fare is the booking-time snapshot (`service/ride.go:373-396`), not a GPS recompute — the ride row carries no odometer/duration telemetry, so manufacturing a different completion fare would be fabricated. Distance/time fare components are *not* recomputed.
+- **Code state:** `service/ride.go:373-396`; receipt `handler/ride.go:330-347`. Covered by `tests/ride_lifecycle_test.go`.
 - **Acceptance:** completion surfaces the WS `fare` breakdown, backed by `GET /rides/:id/receipt` (LC-3).
 
 ## US-10 Rate the driver **[IMPLEMENTED]**
@@ -441,8 +441,8 @@ Two tiers are tracked side by side. A feature can be real at one tier and missin
   - `POST /api/v1/driver/rides/:id/cancel` — driver-initiated, allowed only before `in_progress` (binds no body; `cancelled_by` comes from the caller's role)
   - `GET /api/v1/driver/rides/current` → `{ride}` / `{ride: null}` — launch restore
   - WebSocket: both sides get `ride.updated` → `in_progress`, then `completed` (with the final `fare`).
-- **Notes:** Transitions are capped by the assigned driver *role group only* — the handler checks the `driver` role but **not ride ownership** (`handler/ride.go:225-242` reads only the role), so any driver could advance any ride's status. Transitions outside the state machine are rejected with `400`. Completion applies the hard-coded 1.1× fare inflation (see US-9).
-- **Code state:** `service/ride.go:133-190`; covered by `tests/ride_lifecycle_test.go`, `tests/ws_push_test.go`.
+- **Notes:** Transitions are capped by the assigned driver *role group only* — the handler checks the `driver` role but **not ride ownership** (`handler/ride.go:225-242` reads only the role), so any driver could advance any ride's status. Transitions outside the state machine are rejected with `400`. Completion echoes the booked estimate unchanged (see US-9).
+- **Code state:** `service/ride.go:338-410`; covered by `tests/ride_lifecycle_test.go`, `tests/ws_push_test.go`.
 - **Acceptance:** the single-button journey drives the state machine to `completed`, with both cancel paths landing on a clean screen (done, plan `driver_app_plans/STATUS.md` `[trip]`).
 
 ## US-D10 Rate the rider **[IMPLEMENTED]**
@@ -477,7 +477,7 @@ Two tiers are tracked side by side. A feature can be real at one tier and missin
 # Part C — Missing / stubbed work to build next
 
 Everything here was re-verified against the working tree (HEAD `8a3a13f`, 2026-09-11). API tier tags: **[STUB]** = endpoint exists but returns placeholders; **[PARTIAL]** = real with a stub/hardcoded sub-path; **[MISSING]** = no endpoint/route at all. App tier marks (Rider app / Driver app) use the legend at the top of this document. Cells repeat the Appendix matrix values so Part C is self-contained.
-- **How fares are quoted:** rates are hardcoded in `service/fare.go` (deliberate — see US-4). Revisit when GPS-based completion fares or dynamic pricing land.
+- **How fares are quoted:** rates are region-scoped, versioned rows in `fare_rates` (migration `019_region_fares`; engine `service/fare.go`), selected by the resolved region and snapshotted onto the ride at booking (see US-4). Actual GPS-based completion fares remain deferred.
 
 ### Core booking trip (US-3 → US-12)
 
@@ -537,7 +537,7 @@ Everything here was re-verified against the working tree (HEAD `8a3a13f`, 2026-0
 | Ride offers only delivered while the driver keeps `/ws` open | [IMPLEMENTED] (dispatch gate, `hub.IsConnected`) | — n/a | ⚪  (plan pins WS + location lifecycle to the online toggle, M3) |
 | No admin endpoints (SOS triage, document verify, feedback review) | [MISSING] | — n/a | — n/a (admin/support tooling, not an app surface) |
 | Idempotency-Key incomplete (empty-body replay, no concurrent guard, untested) | [PARTIAL] | 🟡 retries reuse the key but a replay returns an empty body the app must tolerate | — n/a |
-| Real completion fare (hard-coded 1.1× multiplier) | [PARTIAL] | ⚪ (receipt unused today) | ⚪ (fare shown = inflated estimate) |
+| Completion fare from actual GPS telemetry (today echoes the booked estimate) | [PARTIAL] | ⚪ (receipt unused today) | ⚪ (fare shown = booked estimate) |
 | Rating aggregate never recalculated (`rating_summary` stale, WS parses to `0.0`) | [PARTIAL] | ⚪ | ⚪ (driver rating shown from `rating_summary`) |
 
 ### Review-notes triage (2026-09-26)

@@ -25,7 +25,12 @@ type CostWeights struct {
 	// DeadbandM zeroes elevation deltas whose magnitude is <= this, in
 	// meters. SRTM-class DEMs carry several meters of vertical error, and
 	// without a deadband, DEM noise reads as grade and reshuffles every flat
-	// route. The default is PROVISIONAL.
+	// route. The default is CALIBRATED, not provisional: 3.8 m is the measured
+	// p95 of |dz| over 43,673 certifiably-flat edges on the live SJ import
+	// (relief-certified, independent of the edge's own dz). Full measurement
+	// and justification: defaultElevationDeadbandM in
+	// internal/config/config.go and gate G6 of
+	// api_plans/[elevation]_calibration_and_rollout_gate.md.
 	DeadbandM float64
 }
 

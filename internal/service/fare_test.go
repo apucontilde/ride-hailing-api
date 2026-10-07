@@ -53,7 +53,7 @@ func TestFareService_CalculateEstimate(t *testing.T) {
 		},
 	}
 	navSvc := NewNavigationService(navRepo)
-	fareSvc := NewFareService(geoRepo, navSvc)
+	fareSvc := NewFareService(geoRepo, navSvc, newFakeFareRepo(), testFareConfig())
 
 	t.Run("Sedan estimate", func(t *testing.T) {
 		est, err := fareSvc.CalculateEstimate(0, 0, 0, 0, "sedan")

@@ -31,6 +31,8 @@ class RideUpdate {
   final double? timeFare;
   final double? surgeMultiplier;
   final double? totalFare;
+  final String? fareCurrency;
+  final double? gradeUpliftPct;
 
   const RideUpdate({
     required this.rideId,
@@ -47,6 +49,8 @@ class RideUpdate {
     this.timeFare,
     this.surgeMultiplier,
     this.totalFare,
+    this.fareCurrency,
+    this.gradeUpliftPct,
   });
 
   factory RideUpdate.fromJson(Map<String, dynamic> json) {
@@ -68,6 +72,8 @@ class RideUpdate {
       timeFare: _asDouble(fare?['time_fare']) ?? _asDouble(json['time_fare']),
       surgeMultiplier: _asDouble(fare?['surge_multiplier']) ?? _asDouble(json['surge_multiplier']),
       totalFare: _asDouble(fare?['total']) ?? _asDouble(json['total_fare']),
+      fareCurrency: (fare?['currency'] ?? json['fare_currency']) as String?,
+      gradeUpliftPct: _asDouble(fare?['grade_uplift_pct']) ?? _asDouble(json['grade_uplift_pct']),
     );
   }
 
@@ -91,6 +97,8 @@ class RideUpdate {
       timeFare: timeFare ?? base?.timeFare,
       surgeMultiplier: surgeMultiplier ?? base?.surgeMultiplier,
       totalFare: totalFare ?? base?.totalFare,
+      fareCurrency: fareCurrency ?? base?.fareCurrency,
+      gradeUpliftPct: gradeUpliftPct ?? base?.gradeUpliftPct,
       requestedAt: base?.requestedAt,
       acceptedAt: base?.acceptedAt,
       driverArrivedAt: status == 'driver_arrived' ? DateTime.now().toIso8601String() : base?.driverArrivedAt,

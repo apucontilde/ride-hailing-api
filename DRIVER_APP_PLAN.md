@@ -160,7 +160,7 @@ Backed by the existing backend: JWT auth, driver role endpoints, pgRouting navig
 - **OFFER_RECEIVED** times out at 30 s (matches backend `time.After(30s)` in `service/dispatch.go:109`); decline → back to IDLE. Driver cannot "cancel" a ride it never accepted.
 - **Driver cancel** (US-11 driver side): only legal from `accepted`/`driver_arrived` (state machine enforced) → `POST /driver/rides/:id/cancel` → toast + return to IDLE. Exposed on the trip screen as "Cancel trip".
 - **CANCELLED** can also arrive from the rider at any pre-pickup state (`cancelled_by:"rider"`) → toast + return to IDLE.
-- **completed** fare is 1.1× of estimate (backend hardcoded — do not present as GPS-accurate).
+- **completed** fare equals the booked estimate (backend echoes the booking-time snapshot — do not present as GPS-accurate).
 - A ride with no online drivers ends as `no_driver_available` (rider side only; driver unaffected).
 
 ---
@@ -331,4 +331,4 @@ driver_app/
 4. Real `GET /driver/me/earnings` + `POST /driver/earnings/withdraw` (unblock earnings section).
 5. HTTP `POST /driver/rides/:id/decline` (WS decline already works).
 6. Keep accept ETA accurate end-to-end: it already routes driver→pickup, but falls back to `300` when driver location/routing is unavailable (`service/dispatch.go:160-184`); long-term, real duration from GPS.
-7. Completion fare from actual GPS, not `*1.1` (`service/ride.go:166-169`).
+7. Completion fare from actual GPS telemetry (today it echoes the booked estimate, `service/ride.go:373-396`).

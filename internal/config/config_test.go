@@ -201,9 +201,9 @@ func TestRoutingEngineDefaultIsNative(t *testing.T) {
 	}
 }
 
-// Elevation knobs (api_plans/[elevation]): off by default; the numeric default
-// weights are proposals, and the bool whitelist fails CLOSED (a typo means off,
-// never on).
+// Elevation knobs (api_plans/[elevation]): ON by default for the native engine
+// at the measured operating point (AscentW 12, the calibrated DeadbandM 3.8),
+// and the bool whitelist fails CLOSED (a typo means off, never on).
 func TestRoutingElevationConfigFromEnv(t *testing.T) {
 	cases := []struct {
 		name         string
@@ -215,15 +215,17 @@ func TestRoutingElevationConfigFromEnv(t *testing.T) {
 		wantDeadband float64
 		wantMinCover float64
 	}{
-		{name: "defaults_off", wantAscent: 1.5, wantDescent: 0.3, wantMaxGrade: 0.15, wantDeadband: 3.0, wantMinCover: 0.99},
+		// Unset/empty means ON now (the flip); the weights are the measured
+		// ship point.
+		{name: "defaults_on", wantEnabled: true, wantAscent: 12, wantDescent: 0.3, wantMaxGrade: 0.15, wantDeadband: 3.8, wantMinCover: 0.99},
 		{
 			name:         "on",
 			env:          map[string]string{"ROUTING_ELEVATION": "on"},
 			wantEnabled:  true,
-			wantAscent:   1.5,
+			wantAscent:   12,
 			wantDescent:  0.3,
 			wantMaxGrade: 0.15,
-			wantDeadband: 3.0,
+			wantDeadband: 3.8,
 			wantMinCover: 0.99,
 		},
 		{
@@ -248,10 +250,10 @@ func TestRoutingElevationConfigFromEnv(t *testing.T) {
 			name:         "typo_fails_closed",
 			env:          map[string]string{"ROUTING_ELEVATION": "maybe"},
 			wantEnabled:  false,
-			wantAscent:   1.5,
+			wantAscent:   12,
 			wantDescent:  0.3,
 			wantMaxGrade: 0.15,
-			wantDeadband: 3.0,
+			wantDeadband: 3.8,
 			wantMinCover: 0.99,
 		},
 		{
@@ -261,7 +263,7 @@ func TestRoutingElevationConfigFromEnv(t *testing.T) {
 			wantAscent:   9,
 			wantDescent:  0.3,
 			wantMaxGrade: 0.15,
-			wantDeadband: 3.0,
+			wantDeadband: 3.8,
 			wantMinCover: 0.99,
 		},
 	}
@@ -296,6 +298,71 @@ func TestRoutingElevationConfigFromEnv(t *testing.T) {
 			}
 			if e.MinCoverage != tc.wantMinCover {
 				t.Errorf("MinCoverage = %v, want %v", e.MinCoverage, tc.wantMinCover)
+			}
+		})
+	}
+}
+
+// Fare knobs (api_plans/STATUS.md [fare]): FARE_CURRENCY is the
+// deployment-wide expected currency (default USD) and FARE_MAX_MULTIPLIER the
+// cap on the unified conditions multiplier (default 3.0). Both go through
+// getEnv/getFloat, so they fall back to their documented defaults when unset or
+// unparseable, and there is NO currency validation: an unknown code is accepted
+// verbatim. This test pins that real behaviour rather than inventing a currency
+// whitelist the code does not have.
+func TestFareConfigFromEnv(t *testing.T) {
+	cases := []struct {
+		name           string
+		env            map[string]string
+		wantCurrency   string
+		wantMultiplier float64
+	}{
+		{
+			name:           "defaults",
+			wantCurrency:   "USD",
+			wantMultiplier: 3.0,
+		},
+		{
+			name:           "explicit_override",
+			env:            map[string]string{"FARE_CURRENCY": "eur", "FARE_MAX_MULTIPLIER": "2.5"},
+			wantCurrency:   "eur",
+			wantMultiplier: 2.5,
+		},
+		{
+			// A garbage multiplier must fall back to the default cap, never
+			// to 0 (which the service treats as "use the default" anyway, but
+			// pinning the config value is what keeps that honest).
+			name:           "garbage_multiplier_falls_back_to_default",
+			env:            map[string]string{"FARE_MAX_MULTIPLIER": "triple"},
+			wantCurrency:   "USD",
+			wantMultiplier: 3.0,
+		},
+		{
+			// getEnv has no whitelist, so a garbage currency is accepted
+			// verbatim — the name says so explicitly so nobody reads this as
+			// validation that does not exist.
+			name:           "garbage_currency_is_accepted_verbatim_no_validation",
+			env:            map[string]string{"FARE_CURRENCY": "not-a-currency"},
+			wantCurrency:   "not-a-currency",
+			wantMultiplier: 3.0,
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			for _, k := range []string{"FARE_CURRENCY", "FARE_MAX_MULTIPLIER"} {
+				t.Setenv(k, "")
+			}
+			for k, v := range tc.env {
+				t.Setenv(k, v)
+			}
+
+			cfg := Load()
+			if cfg.FareCurrency != tc.wantCurrency {
+				t.Errorf("FareCurrency = %q, want %q", cfg.FareCurrency, tc.wantCurrency)
+			}
+			if cfg.FareMaxMultiplier != tc.wantMultiplier {
+				t.Errorf("FareMaxMultiplier = %v, want %v", cfg.FareMaxMultiplier, tc.wantMultiplier)
 			}
 		})
 	}

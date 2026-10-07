@@ -1,8 +1,10 @@
 package handler
 
 import (
+	"log"
 	"net/http"
 	"strconv"
+	"time"
 
 	"github.com/gin-gonic/gin"
 
@@ -59,6 +61,21 @@ func (h *GeoHandler) UpdateDriverLocation(c *gin.Context) {
 
 	activeRide, err := h.rideRepo.FindCurrentRideByDriver(driverID.(string))
 	if err == nil {
+		// Actual driven distance seam (migration 021,
+		// api_plans/[tracking]_actual_trip_distance.md): while the ride is
+		// in_progress, persist the fix as part of the ride's trace. Only
+		// started→completed counts; the accepted/driver_arrived legs (en route
+		// to pickup) are deliberately not part of the trip distance. The append
+		// is best-effort: a trace write must never fail the location update, and
+		// the distance is summed (with its noise gate) on the completed
+		// transition, not here. A write failure costs distance accuracy, not the
+		// live position stream.
+		if activeRide.Status == "in_progress" {
+			if terr := h.rideRepo.InsertRideTrackPoint(activeRide.ID, req.Lat, req.Lng, time.Now()); terr != nil {
+				log.Printf("ride %s: failed to record track point: %v", activeRide.ID, terr)
+			}
+		}
+
 		h.wsHub.SendToUser(activeRide.RiderID, websocket.OutgoingMessage{
 			Type: "driver.location",
 			Data: websocket.DriverLocationData{

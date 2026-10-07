@@ -48,7 +48,8 @@ func seedElevationTestGraph(t *testing.T) *sqlx.DB {
 func TestNativeRepoElevationLoaded(t *testing.T) {
 	db := seedElevationTestGraph(t)
 
-	// Default: elevation off (zero config) -> weights resolve flat.
+	// Explicitly off: no configureElevation on a fresh repo -> elevOn false ->
+	// weights resolve flat.
 	flat := newNativeRepo(db, nil, 0)
 	got, err := flat.GetShortestPath(0.001, 0, 0.003, 0)
 	if err != nil {
@@ -109,7 +110,7 @@ func TestNativeRepoAggCostIsMeters(t *testing.T) {
 	}
 }
 
-// TestNativeRepoFlatWhenElevationOff pins the default-off contract: a fully
+// TestNativeRepoFlatWhenElevationOff pins the explicit-off contract: a fully
 // populated elevation column changes nothing when Enabled=false.
 func TestNativeRepoFlatWhenElevationOff(t *testing.T) {
 	db := seedElevationTestGraph(t)
@@ -120,12 +121,12 @@ func TestNativeRepoFlatWhenElevationOff(t *testing.T) {
 		t.Fatalf("route: %v", err)
 	}
 	if got[len(got)-1].AggCost != 200 {
-		t.Errorf("default-off AggCost = %v, want 200", got[len(got)-1].AggCost)
+		t.Errorf("explicit-off AggCost = %v, want 200", got[len(got)-1].AggCost)
 	}
-	// Default off: the additive fields must not claim elevation awareness.
+	// Explicit off: the additive fields must not claim elevation awareness.
 	last := got[len(got)-1]
 	if last.ElevationAware || last.AscentM != 0 || last.DescentM != 0 {
-		t.Errorf("default-off elevation totals = aware=%v ascent=%v descent=%v, want false/0/0",
+		t.Errorf("explicit-off elevation totals = aware=%v ascent=%v descent=%v, want false/0/0",
 			last.ElevationAware, last.AscentM, last.DescentM)
 	}
 }

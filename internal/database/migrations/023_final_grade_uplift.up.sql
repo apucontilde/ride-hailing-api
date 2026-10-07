@@ -1,0 +1,32 @@
+-- 023_final_grade_uplift.up.sql
+-- Applied climb uplift for the final charge (defect 1 of the actuals/final-fare
+-- adversarial review; api_plans/01_[fare]_actuals_recompute_on_completion.md).
+--
+-- The money columns already split quote vs final: base_fare/…/total_fare hold
+-- the BOOKING QUOTE until completion, then the FINAL charge, while quoted_*
+-- captures the quote (migration 022). The climb uplift is part of the distance
+-- leg, so it must follow the SAME split or the receipt's `grade_uplift_pct`
+-- cannot reconcile with the charged distance_fare:
+--
+--   * before completion, rides.grade_uplift_pct (migration 019) is the BOOKED
+--     uplift, exactly as before;
+--   * on completion, FinalizeRideFare copies grade_uplift_pct into
+--     quoted_grade_uplift_pct and overwrites grade_uplift_pct with the uplift
+--     RECOMPUTED on the actual distance (service.RecomputeActualFare);
+--   * every read path (ride JSON, receipt, completion WS) therefore returns the
+--     APPLIED uplift for free, with the wire field name unchanged — a completed
+--     ride's `grade_uplift_pct` describes its final charge, and a pending ride's
+--     still describes its quote.
+--
+-- This mirrors the money split exactly, so `grade_uplift_pct` is the single
+-- applied/charged value and `quoted_grade_uplift_pct` is the audit-only booked
+-- snapshot (hidden from the ride JSON like the other quoted_* columns). NULL
+-- means "no quote was ever captured" (the ride never completed, or predates
+-- this migration), never a fabricated 0.
+--
+-- Append-only and idempotent: ADD COLUMN IF NOT EXISTS converges on a re-run,
+-- which keeps the runner's non-atomic multi-statement exec safe
+-- (internal/database/migrate.go).
+
+ALTER TABLE rides
+    ADD COLUMN IF NOT EXISTS quoted_grade_uplift_pct NUMERIC(6,4);

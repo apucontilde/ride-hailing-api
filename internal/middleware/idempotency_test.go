@@ -402,8 +402,14 @@ func TestIdempotencyStoresTheHandlersRealBody(t *testing.T) {
 	if store.storeCalls != 1 {
 		t.Fatalf("Store called %d times, want 1", store.storeCalls)
 	}
-	if got := string(store.storeBody); got != realBody {
-		t.Errorf("stored body = %q, want the handler's actual body %q", got, realBody)
+	// The stored JSONB value is the exact bytes wrapped as a JSON string, so it
+	// round-trips rather than being canonicalised by the column.
+	var storedValue string
+	if err := json.Unmarshal(store.storeBody, &storedValue); err != nil {
+		t.Fatalf("stored body %q is not a JSON string: %v", store.storeBody, err)
+	}
+	if storedValue != realBody {
+		t.Errorf("stored value = %q, want the handler's actual body %q", storedValue, realBody)
 	}
 	// The client still gets the handler's real response, unchanged.
 	if got := w.Body.String(); got != realBody {
@@ -491,104 +497,109 @@ func TestIdempotencyCapturesWriteStringBodies(t *testing.T) {
 	if store.storeCalls != 1 {
 		t.Fatalf("Store called %d times, want 1", store.storeCalls)
 	}
-	if got := string(store.storeBody); got != body {
-		t.Errorf("stored body = %q, want %q (the WriteString path must be captured)", got, body)
+	var storedValue string
+	if err := json.Unmarshal(store.storeBody, &storedValue); err != nil {
+		t.Fatalf("stored body %q is not a JSON string: %v", store.storeBody, err)
+	}
+	if storedValue != body {
+		t.Errorf("stored value = %q, want %q (the WriteString path must be captured)", storedValue, body)
 	}
 	if got := w.Body.String(); got != body {
 		t.Errorf("response body = %q, want %q unchanged", got, body)
 	}
 }
 
-// TestReplayableBodyKeepsInsertValid pins the normalisation. response_body is
-// NOT NULL JSONB, so whatever the handler wrote must be turned into something
-// storable — without ever inventing a payload that the client did not receive.
-//
-// The wrapping is keyed on the CONTENT TYPE: a non-JSON type is always
-// JSON-string-encoded, even when the bytes are themselves valid JSON, so the
-// replay can tell "raw JSON document" from "wrapped non-JSON bytes".
-func TestReplayableBodyKeepsInsertValid(t *testing.T) {
-	const jsonCT = "application/json; charset=utf-8"
-	const textCT = "text/plain; charset=utf-8"
-	const htmlCT = "text/html; charset=utf-8"
+// TestReplayableBodyStoresEveryContentTypeAsAJSONString pins the storage shape
+// that makes replay byte-faithful. response_body is NOT NULL JSONB, and a JSON
+// body cannot survive as a JSON *document* because JSONB canonicalises it
+// (whitespace, key order and numeric formatting are lost), so the EXACT
+// captured bytes are stored as a JSON string for every content type — JSON,
+// non-JSON, whitespace-only and empty alike. An empty capture becomes the JSON
+// string "" rather than the old `null` sentinel, and replayBody unwraps every
+// type uniformly.
+func TestReplayableBodyStoresEveryContentTypeAsAJSONString(t *testing.T) {
 	cases := []struct {
-		name        string
-		contentType string
-		captured    string
-		want        string
+		name     string
+		captured string
 	}{
-		{"json object passes through", jsonCT, `{"a":1}`, `{"a":1}`},
-		{"json array passes through", jsonCT, `[1,2,3]`, `[1,2,3]`},
-		{"json null stays null", jsonCT, `null`, `null`},
-		{"json string literal stays raw", jsonCT, `"quoted"`, `"quoted"`},
-		{"json surrounding whitespace is trimmed", jsonCT, "  {\"a\":1}\n", `{"a":1}`},
-		{"empty body becomes json null", jsonCT, ``, `null`},
-		{"non-json plain text is wrapped", textCT, `plain text`, `"plain text"`},
-		{"non-json null literal is wrapped, not stored as json null", textCT, `null`, `"null"`},
-		// The bug the reviewer reproduced: a non-JSON body that is a valid JSON
-		// string literal must NOT be stored raw, or the replay cannot tell it
-		// apart from a wrapped body and strips the quotes.
-		{"non-json quoted literal is wrapped", textCT, `"quoted"`, `"\"quoted\""`},
-		// Whitespace-only must survive: the old trim-then-check stored `null`.
-		{"non-json whitespace is preserved", textCT, "  ", `"  "`},
-		{"empty non-json body becomes json null", textCT, ``, `null`},
-		// encoding/json HTML-escapes <, > and & by default. That is still the
-		// same string once parsed, and it is the safe form to keep in a JSONB
-		// column, so the escaping is expected rather than a defect.
-		{"non-json html is wrapped, html-escaped", htmlCT, `<h1>hi</h1>`, `"<h1>hi</h1>"`},
-		{"empty content type behaves as json", ``, `{"a":1}`, `{"a":1}`},
+		{"json object", `{"a":1}`},
+		{"json array", `[1,2,3]`},
+		{"json null literal", `null`},
+		{"json string literal", `"quoted"`},
+		{"json whitespace around object", "  {\"a\":1}\n"},
+		{"empty json body", ``},
+		{"non-json plain text", `plain text`},
+		{"non-json null literal", `null`},
+		{"non-json quoted literal", `"quoted"`},
+		{"non-json whitespace only", "  "},
+		{"empty non-json body", ``},
+		// encoding/json HTML-escapes <, > and & by default; replayBody's
+		// json.Unmarshal reverses that, so the VALUE is preserved.
+		{"non-json html bytes", `<h1>hi</h1> & <b>bye</b>`},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			got := string(replayableBody(tc.contentType, []byte(tc.captured)))
-			if tc.name == "non-json html is wrapped, html-escaped" {
-				// Compare after a JSON round-trip so the assertion is about the
-				// VALUE, not about encoding/json's escaping policy.
-				var wantAny, gotAny interface{}
-				if err := json.Unmarshal([]byte(tc.want), &wantAny); err != nil {
-					t.Fatalf("bad expectation %q: %v", tc.want, err)
-				}
-				if err := json.Unmarshal([]byte(got), &gotAny); err != nil {
-					t.Fatalf("replayableBody(%q, %q) = %q, not valid JSON: %v", tc.contentType, tc.captured, got, err)
-				}
-				if gotAny != wantAny {
-					t.Errorf("replayableBody(%q, %q) decoded to %v, want %v", tc.contentType, tc.captured, gotAny, wantAny)
-				}
-			} else if got != tc.want {
-				t.Errorf("replayableBody(%q, %q) = %q, want %q", tc.contentType, tc.captured, got, tc.want)
+			stored := replayableBody([]byte(tc.captured))
+			if !json.Valid(stored) {
+				t.Fatalf("replayableBody(%q) = %q, not valid JSON; the JSONB INSERT would fail", tc.captured, stored)
 			}
-			if !json.Valid([]byte(got)) {
-				t.Errorf("replayableBody(%q, %q) = %q, which is not valid JSON and would fail the JSONB INSERT",
-					tc.contentType, tc.captured, got)
+			var got string
+			if err := json.Unmarshal(stored, &got); err != nil {
+				t.Fatalf("stored %q is not a JSON string: %v", stored, err)
+			}
+			if got != tc.captured {
+				t.Errorf("stored value = %q, want the exact captured bytes %q", got, tc.captured)
+			}
+			if back := string(replayBody(json.RawMessage(stored))); back != tc.captured {
+				t.Errorf("round-trip = %q, want the exact original %q", back, tc.captured)
 			}
 		})
 	}
 }
 
-// TestNonJSONReplayRoundTripsExactBytes is the byte-for-byte property the
-// reviewer's counterexamples broke: for every non-JSON body — including a valid
-// JSON string literal and whitespace-only bytes — storing then replaying must
-// return the exact original bytes. It exercises the same store/replay functions
-// the middleware calls.
+// TestReplayBodyOldRawJSONRowFallsBack returns a pre-change row that stored a
+// JSON document raw instead of a JSON string. It cannot unmarshal into a string,
+// so replayBody must hand it back rather than fail. This is the back-compat
+// branch; the body is JSONB-canonicalised, which a JSON client tolerates.
+func TestReplayBodyOldRawJSONRowFallsBack(t *testing.T) {
+	raw := json.RawMessage(`{"ride":{"id":"old"}}`)
+	if got := string(replayBody(raw)); got != string(raw) {
+		t.Errorf("replayBody(old raw JSON row) = %q, want it returned verbatim %q", got, raw)
+	}
+	// The old `null` empty sentinel replays as zero bytes, never the four bytes
+	// "null".
+	if got := string(replayBody(json.RawMessage(`null`))); got != "" {
+		t.Errorf("replayBody(old null sentinel) = %q, want zero bytes", got)
+	}
+}
+
+// TestNonJSONReplayRoundTripsExactBytes is the byte-for-byte round-trip through
+// the store/replay functions the middleware calls, covering non-JSON bodies
+// (including ones that are themselves valid JSON) and JSON bodies now that both
+// share the same storage shape.
 func TestNonJSONReplayRoundTripsExactBytes(t *testing.T) {
 	cases := []struct {
 		name string
+		ct   string
 		body string
 	}{
-		{"plain text", "OK, plain text payload"},
-		{"valid json string literal", `"quoted"`},
-		{"whitespace only", "  "},
-		{"json null literal", "null"},
-		{"html-significant bytes", `<h1>hi</h1> & <b>bye</b>`},
-		{"empty", ""},
+		{"plain text", "text/plain; charset=utf-8", "OK, plain text payload"},
+		{"valid json string literal", "text/plain; charset=utf-8", `"quoted"`},
+		{"whitespace only", "text/plain; charset=utf-8", "  "},
+		{"json null literal", "text/plain; charset=utf-8", "null"},
+		{"html-significant bytes", "text/html; charset=utf-8", `<h1>hi</h1> & <b>bye</b>`},
+		{"empty", "text/plain; charset=utf-8", ""},
+		{"json object", "application/json; charset=utf-8", `{"a":1,"b":[2,3]}`},
+		{"json with trailing newline", "application/json; charset=utf-8", "  {\"a\":1}\n"},
+		{"empty json", "application/json; charset=utf-8", ""},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			const ct = "text/plain; charset=utf-8"
-			stored := replayableBody(ct, []byte(tc.body))
+			stored := replayableBody([]byte(tc.body))
 			if !json.Valid(stored) {
 				t.Fatalf("stored %q is not valid JSONB and the INSERT would fail", stored)
 			}
-			got := string(replayBody(ct, json.RawMessage(stored)))
+			got := string(replayBody(json.RawMessage(stored)))
 			if got != tc.body {
 				t.Errorf("round-trip = %q, want the exact original %q", got, tc.body)
 			}

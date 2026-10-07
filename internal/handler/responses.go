@@ -138,6 +138,15 @@ type RideReceiptResponse struct {
 		TimeFare        float64 `json:"time_fare"`
 		SurgeMultiplier float64 `json:"surge_multiplier"`
 		Total           float64 `json:"total"`
+		// RegionID names the pricing region; Currency is its IANA-priced
+		// ISO-4217 currency. Both are empty for a ride booked before the pricing
+		// engine landed (SQL NULL).
+		RegionID string `json:"region_id"`
+		Currency string `json:"currency"`
+		// GradeUpliftPct is the climb uplift APPLIED to the charged distance
+		// leg: the booked value before completion, the recomputed final value
+		// after, so it reconciles with DistanceFare.
+		GradeUpliftPct float64 `json:"grade_uplift_pct"`
 	} `json:"receipt"`
 }
 
@@ -178,6 +187,16 @@ type Estimate struct {
 	TimeFare        float64 `json:"time_fare"`
 	SurgeMultiplier float64 `json:"surge_multiplier"`
 	Total           float64 `json:"total"`
+
+	// Additive [fare] fields (api_plans/STATUS.md [fare]). They
+	// describe WHICH card priced the estimate and how the multiplier was built;
+	// no client ever supplies a price.
+	RegionID         string  `json:"region_id"`
+	Currency         string  `json:"currency"`
+	DemandMultiplier float64 `json:"demand_multiplier"`
+	SupplyMultiplier float64 `json:"supply_multiplier"`
+	// GradeUpliftPct is the climb uplift applied to the estimate's distance leg.
+	GradeUpliftPct float64 `json:"grade_uplift_pct"`
 }
 
 // EstimatesPriceResponse is returned by GET /api/v1/estimates/price.

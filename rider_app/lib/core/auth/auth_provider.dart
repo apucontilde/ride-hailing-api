@@ -1,8 +1,11 @@
+import 'dart:async';
+
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:ride_hailing_shared/ride_hailing_shared.dart';
 import '../../config.dart';
 import '../api/endpoints.dart';
 import '../network/websocket_service.dart';
+import '../push/device_token_service.dart';
 import '../../features/home/model/rider_profile.dart';
 
 export 'package:ride_hailing_shared/ride_hailing_shared.dart'
@@ -52,6 +55,14 @@ class AuthNotifier extends AppAuthController {
 
   @override
   Future<void> onAuthenticated(AuthUser user) async {
+    // Register the push device token on every authenticated transition (login,
+    // registration, cold-start `/me`, token rotation) so the token reassigns to
+    // the current account. Best-effort and fire-and-forget: a push failure must
+    // never gate auth. The device service is read from here rather than from a
+    // provider listener on `authProvider`, which would form a Riverpod
+    // dependency cycle with `logout()` reading it back.
+    unawaited(_ref.read(deviceTokenServiceProvider).register());
+
     // `checkAuth` runs `fetchMe` (which already seeds the cache) immediately
     // before this hook, so only the login / token-rotation path has anything
     // to fetch. Non-fatal — /profile surfaces its own error state.
@@ -64,6 +75,22 @@ class AuthNotifier extends AppAuthController {
     // Without this the previous rider's name/photo stay in the container and
     // greet the next sign-in.
     _ref.read(riderProfileProvider.notifier).state = null;
+  }
+
+  @override
+  Future<void> logout() async {
+    // Unregister the push token while the access token is still installed:
+    // `super.logout()` calls `apiClient.setToken(null)` before `onLoggedOut()`,
+    // so a DELETE issued from there would 401 and never reach the server. This
+    // one seam covers both UI sign-out call sites (settings screen and the
+    // shell drawer). Best-effort — an unregister failure (or the service being
+    // unwired) must never block sign-out.
+    try {
+      await _ref.read(deviceTokenServiceProvider).unregister();
+    } catch (_) {
+      // Swallow: local cleanup is the priority.
+    }
+    await super.logout();
   }
 
   @override

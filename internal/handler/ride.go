@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"log"
 	"net/http"
+	"regexp"
 	"strconv"
 
 	"github.com/gin-gonic/gin"
@@ -30,13 +31,18 @@ func NewRideHandler(rideService *service.RideService, dispatchService *service.D
 }
 
 type rideRequest struct {
-	PickupLat      float64 `json:"pickup_lat" binding:"required"`
-	PickupLng      float64 `json:"pickup_lng" binding:"required"`
-	DropoffLat     float64 `json:"dropoff_lat" binding:"required"`
-	DropoffLng     float64 `json:"dropoff_lng" binding:"required"`
-	PickupAddress  string  `json:"pickup_address"`
-	DropoffAddress string  `json:"dropoff_address"`
-	VehicleType    string  `json:"vehicle_type"`
+	// The four coordinates are pointers so an ABSENT value is distinguishable
+	// from a legitimate 0 (the equator / prime meridian, and the value a Go
+	// zero carries). `required` on a *float64 means "non-nil", not "non-zero",
+	// so 0 is accepted while an omitted coordinate stays a 422 naming the
+	// field. CreateRide range-checks the dereferenced values itself.
+	PickupLat      *float64 `json:"pickup_lat" binding:"required"`
+	PickupLng      *float64 `json:"pickup_lng" binding:"required"`
+	DropoffLat     *float64 `json:"dropoff_lat" binding:"required"`
+	DropoffLng     *float64 `json:"dropoff_lng" binding:"required"`
+	PickupAddress  string   `json:"pickup_address"`
+	DropoffAddress string   `json:"dropoff_address"`
+	VehicleType    string   `json:"vehicle_type"`
 
 	// Stops is the ordered list of INTERMEDIATE waypoints, pickup excluded.
 	// Optional, so a body without it is byte-identical to the pre-016 request.
@@ -87,6 +93,26 @@ type rateRideRequest struct {
 	Comment string `json:"comment"`
 }
 
+// validateCreateCoordinates range-checks the four top-level create coordinates.
+// Presence is already guaranteed by `binding:"required"` on the pointers; this
+// covers the range, which `required` cannot. It returns the public message and
+// a non-nil cause (for fail to log) on the first bad coordinate, or ("", nil)
+// when all four are real. The two coordinates of a pair are checked together so
+// the message names exactly one field.
+func validateCreateCoordinates(req *rideRequest) (string, error) {
+	if dim := service.CoordinateOutOfRange(*req.PickupLat, *req.PickupLng); dim != "" {
+		return fmt.Sprintf("Pickup %s out of range", dim),
+			fmt.Errorf("[rides] create: pickup %s out of range (lat=%v lng=%v)",
+				dim, *req.PickupLat, *req.PickupLng)
+	}
+	if dim := service.CoordinateOutOfRange(*req.DropoffLat, *req.DropoffLng); dim != "" {
+		return fmt.Sprintf("Drop-off %s out of range", dim),
+			fmt.Errorf("[rides] create: drop-off %s out of range (lat=%v lng=%v)",
+				dim, *req.DropoffLat, *req.DropoffLng)
+	}
+	return "", nil
+}
+
 // CreateRide godoc
 //
 //	@Summary		Request a new ride
@@ -105,6 +131,14 @@ func (h *RideHandler) CreateRide(c *gin.Context) {
 
 	var req rideRequest
 	if !bindJSON(c, &req, "") {
+		return
+	}
+
+	// `binding:"required"` guarantees only PRESENCE (non-nil pointer); the
+	// range is checked here. A literal 0 is a coordinate (the equator / prime
+	// meridian), not a missing field.
+	if msg, cause := validateCreateCoordinates(&req); cause != nil {
+		fail(c, http.StatusUnprocessableEntity, "VALIDATION_ERROR", msg, cause)
 		return
 	}
 
@@ -133,7 +167,7 @@ func (h *RideHandler) CreateRide(c *gin.Context) {
 			Address: s.Address,
 		})
 	}
-	stops, err := service.BuildItinerary(inputs, req.DropoffLat, req.DropoffLng, req.DropoffAddress)
+	stops, err := service.BuildItinerary(inputs, *req.DropoffLat, *req.DropoffLng, req.DropoffAddress)
 	if err != nil {
 		// Itinerary validation is the client's doing, so 422. Only a
 		// ValidationError may speak for itself in `message`; anything else
@@ -153,8 +187,8 @@ func (h *RideHandler) CreateRide(c *gin.Context) {
 	idKey, _ := idempotencyKey.(string)
 
 	ride, err := h.rideService.RequestRide(riderID.(string),
-		req.PickupLat, req.PickupLng,
-		req.DropoffLat, req.DropoffLng,
+		*req.PickupLat, *req.PickupLng,
+		*req.DropoffLat, *req.DropoffLng,
 		req.PickupAddress, req.DropoffAddress,
 		vehicleType, idKey, stops)
 
@@ -289,7 +323,7 @@ func (h *RideHandler) UpdateDestination(c *gin.Context) {
 	if !bindJSON(c, &req, "") {
 		return
 	}
-	if *req.Lat < -90 || *req.Lat > 90 || *req.Lng < -180 || *req.Lng > 180 {
+	if service.CoordinateOutOfRange(*req.Lat, *req.Lng) != "" {
 		fail(c, http.StatusUnprocessableEntity, "VALIDATION_ERROR", "lat/lng out of range", nil)
 		return
 	}
@@ -411,16 +445,24 @@ func (h *RideHandler) GetRideHistory(c *gin.Context) {
 	})
 }
 
+// uuidRE matches the canonical hyphenated UUID form. The optional ratings
+// ride_id reaches a UUID column, so a malformed value must be answered as a
+// 422 at the edge rather than becoming a Postgres cast error on the read path
+// (which would surface as a misclassified 5xx for a client mistake).
+var uuidRE = regexp.MustCompile(`^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$`)
+
 // GetRatings godoc
 //
 //	@Summary		List submitted ratings
-//	@Description	Returns a paginated list of ratings the current rider or driver submitted.
+//	@Description	Returns a paginated list of ratings the current rider or driver submitted. Pass ride_id to scope the answer to one ride's existence check (0 or 1 row).
 //	@Tags			rides
 //	@Produce		json
 //	@Security		BearerAuth
-//	@Param			page		query		int	false	"Page number"				default(1)
-//	@Param			per_page	query		int	false	"Items per page (max 50)"	default(20)
+//	@Param			page		query		int		false	"Page number"					default(1)
+//	@Param			per_page	query		int		false	"Items per page (max 50)"		default(20)
+//	@Param			ride_id		query		string	false	"Only the rating for this ride"	format(uuid)
 //	@Success		200			{object}	RatingListResponse
+//	@Failure		422			{object}	ErrorResponse	"Invalid ride_id"
 //	@Failure		500			{object}	ErrorResponse	"Query failed"
 //	@Router			/api/v1/rider/ratings [get]
 //	@Router			/api/v1/driver/ratings [get]
@@ -438,12 +480,19 @@ func (h *RideHandler) GetRatings(c *gin.Context) {
 	}
 	offset := (page - 1) * perPage
 
+	rideID := c.Query("ride_id")
+	if rideID != "" && !uuidRE.MatchString(rideID) {
+		fail(c, http.StatusUnprocessableEntity, "VALIDATION_ERROR", "invalid ride_id",
+			fmt.Errorf("[ratings] invalid ride_id value=%q", rideID))
+		return
+	}
+
 	raterRole := "rider"
 	if role == "driver" {
 		raterRole = "driver"
 	}
 
-	ratings, total, err := h.rideRepo.FindRatingsByRater(userID.(string), raterRole, perPage, offset)
+	ratings, total, err := h.rideRepo.FindRatingsByRater(userID.(string), raterRole, rideID, perPage, offset)
 	if err != nil {
 		respondRepo(c, err, "ratings not found", "", "failed to load ratings")
 		return
@@ -622,6 +671,19 @@ func (h *RideHandler) GetRideReceipt(c *gin.Context) {
 		return
 	}
 
+	regionID := ""
+	if ride.FareRegionID != nil {
+		regionID = *ride.FareRegionID
+	}
+	currency := ""
+	if ride.FareCurrency != nil {
+		currency = *ride.FareCurrency
+	}
+	gradeUplift := 0.0
+	if ride.GradeUpliftPct != nil {
+		gradeUplift = *ride.GradeUpliftPct
+	}
+
 	c.JSON(http.StatusOK, gin.H{
 		"receipt": gin.H{
 			"base_fare":        ride.BaseFare,
@@ -629,6 +691,9 @@ func (h *RideHandler) GetRideReceipt(c *gin.Context) {
 			"time_fare":        ride.TimeFare,
 			"surge_multiplier": ride.SurgeMultiplier,
 			"total":            ride.TotalFare,
+			"region_id":        regionID,
+			"currency":         currency,
+			"grade_uplift_pct": gradeUplift,
 		},
 	})
 }

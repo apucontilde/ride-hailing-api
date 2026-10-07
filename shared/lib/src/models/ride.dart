@@ -17,6 +17,15 @@ class Ride {
   final double? timeFare;
   final double? surgeMultiplier;
   final double? totalFare;
+
+  /// The ISO-4217 code the booking was priced in (`fare_currency` on the ride
+  /// JSON). Null for a legacy ride booked before the region pricing engine, in
+  /// which case the display never invents a currency.
+  final String? fareCurrency;
+
+  /// The climb uplift applied to the distance leg (`grade_uplift_pct`), as a
+  /// fraction. Null/0 for a ride with no uplift, so it adds no display line.
+  final double? gradeUpliftPct;
   final String? requestedAt;
   final String? acceptedAt;
   final String? driverArrivedAt;
@@ -41,6 +50,8 @@ class Ride {
     this.timeFare,
     this.surgeMultiplier,
     this.totalFare,
+    this.fareCurrency,
+    this.gradeUpliftPct,
     this.requestedAt,
     this.acceptedAt,
     this.driverArrivedAt,
@@ -75,6 +86,8 @@ class Ride {
       timeFare: asDouble(json['time_fare']),
       surgeMultiplier: asDouble(json['surge_multiplier']),
       totalFare: asDouble(json['total_fare']),
+      fareCurrency: json['fare_currency'] as String?,
+      gradeUpliftPct: asDouble(json['grade_uplift_pct']),
       requestedAt: json['requested_at'] as String?,
       acceptedAt: json['accepted_at'] as String?,
       driverArrivedAt: json['driver_arrived_at'] as String?,

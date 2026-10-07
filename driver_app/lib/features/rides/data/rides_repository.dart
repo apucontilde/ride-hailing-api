@@ -175,16 +175,25 @@ class RidesRepository {
   /// the caller's role (`internal/handler/ride.go:430-435`), so the response is
   /// already the "rides I rated" set and needs no client-side filter.
   ///
+  /// When [rideId] is given, the request carries the server's `ride_id`
+  /// existence filter instead of page/per_page: a known ride comes back as its
+  /// 0-or-1 row, an unrated ride as a definitive empty list, and a malformed id
+  /// as `422`. This is how a ride outside the bounded page walk is resolved
+  /// exactly, without fetching every page.
+  ///
   /// [cancelToken] lets a caller that goes away (a disposed provider) release
   /// the request — and its Dio timeout timers — instead of leaving them pending.
   Future<DriverRatingPage> fetchMyRatings({
     int page = 1,
     int perPage = 20,
+    String? rideId,
     CancelToken? cancelToken,
   }) async {
     final response = await apiClient.dio.get(
       ApiEndpoints.driverRatings,
-      queryParameters: {'page': page, 'per_page': perPage},
+      queryParameters: rideId != null
+          ? {'ride_id': rideId}
+          : {'page': page, 'per_page': perPage},
       cancelToken: cancelToken,
     );
     final data = response.data as Map<String, dynamic>;

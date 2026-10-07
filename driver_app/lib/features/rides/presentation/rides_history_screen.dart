@@ -140,7 +140,7 @@ class _EarningsCard extends StatelessWidget {
             const SizedBox(height: 4),
             Text(
               key: const Key('earnings-month-total'),
-              '\$${summary.monthTotal.toStringAsFixed(2)}',
+              formatMoney(summary.monthTotal, currency: summary.currency),
               style: theme.textTheme.headlineMedium,
             ),
             Text(
@@ -159,7 +159,8 @@ class _EarningsCard extends StatelessWidget {
                     children: [
                       Text(month.label, style: theme.textTheme.bodyMedium),
                       Text(
-                        '${month.trips} · \$${month.total.toStringAsFixed(2)}',
+                        '${month.trips} · '
+                        '${formatMoney(month.total, currency: month.currency)}',
                         style: theme.textTheme.bodyMedium,
                       ),
                     ],
@@ -195,8 +196,10 @@ class _RideTile extends ConsumerWidget {
     // Tri-state, not a bool: while the list loads — and after a failed load —
     // this is `unknown`, and the tile shows neither a prompt nor a "Rated"
     // claim. The server already knows which rides are rated, so a cold start
-    // does not re-prompt for old trips.
-    final status = ref.watch(ratedRideStatusProvider(ride.id));
+    // does not re-prompt for old trips. `valueOrNull` keeps the resolved answer
+    // readable across a refresh; a not-yet-resolved future is `unknown`.
+    final status = ref.watch(ratedRideStatusProvider(ride.id)).valueOrNull ??
+        RatingStatus.unknown;
     final when = _rideDate(ride);
     // A cancelled trip paid nothing; grey it out rather than showing a fare it
     // never earned.
@@ -230,7 +233,7 @@ class _RideTile extends ConsumerWidget {
         children: [
           Text(
             completed && ride.totalFare != null
-                ? '\$${ride.totalFare!.toStringAsFixed(2)}'
+                ? formatMoney(ride.totalFare!, currency: ride.fareCurrency)
                 : '—',
             style: theme.textTheme.titleMedium?.copyWith(
               color: dimmed ? Colors.grey : null,

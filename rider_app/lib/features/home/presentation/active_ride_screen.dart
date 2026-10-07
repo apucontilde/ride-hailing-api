@@ -7,6 +7,8 @@ import 'package:latlong2/latlong.dart';
 import '../../../core/utils/location_helper.dart';
 import '../model/driver.dart';
 import '../model/fare.dart';
+import '../model/place.dart';
+import '../data/change_destination_provider.dart';
 import '../data/ride_status_provider.dart';
 import '../data/home_provider.dart';
 import '../data/location_ping_service.dart';
@@ -137,12 +139,14 @@ class _ActiveRideScreenState extends ConsumerState<ActiveRideScreen>
   }
 
   /// Seed the already-rated ride ids from `GET /rider/ratings` so a ride scored
-  /// on another device is not re-prompted. Failure is non-fatal: the worst case
-  /// is one redundant prompt, and a duplicate score is swallowed anyway.
+  /// on another device is not re-prompted. This is only the fast path; a ride
+  /// outside the walk's bound is resolved per-ride by
+  /// [riderRideRatingStatusProvider]. Failure is non-fatal: the status provider
+  /// stays `unknown` for unresolved rides and the rating POST guards itself.
   Future<void> _seedRatedRideIds() async {
     try {
-      final rated = await ref.read(riderRatedRideIdsProvider.future);
-      ref.read(rideDetailProvider.notifier).seedRatedRideIds(rated);
+      final seed = await ref.read(riderRatedRideIdsProvider.future);
+      ref.read(rideDetailProvider.notifier).seedRatedRideIds(seed.rideIds);
     } catch (_) {
       // Non-fatal — the rating POST still guards itself.
     }
@@ -187,6 +191,59 @@ class _ActiveRideScreenState extends ConsumerState<ActiveRideScreen>
       const SnackBar(content: Text('Ride cancelled successfully')),
     );
     context.go('/home');
+  }
+
+  /// `[multi]` — pick a new final destination and `PUT /rides/:id/destination`.
+  ///
+  /// The server mutates the ride and pushes `ride.updated`; the listener in
+  /// [build] already re-reads `GET /rides/:id` and re-requests the route, so
+  /// this flow deliberately does **not** re-route or reprice locally.
+  Future<void> _changeDestination() async {
+    final rideId = ref.read(rideStatusProvider).rideId;
+    if (rideId == null) return;
+
+    final origin = _searchOrigin();
+    final place = await context.push<Place>(
+      '/location-search',
+      extra: {
+        'hint': 'Where to?',
+        if (origin != null) 'lat': origin.latitude,
+        if (origin != null) 'lng': origin.longitude,
+      },
+    );
+    if (place == null || !mounted) return;
+
+    final changed = await ref
+        .read(changeDestinationProvider.notifier)
+        .changeDestination(
+          rideId,
+          lat: place.lat,
+          lng: place.lng,
+          address: place.address,
+        );
+    if (!mounted) return;
+
+    final message = changed
+        ? 'Destination updated'
+        : ref.read(changeDestinationProvider).error ??
+            'Failed to change destination';
+    ScaffoldMessenger.of(
+      context,
+    ).showSnackBar(SnackBar(content: Text(message)));
+  }
+
+  /// A sensible search center for a new destination: the trip's pickup when the
+  /// accept payload carried one, else the rider's own live position.
+  LatLng? _searchOrigin() {
+    final pickup = ref.read(rideStatusProvider).rideData?['pickup'];
+    if (pickup is Map) {
+      final lat = pickup['lat'];
+      final lng = pickup['lng'];
+      if (lat is num && lng is num) {
+        return LatLng(lat.toDouble(), lng.toDouble());
+      }
+    }
+    return _riderPosition;
   }
 
   void _centerOnDriver(DriverLocation location) {
@@ -285,14 +342,22 @@ class _ActiveRideScreenState extends ConsumerState<ActiveRideScreen>
 
   static String _formatFare(double value) => '\$${value.toStringAsFixed(2)}';
 
-  /// LC-3 item 4 — the 1–5★ prompt, skipped when the ride is already scored.
+  /// LC-3 item 4 — the 1–5★ prompt, skipped when the ride is already rated.
+  ///
+  /// The gate is [riderRideRatingStatusProvider], not the session-local set: a
+  /// ride is only offered when the server (or the complete seed, or a per-ride
+  /// `ride_id` lookup past the seed bound) says [RatingStatus.unrated]. A
+  /// loading, failed, or unresolved seed is [RatingStatus.unknown] and never
+  /// becomes a prompt.
   Future<void> _promptRating(String? rideId) async {
     if (rideId == null) {
       _goHome();
       return;
     }
+    final status = await ref.read(riderRideRatingStatusProvider(rideId).future);
+    if (!mounted) return;
     final state = ref.read(rideDetailProvider);
-    if (!state.canRate(rideId)) {
+    if (!status.canRate || !state.canRate(rideId)) {
       _goHome();
       return;
     }
@@ -648,6 +713,10 @@ class _ActiveRideScreenState extends ConsumerState<ActiveRideScreen>
                 ),
               ),
             ],
+            if (isDestinationChangeable(rideState.status)) ...[
+              const SizedBox(height: 16),
+              _buildChangeDestinationButton(rideState.status),
+            ],
             const SizedBox(height: 16),
             SizedBox(
               width: double.infinity,
@@ -664,6 +733,39 @@ class _ActiveRideScreenState extends ConsumerState<ActiveRideScreen>
               ),
             ),
           ],
+        ),
+      ),
+    );
+  }
+
+  /// `[multi]` — the destination-change entry point, prominent once the rider is
+  /// on the trip and lighter while waiting for the driver. It is only built for
+  /// a changeable status (see [isDestinationChangeable]), so it is absent on a
+  /// completed/cancelled ride.
+  Widget _buildChangeDestinationButton(RideStatus status) {
+    final onTrip = status == RideStatus.onTrip;
+    final submitting = ref.watch(changeDestinationProvider).isSubmitting;
+    return SizedBox(
+      width: double.infinity,
+      child: ElevatedButton.icon(
+        key: const ValueKey<String>('change-destination-button'),
+        onPressed: submitting ? null : _changeDestination,
+        icon: submitting
+            ? const SizedBox(
+                width: 16,
+                height: 16,
+                child: CircularProgressIndicator(strokeWidth: 2),
+              )
+            : const Icon(Icons.edit_location_alt, size: 18),
+        label: const Text('Change destination'),
+        style: ElevatedButton.styleFrom(
+          backgroundColor: onTrip ? Colors.blue : Colors.blue[50],
+          foregroundColor: onTrip ? Colors.white : Colors.blue[700],
+          elevation: onTrip ? 2 : 0,
+          padding: const EdgeInsets.symmetric(vertical: 12),
+          shape: RoundedRectangleBorder(
+            borderRadius: BorderRadius.circular(12),
+          ),
         ),
       ),
     );

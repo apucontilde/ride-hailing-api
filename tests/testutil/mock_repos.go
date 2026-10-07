@@ -316,6 +316,9 @@ type MockRideRepo struct {
 	// stops is the per-ride itinerary, mirroring ride_stops: one entry per
 	// (ride_id, sequence), replaced wholesale by ReplaceDestination.
 	stops map[string][]model.RideStop
+	// trackPoints is the per-ride location trace (migration 021), appended to
+	// by InsertRideTrackPoint while a ride is in_progress.
+	trackPoints map[string][]model.RideTrackPoint
 
 	// FailNext, when non-nil, is returned by the next operation that checks it
 	// (CreateEvent/CreateRating write branches, and the FindRatingsByRater read
@@ -332,6 +335,8 @@ func NewMockRideRepo() *MockRideRepo {
 		ratings:  make([]*model.Rating, 0),
 		vehicles: make(map[string]*model.DriverVehicle),
 		stops:    make(map[string][]model.RideStop),
+
+		trackPoints: make(map[string][]model.RideTrackPoint),
 	}
 }
 
@@ -566,7 +571,7 @@ func (m *MockRideRepo) FindRidesByDriver(driverID string, limit, offset int) ([]
 	return matched[offset:end], total, nil
 }
 
-func (m *MockRideRepo) FindRatingsByRater(raterID, raterRole string, limit, offset int) ([]model.Rating, int, error) {
+func (m *MockRideRepo) FindRatingsByRater(raterID, raterRole, rideID string, limit, offset int) ([]model.Rating, int, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	if err := failNext(&m.FailNext); err != nil {
@@ -574,7 +579,7 @@ func (m *MockRideRepo) FindRatingsByRater(raterID, raterRole string, limit, offs
 	}
 	var matched []model.Rating
 	for _, r := range m.ratings {
-		if r.RaterID == raterID && r.RaterRole == raterRole {
+		if r.RaterID == raterID && r.RaterRole == raterRole && (rideID == "" || r.RideID == rideID) {
 			matched = append(matched, *r)
 		}
 	}
@@ -623,6 +628,80 @@ func (m *MockRideRepo) UpdateRideStatus(rideID, status string, timestamp *time.T
 		r.CancelledAt = ts
 	}
 	return nil
+}
+
+// InsertRideTrackPoint appends a fix to the ride's in-memory trace.
+func (m *MockRideRepo) InsertRideTrackPoint(rideID string, lat, lng float64, at time.Time) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.trackPoints[rideID] = append(m.trackPoints[rideID], model.RideTrackPoint{
+		ID:         newID(),
+		RideID:     rideID,
+		Lat:        lat,
+		Lng:        lng,
+		RecordedAt: at,
+	})
+	return nil
+}
+
+// FindRideTrackPoints returns the ride's fixes in time order, never nil.
+func (m *MockRideRepo) FindRideTrackPoints(rideID string) ([]model.RideTrackPoint, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	points := append([]model.RideTrackPoint(nil), m.trackPoints[rideID]...)
+	sort.Slice(points, func(i, j int) bool {
+		if points[i].RecordedAt.Equal(points[j].RecordedAt) {
+			return points[i].ID < points[j].ID
+		}
+		return points[i].RecordedAt.Before(points[j].RecordedAt)
+	})
+	if points == nil {
+		return []model.RideTrackPoint{}, nil
+	}
+	return points, nil
+}
+
+// SetRideActuals mirrors the real UPDATE, including NULL-on-nil.
+func (m *MockRideRepo) SetRideActuals(rideID string, durationS *int, distanceM *float64) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	r, ok := m.rides[rideID]
+	if !ok {
+		return fmt.Errorf("set ride actuals: %w", repository.ErrNotFound)
+	}
+	r.ActualDurationS = durationS
+	r.ActualDistanceM = distanceM
+	return nil
+}
+
+// FinalizeRideFare mirrors migrations 022/023's guarded, once-only update: on
+// the first call it snapshots the current money columns AND the booked climb
+// uplift into quoted_* and writes the final charge (and applied uplift); a
+// second call is a no-op. The guard is keyed on QuotedTotalFare, exactly like
+// the real `quoted_total_fare IS NULL`.
+func (m *MockRideRepo) FinalizeRideFare(rideID string, baseFare, distanceFare, timeFare, totalFare float64, gradeUpliftPct *float64) (bool, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	r, ok := m.rides[rideID]
+	if !ok {
+		return false, fmt.Errorf("finalize ride fare: %w", repository.ErrNotFound)
+	}
+	if r.QuotedTotalFare != nil {
+		return false, nil
+	}
+	quotedBase, quotedDistance, quotedTime := r.BaseFare, r.DistanceFare, r.TimeFare
+	quotedSurge, quotedTotal := r.SurgeMultiplier, r.TotalFare
+	quotedUplift := r.GradeUpliftPct
+	r.QuotedBaseFare = &quotedBase
+	r.QuotedDistanceFare = &quotedDistance
+	r.QuotedTimeFare = &quotedTime
+	r.QuotedSurgeMultiplier = &quotedSurge
+	r.QuotedTotalFare = &quotedTotal
+	r.QuotedGradeUpliftPct = quotedUplift
+	r.BaseFare, r.DistanceFare, r.TimeFare, r.TotalFare = baseFare, distanceFare, timeFare, totalFare
+	r.GradeUpliftPct = gradeUpliftPct
+	r.UpdatedAt = time.Now()
+	return true, nil
 }
 
 func (m *MockRideRepo) AssignDriver(rideID, driverID string) error {

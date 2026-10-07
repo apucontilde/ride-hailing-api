@@ -309,7 +309,7 @@ void main() {
       await tester.pump();
 
       expect(
-        container.read(ratedRideStatusProvider('r1')),
+        await container.read(ratedRideStatusProvider('r1').future),
         RatingStatus.unrated,
       );
 
@@ -327,7 +327,7 @@ void main() {
       // Optimistic: the POST landed, so the prompt is retired without waiting
       // for the server list to be re-read.
       expect(
-        container.read(ratedRideStatusProvider('r1')),
+        await container.read(ratedRideStatusProvider('r1').future),
         RatingStatus.rated,
       );
       // The submit was not followed by a refetch: the mark is optimistic.
@@ -348,11 +348,11 @@ void main() {
       await tester.pump();
 
       expect(
-        container.read(ratedRideStatusProvider('r1')),
+        await container.read(ratedRideStatusProvider('r1').future),
         RatingStatus.rated,
       );
       expect(
-        container.read(ratedRideStatusProvider('r1')).canPrompt,
+        (await container.read(ratedRideStatusProvider('r1').future)).canPrompt,
         isFalse,
       );
 
@@ -385,7 +385,7 @@ void main() {
       expect(find.text('Could not send your rating. Please try again.'),
           findsOneWidget);
       expect(
-        container.read(ratedRideStatusProvider('r1')),
+        await container.read(ratedRideStatusProvider('r1').future),
         RatingStatus.unrated,
       );
 

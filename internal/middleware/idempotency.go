@@ -170,7 +170,7 @@ func idempotencyWithStore(store idempotencyStore) gin.HandlerFunc {
 				// text/plain or HTML body stored as a JSON string must come
 				// back as those bytes, not as a JSON-quoted/escaped document.
 				c.Abort()
-				c.Data(status, replayContentType(contentType), replayBody(contentType, body))
+				c.Data(status, replayContentType(contentType), replayBody(body))
 				return
 			}
 		}
@@ -203,7 +203,7 @@ func idempotencyWithStore(store idempotencyStore) gin.HandlerFunc {
 		// Best-effort: the store is a replay cache, not part of the transaction,
 		// so a failed INSERT must never change a response the client is due.
 		contentType := cw.contentType()
-		stored, err := store.Store(storedKey, userIDStr, status, contentType, replayableBody(contentType, cw.body()))
+		stored, err := store.Store(storedKey, userIDStr, status, contentType, replayableBody(cw.body()))
 		switch {
 		case err != nil:
 			log.Printf("idempotency: failed to store response for key %q: %v", storedKey, err)
@@ -217,53 +217,24 @@ func idempotencyWithStore(store idempotencyStore) gin.HandlerFunc {
 }
 
 // replayableBody normalises a captured body into a valid JSONB document for the
-// idempotency_keys.response_body column, which is NOT NULL: an empty capture
-// cannot be stored as-is and a non-JSON body is not a JSONB document at all.
-// Rather than store a lie — the pre-fix code stored a literal `{}`, which replays
-// as a success with a missing payload — an empty body becomes JSON null and a
-// non-JSON body becomes a JSON string.
+// idempotency_keys.response_body column, which is NOT NULL.
 //
-// The wrapping decision is keyed on the CONTENT TYPE, never on whether the bytes
-// happen to parse as JSON. That distinction is load-bearing: a non-JSON body may
-// itself be a valid JSON document (`"quoted"`, `null`, `  ` whitespace), and
-// storing it raw would make replayBody unable to tell "already a JSON document"
-// from "a JSON string wrapping the real bytes". For a non-JSON type the EXACT
-// captured bytes are therefore always JSON-string-encoded — quotes, whitespace
-// and all — so the round-trip through JSONB is byte-for-byte.
+// The body is stored as a JSON string holding the EXACT captured bytes — for
+// EVERY content type, JSON included — and replayBody unwraps it uniformly. That
+// uniformity is load-bearing: response_body is JSONB, which canonicalises a JSON
+// *document* (dropping surrounding whitespace, discarding key order and
+// renormalising numbers), so a JSON body stored as a document cannot round-trip
+// byte-for-byte. Encoding the bytes as a JSON string keeps key order, whitespace
+// and numeric formatting intact through the JSONB column. JSON's `json.Marshal`
+// escapes HTML-significant bytes (<, >, &); replayBody's `json.Unmarshal`
+// reverses that, so the original value survives.
 //
-// The original Content-Type is stored alongside (response_content_type) and
-// replayed verbatim. Idempotency is currently mounted only on
-// POST /api/v1/rides (internal/router/router.go:173), whose handler is JSON, so
-// the non-JSON branch is correctness insurance rather than a live path today.
-func replayableBody(contentType string, captured []byte) []byte {
-	// An empty body has no bytes to preserve; JSON null is the one value that
-	// (a) satisfies the NOT NULL JSONB column and (b) replays as no bytes for a
-	// non-JSON type (replayBody unwraps `null` to the empty string).
-	if len(captured) == 0 {
-		return []byte("null")
-	}
-	if contentType == "" || isJSONContentType(contentType) {
-		// A JSON handler's bytes ARE a JSON document; store them as such. An
-		// invalid document (a handler bug) is still wrapped so the JSONB INSERT
-		// cannot fail and change the client's response.
-		trimmed := bytes.TrimSpace(captured)
-		if json.Valid(trimmed) {
-			return trimmed
-		}
-		encoded, _ := json.Marshal(string(trimmed))
-		return encoded
-	}
-	// A non-JSON body: always JSON-string-encode the EXACT bytes, even when
-	// they are themselves valid JSON. json.Marshal escapes HTML-significant
-	// bytes; replayBody's json.Unmarshal reverses that, so the value survives.
+// An empty capture is stored as the JSON string "" (two bytes) rather than the
+// old `null` sentinel: "" satisfies the NOT NULL column just as well and replays
+// as zero bytes for every content type.
+func replayableBody(captured []byte) []byte {
 	encoded, _ := json.Marshal(string(captured))
 	return encoded
-}
-
-// isJSONContentType reports whether ct names a JSON media type, including the
-// +json structured suffix (application/problem+json).
-func isJSONContentType(ct string) bool {
-	return strings.Contains(strings.ToLower(ct), "json")
 }
 
 // replayContentType is the header a replay is written under. A handler that
@@ -276,17 +247,18 @@ func replayContentType(ct string) string {
 	return ct
 }
 
-// replayBody returns the bytes a replay must write. For a JSON media type the
-// JSONB body is the handler's own bytes. For a non-JSON media type replayableBody
-// ALWAYS stored the body as a JSON string, so it is always unwrapped here back
-// to the exact original bytes — including a body that was itself a JSON string
-// literal. JSON null (an empty capture) unwraps to no bytes.
-func replayBody(contentType string, body json.RawMessage) []byte {
+// replayBody returns the bytes a replay must write. replayableBody stored EVERY
+// body as a JSON string, so it is unwrapped here back to the exact original
+// bytes for every content type, including JSON.
+//
+// Back-compat: a pre-change row persisted a JSON body as a raw JSON *document*
+// in the JSONB column. That does not unmarshal into a string, so it is returned
+// verbatim; the body is then JSONB-canonicalised (key order/whitespace lost),
+// which is acceptable because a JSON client parses it. The old `null` empty
+// sentinel unmarshals to the empty string, so it replays as zero bytes.
+func replayBody(body json.RawMessage) []byte {
 	if len(body) == 0 {
 		return nil
-	}
-	if contentType == "" || isJSONContentType(contentType) {
-		return body
 	}
 	var s string
 	if err := json.Unmarshal(body, &s); err == nil {

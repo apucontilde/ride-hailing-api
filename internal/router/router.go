@@ -29,6 +29,7 @@ func (d swaggerDoc) ReadDoc() string { return string(d) }
 type wiring struct {
 	deviceTokens repository.DeviceTokenRepository
 	feedback     repository.FeedbackRepository
+	fare         repository.FareRepository
 	pushProvider push.Provider
 }
 
@@ -46,6 +47,13 @@ func WithDeviceTokenRepository(r repository.DeviceTokenRepository) Option {
 // WithFeedbackRepository injects the feedback store.
 func WithFeedbackRepository(r repository.FeedbackRepository) Option {
 	return func(w *wiring) { w.feedback = r }
+}
+
+// WithFareRepository injects the pricing store. The db-less harnesses
+// (tests/testutil, cmd/e2eserver) pass an in-memory fare card set; production
+// builds the local DB-backed store in SetupWithRepos.
+func WithFareRepository(r repository.FareRepository) Option {
+	return func(w *wiring) { w.fare = r }
 }
 
 // WithPushProvider injects the delivery provider (a recording mock under test).
@@ -92,6 +100,14 @@ func SetupWithRepos(cfg *config.Config, userRepo repository.UserRepository, ride
 		feedbackRepo = repository.NewFeedbackRepo(db)
 	}
 
+	// Fare cards are a LOCAL read (api_plans/STATUS.md [fare]):
+	// the same main-database pool serves them regardless of a region's road
+	// datasource. A db-less harness injects its own through Options.
+	fareRepo := configured.fare
+	if fareRepo == nil && db != nil {
+		fareRepo = repository.NewFareRepo(db)
+	}
+
 	// Push is ancillary: with no credentials configured this is the
 	// log-and-continue no-op, so delivery can never fail a ride transition.
 	pushProvider := configured.pushProvider
@@ -124,7 +140,7 @@ func SetupWithRepos(cfg *config.Config, userRepo repository.UserRepository, ride
 
 	// Services
 	navService := service.NewNavigationService(navRepo)
-	fareService := service.NewFareService(geoRepo, navService)
+	fareService := service.NewFareService(geoRepo, navService, fareRepo, cfg)
 	authService := service.NewAuthService(cfg, userRepo)
 	riderService := service.NewRiderService(userRepo)
 	rideService := service.NewRideService(rideRepo, userRepo, wsHub, fareService)

@@ -297,8 +297,9 @@ What it does **not** do:
 
 - It does not change the ride status. Allowed while `pending`, `accepted`,
   `driver_arrived` or `in_progress`; afterwards it is a `409 CONFLICT`.
-- It does not reprice the ride. The booking-time estimate is what the receipt
-  pays out, so a destination change never moves `total_fare`.
+- It does not reprice the ride. The booking-time estimate is the quote the
+  completion recompute starts from; a destination change alone never moves
+  `total_fare` (see *Final charge on completion* below).
 - It does not re-route. Route cost stays in meters and the routing contract is
   frozen, so **re-request `GET /api/v1/navigation/route`** for the new leg.
 
@@ -316,6 +317,81 @@ dropoff with `status` unchanged.
 `cancelled` is allowed from `pending`, `accepted`, or `driver_arrived`.
 
 On ride creation, the backend also sends a `ride.updated` websocket event with `status: pending` and starts dispatching nearby drivers.
+
+### Fare receipt and the booked-card snapshot
+
+`GET /api/v1/rides/:id/receipt` returns the fare breakdown for one ride. As everywhere
+else on the JSON boundary, the amounts are **major currency units** (dollars), not cents.
+
+```json
+{
+  "receipt": {
+    "base_fare": 2.5,
+    "distance_fare": 3.1,
+    "time_fare": 0.9,
+    "surge_multiplier": 1.0,
+    "total": 6.5,
+    "region_id": "cr-sj",
+    "currency": "USD",
+    "grade_uplift_pct": 0.0
+  }
+}
+```
+
+`region_id`, `currency` and `grade_uplift_pct` are **additive fields**. `region_id`
+and `currency` are empty for a ride booked before the region pricing engine landed
+(those columns are `NULL`). `grade_uplift_pct` is the climb uplift **applied to the
+charged distance leg**: the booked value until the ride completes, then the value
+recomputed on the actual distance — so it always reconciles with the `distance_fare`
+next to it. The booked value is retained only as audit metadata and is never exposed.
+
+Every ride object also carries that snapshot, so a client does not need the receipt
+endpoint to know what priced a ride:
+
+| Field | Meaning |
+|---|---|
+| `fare_region_id` | the pricing region that priced the ride (`null` for a legacy ride) |
+| `fare_rate_id` | the exact rate-card row id used, so the final recompute prices against the booked card, not the current one |
+| `fare_currency` | the card's ISO-4217 currency |
+| `grade_uplift_pct` | the climb uplift applied to the charged distance leg (the booked value before completion, the recomputed final one after; `null` for a legacy ride) |
+
+A region with **no active card** is a server configuration error: `POST /api/v1/rides`
+answers `500 INTERNAL` rather than falling back to another region's tariff. `FARE_CURRENCY`
+is the deployment-wide expected currency and must match both the region's and the card's
+currency.
+
+### Final charge on completion
+
+Product decision (2026-10-06): **the recomputed actual replaces the quote, with no
+tolerance or cap in either direction**, and the final charge is the only one shown.
+
+When a ride reaches `completed`, the server recomputes the fare from the recorded
+actuals — `actual_distance_m` (the driven trace) and `actual_duration_s` (the status
+timestamps) — against the **booked** card (`fare_rate_id`), never a freshly resolved one.
+The components are exactly those of the booking formula: base and per-km/per-min rates
+from the booked card, the capped climb uplift re-derived from the booked raw ascent on the
+*actual* distance, and the **booked** conditions multiplier (demand × supply is fixed at
+booking, so the result is deterministic). An actual above the quote charges more; an
+actual below charges less.
+
+- The pre-completion money columns hold the **quote**. On completion they are overwritten
+  with the **final** charge and the quote is copied into audit-only `quoted_*` columns.
+  `grade_uplift_pct` follows the same split: the booked uplift is copied into the
+  audit-only `quoted_grade_uplift_pct` and `grade_uplift_pct` becomes the uplift
+  **actually applied to the final distance leg**, so it reconciles with the charged
+  `distance_fare`.
+- Every read path — the ride JSON's `total_fare` (and its component fields), the receipt,
+  and driver ride history — therefore returns the **final** charge after completion with
+  no new field to learn. The quote is retained for audit and is **not** exposed on the
+  wire.
+- On the `completed` `ride.updated` websocket message the `fare` object carries the final
+  charge alongside the additive actuals, plus `currency`, `region_id` and the applied
+  `grade_uplift_pct`.
+- **Fallback:** if there is no usable actual (a `NULL` `actual_distance_m`, e.g. no trace),
+  the booked quote is charged unchanged — the server never fabricates a recompute.
+- **Idempotency:** completion is once-only (the status machine rejects
+  `completed -> completed`) and the finalization UPDATE is guarded, so retrying a
+  completion never moves a finalized fare.
 
 ### Submitted ratings
 
@@ -381,9 +457,20 @@ Response shape:
   "polyline": [{ "lat": 0, "lng": 0 }],
   "total_distance_m": 1234,
   "total_duration_s": 112,
+  "total_ascent_m": 85,
+  "total_descent_m": 40,
+  "elevation_aware": true,
   "is_estimate": false
 }
 ```
+
+The three elevation fields are **additive and always present** (the apps ignore unknown keys):
+`total_ascent_m` and `total_descent_m` are raw metres of climb/descent along the route, and
+`elevation_aware` says whether the native engine actually used elevation on this response. The
+**fail-flat contract**: when `elevation_aware` is `false` (elevation off, or the region's
+coverage is missing/below the gate), `total_ascent_m` and `total_descent_m` are `0` **and must
+not be trusted** as "the route is flat" — the route was simply computed without elevation.
+`total_distance_m` and `total_duration_s` are unaffected by this feature.
 
 `is_estimate` is `true` when the pickup/dropoff fall outside every imported routing region
 (`ROUTING_SNAP_RADIUS_M` gate); the polyline is then the straight line between the pins and
@@ -410,6 +497,52 @@ line and surfaces the message + a Retry (`rider_app/lib/features/home/presentati
 so an outage is no longer silent; the remaining honesty gap (the error branch still synthesizes
 a line instead of showing nothing, and `is_estimate` uses client geometry) is tracked by
 `rider_app_plans/[map]_route_failure_honesty.md`.
+
+### Price estimates
+
+`GET /api/v1/estimates/price` returns one estimate per vehicle class in
+`{ "estimates": [ … ] }`. The fare amounts are **major currency units on this JSON
+boundary** (dollars, not cents); the engine keeps integer cents internally and rounds
+once, half-up, on the final total.
+
+```json
+{
+  "estimates": [
+    {
+      "vehicle_type": "sedan",
+      "base_fare": 2.5,
+      "distance_rate": 1.5,
+      "time_rate": 0.4,
+      "distance_fare": 3.1,
+      "time_fare": 0.9,
+      "surge_multiplier": 1.0,
+      "total": 6.5,
+      "region_id": "cr-sj",
+      "currency": "USD",
+      "demand_multiplier": 1.0,
+      "supply_multiplier": 1.0,
+      "grade_uplift_pct": 0.0
+    }
+  ]
+}
+```
+
+`region_id`, `currency`, `demand_multiplier`, `supply_multiplier` and `grade_uplift_pct`
+are **additive**: an older client ignores them. `region_id` names the pricing region that
+was used and `currency` its ISO-4217 code. `surge_multiplier` is the unified conditions
+multiplier = `demand_multiplier × supply_multiplier`, floored at `1.0` (pricing never
+discounts below the authored tariff) and capped by `FARE_MAX_MULTIPLIER` (default `3.0`).
+`grade_uplift_pct` is the climb uplift applied to the distance leg and stays `0.0` until
+stage 01.
+
+Two rules a client must honour:
+
+- **A region with no active rate card is a server configuration error** — the endpoint
+  answers `500 INTERNAL` with `"failed to compute estimate"`, never a `4xx` and never
+  another region's price. Treat it as an outage, not as a fixable request error.
+- **`FARE_CURRENCY` is the deployment-wide expected currency** (`USD` by default). Every
+  priced region's `currency` must equal it; a mismatch is the same configuration error.
+  Render the returned `currency` rather than assuming one.
 
 ## Platform and Utility
 

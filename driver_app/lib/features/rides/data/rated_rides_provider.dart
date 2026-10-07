@@ -47,13 +47,21 @@ class RatedRides {
   /// fact the server hands back and the only thing that can be trusted.
   final Set<String> rideIds;
 
-  const RatedRides(this.rideIds);
+  /// True when the bounded walk stopped before the server's count, so the ids
+  /// here are only the newest slice and an absent ride is **not** evidence it
+  /// is unrated. A truncated set answers [RatingStatus.unknown] for any ride it
+  /// does not list; [ratedRideStatusProvider] then resolves that one ride with
+  /// the server's `ride_id` filter instead of guessing.
+  final bool truncated;
+
+  const RatedRides(this.rideIds, {this.truncated = false});
 
   /// [RatingStatus] for [rideId]. An empty id is [RatingStatus.unknown]: it
   /// belongs to no ride, so nothing is known about it.
   RatingStatus statusOf(String rideId) {
     if (rideId.isEmpty) return RatingStatus.unknown;
-    return rideIds.contains(rideId) ? RatingStatus.rated : RatingStatus.unrated;
+    if (rideIds.contains(rideId)) return RatingStatus.rated;
+    return truncated ? RatingStatus.unknown : RatingStatus.unrated;
   }
 }
 
@@ -129,11 +137,15 @@ class RatedRidesNotifier extends AsyncNotifier<RatedRides> {
     // Still loading, or failed: `_load` merges `_marked` when it lands.
     if (loaded == null || loaded.rideIds.contains(rideId)) return;
     state = AsyncValue<RatedRides>.data(
-      RatedRides(Set.unmodifiable({...loaded.rideIds, rideId})),
+      RatedRides(
+        Set.unmodifiable({...loaded.rideIds, rideId}),
+        truncated: loaded.truncated,
+      ),
     );
   }
 
-  /// Every page of the driver's ratings, newest first.
+  /// Every page of the driver's ratings, newest first, up to
+  /// [ratedRidesMaxPages].
   Future<RatedRides> _load() async {
     final token = CancelToken();
     _inFlight.add(token);
@@ -142,6 +154,7 @@ class RatedRidesNotifier extends AsyncNotifier<RatedRides> {
       final ids = <String>{};
       var page = 1;
       var totalPages = 1;
+      var total = 0;
       do {
         final result = await repo.fetchMyRatings(
           page: page,
@@ -151,6 +164,7 @@ class RatedRidesNotifier extends AsyncNotifier<RatedRides> {
         for (final rating in result.ratings) {
           if (rating.rideId.isNotEmpty) ids.add(rating.rideId);
         }
+        if (result.total > total) total = result.total;
         totalPages = result.totalPages < 1 ? 1 : result.totalPages;
         page++;
       } while (page <= totalPages && page <= ratedRidesMaxPages);
@@ -158,7 +172,12 @@ class RatedRidesNotifier extends AsyncNotifier<RatedRides> {
       // in flight is not in the response, and dropping it would bring the
       // prompt straight back.
       ids.addAll(_marked);
-      return RatedRides(Set.unmodifiable(ids));
+      // The walk stopped short of what the server reported — either more pages
+      // than the ceiling allows, or a total the ceiling cannot hold. Absence
+      // from the loaded set is then not evidence of "unrated".
+      final truncated = totalPages > ratedRidesMaxPages ||
+          total > ratedRidesMaxPages * ratedRidesPageSize;
+      return RatedRides(Set.unmodifiable(ids), truncated: truncated);
     } finally {
       _inFlight.remove(token);
     }
@@ -179,14 +198,47 @@ final ratedRidesProvider =
 
 /// [RatingStatus] for one ride, derived from [ratedRidesProvider].
 ///
-/// The only question the UI asks about this provider, and deliberately not a
-/// `bool`: no call site in the app can turn "the list did not load" into "not
-/// rated".
+/// Resolution order, most definitive first:
+///  1. the loaded set contains the ride — [RatingStatus.rated],
+///  2. the walk was complete and does not contain the ride —
+///     [RatingStatus.unrated], the only state in which the driver may be asked,
+///  3. the walk truncated — ask the server directly with the `ride_id`
+///     existence filter (`GET /driver/ratings?ride_id=<uuid>`): one row is
+///     [RatingStatus.rated], zero rows is [RatingStatus.unrated], any failure
+///     (including a `422` for a malformed id) is [RatingStatus.unknown].
+///
+/// A loading walk and a failed walk both fall to [RatingStatus.unknown]; there
+/// is no path that turns "not fetched yet" into [RatingStatus.unrated]. This is
+/// a [FutureProvider] rather than a plain [Provider] because resolving a ride
+/// past the page cap requires a request.
 final ratedRideStatusProvider =
-    Provider.family<RatingStatus, String>((ref, rideId) {
-  // `valueOrNull`, not `maybeWhen(data: ...)`: a refresh keeps the previous list
-  // readable, and that list is still knowledge. A *failed* load drops back to
-  // `null`, which is the point — unknown, never unrated.
-  final loaded = ref.watch(ratedRidesProvider).valueOrNull;
-  return loaded?.statusOf(rideId) ?? RatingStatus.unknown;
+    FutureProvider.family<RatingStatus, String>((ref, rideId) async {
+  if (rideId.isEmpty) return RatingStatus.unknown;
+
+  final RatedRides loaded;
+  try {
+    loaded = await ref.watch(ratedRidesProvider.future);
+  } catch (_) {
+    return RatingStatus.unknown;
+  }
+  if (loaded.rideIds.contains(rideId)) return RatingStatus.rated;
+  if (!loaded.truncated) return RatingStatus.unrated;
+
+  return _resolveRideRating(ref, rideId);
 });
+
+/// The server's per-ride answer via `GET /driver/ratings?ride_id=<uuid>`: a
+/// definitive [RatingStatus.rated] / [RatingStatus.unrated], or
+/// [RatingStatus.unknown] when the request fails — a failure must never read as
+/// "unrated", or the driver is prompted to rate a ride they already rated.
+Future<RatingStatus> _resolveRideRating(Ref ref, String rideId) async {
+  try {
+    final page = await ref
+        .read(ridesRepositoryProvider)
+        .fetchMyRatings(rideId: rideId);
+    final rated = page.ratings.any((rating) => rating.rideId == rideId);
+    return rated ? RatingStatus.rated : RatingStatus.unrated;
+  } catch (_) {
+    return RatingStatus.unknown;
+  }
+}

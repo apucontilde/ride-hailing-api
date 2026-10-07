@@ -115,13 +115,24 @@ void main() {
     log = RequestLog()..attach(apiClient.dio);
   });
 
-  ProviderContainer containerWith() => ProviderContainer(
+  ProviderContainer containerWith([ApiClient? client]) => ProviderContainer(
         overrides: [
           ridesRepositoryProvider.overrideWith(
-            (ref) => RidesRepository(apiClient: apiClient),
+            (ref) => RidesRepository(apiClient: client ?? apiClient),
           ),
         ],
       );
+
+  /// The resolved tri-state for one ride. Reads the future, so a truncated walk
+  /// that must consult the server is awaited to completion.
+  Future<RatingStatus> status(ProviderContainer container, String rideId) =>
+      container.read(ratedRideStatusProvider(rideId).future);
+
+  /// The status a widget would render *right now*: an unresolved (loading)
+  /// future falls back to [RatingStatus.unknown], which is what the UI does.
+  RatingStatus rendered(ProviderContainer container, String rideId) =>
+      container.read(ratedRideStatusProvider(rideId)).valueOrNull ??
+      RatingStatus.unknown;
 
   /// Answers `/driver/ratings` with `bodies[page - 1]` — one fixture per page,
   /// so a provider that stops at page 1 is visible in the resulting set.
@@ -182,14 +193,8 @@ void main() {
       // No ride id, nothing known.
       expect(loaded.statusOf(''), RatingStatus.unknown);
 
-      expect(
-        container.read(ratedRideStatusProvider('r1')),
-        RatingStatus.rated,
-      );
-      expect(
-        container.read(ratedRideStatusProvider('r9')),
-        RatingStatus.unrated,
-      );
+      expect(await status(container, 'r1'), RatingStatus.rated);
+      expect(await status(container, 'r9'), RatingStatus.unrated);
     });
 
     test('a single-page response issues exactly one request', () async {
@@ -228,22 +233,13 @@ void main() {
       // Read without awaiting: the state is loading, and nothing may claim a
       // ride is unrated while it is.
       expect(container.read(ratedRidesProvider).isLoading, isTrue);
-      expect(
-        container.read(ratedRideStatusProvider('r1')),
-        RatingStatus.unknown,
-      );
-      expect(
-        container.read(ratedRideStatusProvider('r1')).canPrompt,
-        isFalse,
-      );
+      expect(rendered(container, 'r1'), RatingStatus.unknown);
+      expect(rendered(container, 'r1').canPrompt, isFalse);
 
       gate.complete();
       await container.read(ratedRidesProvider.future);
 
-      expect(
-        container.read(ratedRideStatusProvider('r1')),
-        RatingStatus.rated,
-      );
+      expect(await status(container, 'r1'), RatingStatus.rated);
     });
   });
 
@@ -265,14 +261,8 @@ void main() {
 
       expect(container.read(ratedRidesProvider).hasError, isTrue);
       // The whole point: a failed list is unknown, never "nothing rated".
-      expect(
-        container.read(ratedRideStatusProvider('r1')),
-        RatingStatus.unknown,
-      );
-      expect(
-        container.read(ratedRideStatusProvider('r1')).canPrompt,
-        isFalse,
-      );
+      expect(await status(container, 'r1'), RatingStatus.unknown);
+      expect((await status(container, 'r1')).canPrompt, isFalse);
     });
 
     test('the retry a UI affordance calls re-fetches the list', () async {
@@ -290,10 +280,7 @@ void main() {
           .read(ratedRidesProvider.future)
           .then((_) {}, onError: (Object _) {});
       expect(container.read(ratedRidesProvider).hasError, isTrue);
-      expect(
-        container.read(ratedRideStatusProvider('r1')),
-        RatingStatus.unknown,
-      );
+      expect(await status(container, 'r1'), RatingStatus.unknown);
 
       // ...and back up when the driver hits Retry.
       serveRatings([
@@ -303,10 +290,7 @@ void main() {
 
       expect(log.queries, hasLength(2), reason: 'retry re-requested');
       expect(container.read(ratedRidesProvider).hasError, isFalse);
-      expect(
-        container.read(ratedRideStatusProvider('r1')),
-        RatingStatus.rated,
-      );
+      expect(await status(container, 'r1'), RatingStatus.rated);
     });
 
     test('a refresh keeps the loaded set readable while it runs', () async {
@@ -324,14 +308,8 @@ void main() {
       addTearDown(container.dispose);
 
       await container.read(ratedRidesProvider.future);
-      expect(
-        container.read(ratedRideStatusProvider('r1')),
-        RatingStatus.rated,
-      );
-      expect(
-        container.read(ratedRideStatusProvider('r2')),
-        RatingStatus.unrated,
-      );
+      expect(await status(container, 'r1'), RatingStatus.rated);
+      expect(await status(container, 'r2'), RatingStatus.unrated);
 
       // Second load is held open, so the refreshing window is observable.
       gate = Completer<void>();
@@ -344,18 +322,13 @@ void main() {
         {'r1'},
         reason: 'a refresh must not blank what is already known',
       );
-      expect(
-        container.read(ratedRideStatusProvider('r1')),
-        RatingStatus.rated,
-      );
+      // The previous resolved answer stays readable while the refresh runs.
+      expect(rendered(container, 'r1'), RatingStatus.rated);
 
       gate.complete();
       await pending;
 
-      expect(
-        container.read(ratedRideStatusProvider('r2')),
-        RatingStatus.rated,
-      );
+      expect(await status(container, 'r2'), RatingStatus.rated);
     });
   });
 
@@ -375,16 +348,10 @@ void main() {
       final after = container.read(ratedRidesProvider);
       // Reacted immediately, without a refetch...
       expect(after.valueOrNull?.rideIds, {'r1', 'r2'});
-      expect(
-        container.read(ratedRideStatusProvider('r2')),
-        RatingStatus.rated,
-      );
+      expect(await status(container, 'r2'), RatingStatus.rated);
       // ...and did not erase what was already loaded (the set it replaces used
       // to be rebuilt from scratch).
-      expect(
-        container.read(ratedRideStatusProvider('r1')),
-        RatingStatus.rated,
-      );
+      expect(await status(container, 'r1'), RatingStatus.rated);
       expect(identical(before, after), isFalse);
 
       // Idempotent: marking the same ride again writes no new state at all.
@@ -409,10 +376,7 @@ void main() {
       // other ride read as unrated.
       expect(container.read(ratedRidesProvider).isLoading, isTrue);
       expect(container.read(ratedRidesProvider).valueOrNull, isNull);
-      expect(
-        container.read(ratedRideStatusProvider('r9')),
-        RatingStatus.unknown,
-      );
+      expect(rendered(container, 'r9'), RatingStatus.unknown);
 
       gate.complete();
       await container.read(ratedRidesProvider.future);
@@ -422,10 +386,7 @@ void main() {
         container.read(ratedRidesProvider).valueOrNull?.rideIds,
         {'r1', 'r9'},
       );
-      expect(
-        container.read(ratedRideStatusProvider('r9')),
-        RatingStatus.rated,
-      );
+      expect(await status(container, 'r9'), RatingStatus.rated);
     });
 
     test('survives a refresh, which re-reads the server list', () async {
@@ -458,10 +419,191 @@ void main() {
       container.read(ratedRidesProvider.notifier).markRated('');
 
       expect(container.read(ratedRidesProvider).valueOrNull?.rideIds, {'r1'});
-      expect(
-        container.read(ratedRideStatusProvider('')),
-        RatingStatus.unknown,
+      expect(await status(container, ''), RatingStatus.unknown);
+    });
+  });
+
+  group('the truncated walk resolves one ride with ride_id', () {
+    const beyondCap = '11111111-1111-1111-1111-111111111111';
+
+    /// The seed walk the server repeats for every page when the driver has more
+    /// than the [ratedRidesMaxPages] ceiling allows: the walk stops at the
+    /// bound and the set is marked truncated.
+    Map<String, dynamic> truncatedSeedBody(int page) => {
+          'ratings': [ratingRow('r1')],
+          'total': 1001,
+          'page': page,
+          'per_page': ratedRidesPageSize,
+          'total_pages': 21,
+        };
+
+    Map<String, dynamic> emptyFilterBody(String rideId) => {
+          'ratings': <dynamic>[],
+          'total': 0,
+          'page': 1,
+          'per_page': 20,
+          'total_pages': 0,
+        };
+
+    /// Answers the seed walk with [truncatedSeedBody] and the `ride_id` filter
+    /// (recognised by the query key) with [filterBody].
+    void serveTruncatedSeedWithFilter(
+      Map<String, dynamic> Function(String rideId) filterBody, {
+      void Function(Map<String, dynamic> query)? onFilter,
+    }) {
+      dioAdapter.onGet(
+        ApiEndpoints.driverRatings,
+        (server) => server.replyCallback(200, (options) {
+          final params = Map<String, dynamic>.from(options.queryParameters);
+          if (params.containsKey('ride_id')) {
+            onFilter?.call(params);
+            return filterBody(params['ride_id'] as String);
+          }
+          return truncatedSeedBody((params['page'] as num?)?.toInt() ?? 1);
+        }),
       );
+    }
+
+    test('a rated ride beyond the page cap is still rated [the bug]', () async {
+      final filterQueries = <Map<String, dynamic>>[];
+      serveTruncatedSeedWithFilter(
+        (rideId) => {
+          'ratings': [ratingRow(rideId)],
+          'total': 1,
+          'page': 1,
+          'per_page': 20,
+          'total_pages': 1,
+        },
+        onFilter: filterQueries.add,
+      );
+      final container = containerWith();
+      addTearDown(container.dispose);
+
+      final loaded = await container.read(ratedRidesProvider.future);
+
+      // The walk stopped at the ceiling short of what the server reported...
+      expect(loaded.truncated, isTrue);
+      // ...so absence from the loaded set is not evidence of "unrated"...
+      expect(loaded.statusOf(beyondCap), RatingStatus.unknown);
+
+      // ...and the per-ride filter gives the definitive answer.
+      final resolved = await status(container, beyondCap);
+      expect(resolved, RatingStatus.rated);
+      expect(resolved.canPrompt, isFalse);
+      // The filter asks for exactly this ride, nothing else.
+      expect(filterQueries, [
+        {'ride_id': beyondCap}
+      ]);
+    });
+
+    test('an unrated ride beyond the cap stays unrated', () async {
+      final filterQueries = <Map<String, dynamic>>[];
+      serveTruncatedSeedWithFilter(
+        emptyFilterBody,
+        onFilter: filterQueries.add,
+      );
+      final container = containerWith();
+      addTearDown(container.dispose);
+
+      await container.read(ratedRidesProvider.future);
+
+      final resolved = await status(container, beyondCap);
+      expect(resolved, RatingStatus.unrated);
+      expect(resolved.canPrompt, isTrue);
+      expect(filterQueries.single, {'ride_id': beyondCap});
+    });
+
+    test('a ride the truncated window already lists needs no filter', () async {
+      var filterCalls = 0;
+      serveTruncatedSeedWithFilter((rideId) {
+        filterCalls++;
+        return emptyFilterBody(rideId);
+      });
+      final container = containerWith();
+      addTearDown(container.dispose);
+
+      await container.read(ratedRidesProvider.future);
+
+      expect(await status(container, 'r1'), RatingStatus.rated);
+      expect(filterCalls, 0,
+          reason: 'a ride in the loaded window is already conclusive');
+    });
+
+    test('a complete walk answers unrated without any filter request', () async {
+      serveRatings([
+        ratingsBody([ratingRow('r1')], totalPages: 1),
+      ]);
+      final container = containerWith();
+      addTearDown(container.dispose);
+
+      await container.read(ratedRidesProvider.future);
+
+      expect(await status(container, 'r9'), RatingStatus.unrated);
+      expect(
+        log.queries.any((q) => q.containsKey('ride_id')),
+        isFalse,
+        reason: 'a complete set is already a definitive answer',
+      );
+    });
+
+    test('a 422 on the per-ride filter is unknown, never unrated', () async {
+      // A dedicated client with the *default* matcher: the suite-wide
+      // `UrlRequestMatcher` ignores query parameters, so it cannot tell the
+      // seed walk from the `ride_id` filter. The default matcher can, which is
+      // what lets a query-specific 422 handler answer only the filter.
+      final client = ApiClient(baseUrl: 'http://localhost:8080');
+      final adapter = DioAdapter(dio: client.dio);
+      adapter.onGet(
+        ApiEndpoints.driverRatings,
+        (server) => server.replyCallback(200, (options) {
+          return truncatedSeedBody(
+            (options.queryParameters['page'] as num?)?.toInt() ?? 1,
+          );
+        }),
+      );
+      adapter.onGet(
+        ApiEndpoints.driverRatings,
+        (server) => server.reply(422, {
+          'error': {'code': 'VALIDATION_ERROR', 'message': 'invalid ride_id'},
+        }),
+        queryParameters: {'ride_id': beyondCap},
+      );
+      final container = containerWith(client);
+      addTearDown(container.dispose);
+
+      await container.read(ratedRidesProvider.future);
+
+      final resolved = await status(container, beyondCap);
+      expect(resolved, RatingStatus.unknown);
+      expect(resolved.canPrompt, isFalse);
+    });
+
+    test('a failed per-ride filter is unknown, never unrated', () async {
+      final client = ApiClient(baseUrl: 'http://localhost:8080');
+      final adapter = DioAdapter(dio: client.dio);
+      adapter.onGet(
+        ApiEndpoints.driverRatings,
+        (server) => server.replyCallback(200, (options) {
+          return truncatedSeedBody(
+            (options.queryParameters['page'] as num?)?.toInt() ?? 1,
+          );
+        }),
+      );
+      adapter.onGet(
+        ApiEndpoints.driverRatings,
+        (server) => server.reply(500, {
+          'error': {'code': 'INTERNAL', 'message': 'failed to load ratings'},
+        }),
+        queryParameters: {'ride_id': beyondCap},
+      );
+      final container = containerWith(client);
+      addTearDown(container.dispose);
+
+      await container.read(ratedRidesProvider.future);
+
+      final resolved = await status(container, beyondCap);
+      expect(resolved, RatingStatus.unknown);
+      expect(resolved.canPrompt, isFalse);
     });
   });
 

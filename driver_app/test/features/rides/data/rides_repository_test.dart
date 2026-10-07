@@ -189,6 +189,47 @@ void main() {
       });
     });
 
+    group('fetchMyRatings', () {
+      void whenGetRatings() => when(() => mockDio.get(
+            any(),
+            queryParameters: any(named: 'queryParameters'),
+            cancelToken: any(named: 'cancelToken'),
+          )).thenAnswer(
+            (_) async => Response(
+              requestOptions: RequestOptions(path: '/api/v1/driver/ratings'),
+              statusCode: 200,
+              data: {'ratings': const [], 'total': 0},
+            ),
+          );
+
+      test('sends 1-based page/per_page by default', () async {
+        whenGetRatings();
+
+        await repo.fetchMyRatings(page: 2, perPage: 50);
+
+        verify(() => mockDio.get(
+              '/api/v1/driver/ratings',
+              queryParameters: {'page': 2, 'per_page': 50},
+              cancelToken: any(named: 'cancelToken'),
+            )).called(1);
+      });
+
+      test('a ride_id sends the existence filter and no page/per_page',
+          () async {
+        whenGetRatings();
+
+        await repo.fetchMyRatings(rideId: '11111111-1111-1111-1111-111111111111');
+
+        verify(() => mockDio.get(
+              '/api/v1/driver/ratings',
+              queryParameters: {
+                'ride_id': '11111111-1111-1111-1111-111111111111',
+              },
+              cancelToken: any(named: 'cancelToken'),
+            )).called(1);
+      });
+    });
+
     group('rateRide', () {
       setUp(() {
         when(() => mockDio.post(any(), data: any(named: 'data')))

@@ -5,13 +5,29 @@ import 'package:flutter_map/flutter_map.dart';
 import 'package:latlong2/latlong.dart';
 import 'package:ride_hailing_shared/ride_hailing_shared.dart';
 import '../data/home_provider.dart';
+import '../data/home_route_preview.dart';
 import '../data/location_ping_service.dart';
+import '../data/multi_leg_route_provider.dart';
 import '../model/place.dart';
 import 'nearby_drivers_chip.dart';
 import 'ride_estimate_sheet.dart';
+import 'stop_list.dart';
 
 class HomeScreen extends ConsumerStatefulWidget {
-  const HomeScreen({super.key});
+  const HomeScreen({
+    super.key,
+    this.initialPickup,
+    this.initialDestination,
+  });
+
+  /// Seeds the pickup pin instead of resolving it from the platform location
+  /// channel. Production leaves this `null`; the widget tests use it to reach
+  /// the route preview without a live geolocator.
+  final Place? initialPickup;
+
+  /// Seeds the destination pin, so a test can land on the route preview
+  /// without driving the `/location-search` flow.
+  final Place? initialDestination;
 
   @override
   ConsumerState<HomeScreen> createState() => _HomeScreenState();
@@ -23,12 +39,18 @@ class _HomeScreenState extends ConsumerState<HomeScreen>
   LatLng? _currentPosition;
   Place? _pickupLocation;
   Place? _destination;
+
+  /// Ordered intermediate stops. Order in this list **is** the itinerary; the
+  /// final destination stays [_destination] (the API appends `dropoff_*` last).
+  final List<Place> _stops = [];
   LocationPingService? _pingService;
 
   @override
   void initState() {
     super.initState();
     WidgetsBinding.instance.addObserver(this);
+    _pickupLocation = widget.initialPickup;
+    _destination = widget.initialDestination;
     _pingService = ref.read(locationPingServiceProvider);
     _pingService!.start();
     _initLocation();
@@ -51,14 +73,75 @@ class _HomeScreenState extends ConsumerState<HomeScreen>
     }
   }
 
-  void _fitBounds(LatLng pointA, LatLng pointB) {
+  /// Fits the camera to the whole itinerary (pickup → stops → destination), so
+  /// adding or moving a stop keeps every pin in frame. Falls back to centering
+  /// when only one point exists.
+  void _fitItinerary() {
+    final points = <LatLng>[
+      if (_pickupLocation != null)
+        LatLng(_pickupLocation!.lat, _pickupLocation!.lng)
+      else
+        ?_currentPosition,
+      for (final stop in _stops) LatLng(stop.lat, stop.lng),
+      if (_destination != null) LatLng(_destination!.lat, _destination!.lng),
+    ];
+    if (points.isEmpty) return;
+    if (points.length == 1) {
+      _mapController.move(points.first, 15.0);
+      return;
+    }
     _mapController.fitCamera(
       CameraFit.bounds(
-        bounds: LatLngBounds(pointA, pointB),
+        bounds: LatLngBounds.fromPoints(points),
         padding: const EdgeInsets.all(60),
         maxZoom: 16.0,
       ),
     );
+  }
+
+  /// The route-preview plan for the current pickup/stops/destination, or null
+  /// when there is not yet an origin/destination pair.
+  RoutePlan? _routePlan() {
+    final pickup = _pickupLocation != null
+        ? LatLng(_pickupLocation!.lat, _pickupLocation!.lng)
+        : _currentPosition;
+    if (pickup == null || _destination == null) return null;
+    return RoutePlan(
+      fromLat: pickup.latitude,
+      fromLng: pickup.longitude,
+      toLat: _destination!.lat,
+      toLng: _destination!.lng,
+      stops: [for (final stop in _stops) RouteWaypoint(stop.lat, stop.lng)],
+    );
+  }
+
+  Future<void> _addStop() async {
+    final origin = _pickupLocation != null
+        ? LatLng(_pickupLocation!.lat, _pickupLocation!.lng)
+        : _currentPosition;
+    final place = await context.push<Place>(
+      '/location-search',
+      extra: {
+        'hint': 'Add a stop',
+        if (origin != null) 'lat': origin.latitude,
+        if (origin != null) 'lng': origin.longitude,
+      },
+    );
+    if (place != null && mounted) {
+      setState(() => _stops.add(place));
+      _fitItinerary();
+    }
+  }
+
+  void _removeStop(int index) {
+    if (index < 0 || index >= _stops.length) return;
+    setState(() => _stops.removeAt(index));
+    _fitItinerary();
+  }
+
+  void _reorderStops(int oldIndex, int newIndex) {
+    setState(() => applyStopReorder(_stops, oldIndex, newIndex));
+    _fitItinerary();
   }
 
   Future<void> _initLocation() async {
@@ -90,20 +173,13 @@ class _HomeScreenState extends ConsumerState<HomeScreen>
 
   @override
   Widget build(BuildContext context) {
-    final pickup = _pickupLocation != null
-        ? LatLng(_pickupLocation!.lat, _pickupLocation!.lng)
-        : _currentPosition;
-    final routeArgs = (pickup != null && _destination != null)
-        ? RouteArgs(
-            fromLat: pickup.latitude,
-            fromLng: pickup.longitude,
-            toLat: _destination!.lat,
-            toLng: _destination!.lng,
-          )
-        : null;
-    final routeAsync = routeArgs != null
-        ? ref.watch(navigationRouteProvider(routeArgs))
-        : null;
+    final routePlan = _routePlan();
+    final routeAsync =
+        routePlan != null ? ref.watch(multiLegRouteProvider(routePlan)) : null;
+    // One derivation feeds both the map and the info row, so they can never
+    // disagree about what is drawn (the old `when(error:)` drew a straight line
+    // while the row still showed the stale distance).
+    final preview = HomeRoutePreview.fromAsync(routeAsync);
 
     // Body-only: the shell (`RiderShell`, wired in `core/router/app_router.dart`)
     // owns the single `Scaffold` + drawer. Keeping no `Scaffold` here is what
@@ -127,77 +203,26 @@ class _HomeScreenState extends ConsumerState<HomeScreen>
                 },
               ),
             ),
-            if (_currentPosition != null ||
-                _pickupLocation != null ||
-                _destination != null)
+            // `[ontrip]` parity: only the API's own geometry is ever drawn. A
+            // ready route is solid blue; an API-flagged estimate is grey +
+            // dashed so it cannot read as road following; a failure draws
+            // nothing at all (the info row is the only surface).
+            if (preview.polyline.length >= 2)
               PolylineLayer(
                 polylines: [
-                  if (routeAsync != null)
-                    ...routeAsync.when(
-                      data: (route) {
-                        final straight = <LatLng>[
-                          ?pickup,
-                          LatLng(_destination!.lat, _destination!.lng),
-                        ];
-                        final useFallback =
-                            route.polyline.length < 2 || route.isEstimate;
-                        return [
-                          if (straight.length == 2)
-                            Polyline(
-                              points: straight,
-                              strokeWidth: 2,
-                              color: Colors.grey,
-                              pattern: StrokePattern.dashed(
-                                segments: const [12, 8],
-                              ),
-                            ),
-                          if (!useFallback)
-                            Polyline(
-                              points: route.polyline,
-                              strokeWidth: 4,
-                              color: Colors.blue,
-                            ),
-                        ];
-                      },
-                      loading: () {
-                        final straight = <LatLng>[
-                          ?pickup,
-                          LatLng(_destination!.lat, _destination!.lng),
-                        ];
-                        return [
-                          if (straight.length == 2)
-                            Polyline(
-                              points: straight,
-                              strokeWidth: 2,
-                              color: Colors.grey,
-                              pattern: StrokePattern.dashed(
-                                segments: const [12, 8],
-                              ),
-                            ),
-                        ];
-                      },
-                      error: (_, _) {
-                        final straight = <LatLng>[
-                          ?pickup,
-                          LatLng(_destination!.lat, _destination!.lng),
-                        ];
-                        return [
-                          if (straight.length == 2)
-                            Polyline(
-                              points: straight,
-                              strokeWidth: 2,
-                              color: Colors.grey,
-                              pattern: StrokePattern.dashed(
-                                segments: const [12, 8],
-                              ),
-                            ),
-                        ];
-                      },
-                    ),
+                  Polyline(
+                    points: preview.polyline,
+                    color: preview.hasRoadRoute ? Colors.blue : Colors.grey,
+                    strokeWidth: 4.0,
+                    pattern: preview.hasRoadRoute
+                        ? const StrokePattern.solid()
+                        : StrokePattern.dashed(segments: const [12, 8]),
+                  ),
                 ],
               ),
             if (_currentPosition != null ||
                 _pickupLocation != null ||
+                _stops.isNotEmpty ||
                 _destination != null)
               MarkerLayer(
                 markers: [
@@ -221,6 +246,17 @@ class _HomeScreenState extends ConsumerState<HomeScreen>
                         Icons.location_on,
                         color: Colors.green,
                         size: 40,
+                      ),
+                    ),
+                  for (final stop in _stops)
+                    Marker(
+                      point: LatLng(stop.lat, stop.lng),
+                      width: 40,
+                      height: 40,
+                      child: const Icon(
+                        Icons.trip_origin,
+                        color: Colors.orange,
+                        size: 32,
                       ),
                     ),
                   if (_destination != null)
@@ -253,7 +289,7 @@ class _HomeScreenState extends ConsumerState<HomeScreen>
             ),
           ),
         ),
-        _buildBottomSheet(routeAsync),
+        _buildBottomSheet(preview),
         // The my-location control used to live on home's own `Scaffold`;
         // body-only means it moves into the map's overlay stack.
         Positioned(
@@ -269,7 +305,7 @@ class _HomeScreenState extends ConsumerState<HomeScreen>
     );
   }
 
-  Widget _buildBottomSheet(AsyncValue<NavigationRoute>? routeAsync) {
+  Widget _buildBottomSheet(HomeRoutePreview preview) {
     return DraggableScrollableSheet(
       initialChildSize: 0.25,
       minChildSize: 0.1,
@@ -332,15 +368,7 @@ class _HomeScreenState extends ConsumerState<HomeScreen>
                   );
                   if (place != null && mounted) {
                     setState(() => _pickupLocation = place);
-                    final pickup = LatLng(place.lat, place.lng);
-                    if (_destination != null) {
-                      _fitBounds(
-                        pickup,
-                        LatLng(_destination!.lat, _destination!.lng),
-                      );
-                    } else {
-                      _mapController.move(pickup, 15.0);
-                    }
+                    _fitItinerary();
                   }
                 },
               ),
@@ -372,17 +400,23 @@ class _HomeScreenState extends ConsumerState<HomeScreen>
                   );
                   if (place != null && mounted) {
                     setState(() => _destination = place);
-                    final pickup = _pickupLocation != null
-                        ? LatLng(_pickupLocation!.lat, _pickupLocation!.lng)
-                        : _currentPosition;
-                    if (pickup != null) {
-                      _fitBounds(pickup, LatLng(place.lat, place.lng));
-                    }
+                    _fitItinerary();
                   }
                 },
               ),
+              if ((_pickupLocation != null || _currentPosition != null) &&
+                  _destination != null) ...[
+                const SizedBox(height: 8),
+                StopList(
+                  stops: _stops,
+                  onAdd: _addStop,
+                  onRemove: _removeStop,
+                  onReorder: _reorderStops,
+                ),
+                if (_stops.isNotEmpty) _buildStopsFareNote(),
+              ],
               const SizedBox(height: 16),
-              _buildRouteInfo(routeAsync),
+              _buildRouteInfo(preview),
               const SizedBox(height: 8),
               _buildRequestTripButton(),
             ],
@@ -437,47 +471,76 @@ class _HomeScreenState extends ConsumerState<HomeScreen>
     );
   }
 
-  Widget _buildRouteInfo(AsyncValue<NavigationRoute>? routeAsync) {
-    final route = routeAsync?.valueOrNull;
+  /// The fare-estimate honesty caveat.
+  ///
+  /// Waypoint-aware pricing is an API gap: `POST /rides` quotes
+  /// `pickup → dropoff` only and `GET /estimates/price` takes no stops. The
+  /// rider keeps seeing the API's single-leg number, never a fabricated
+  /// stop-inclusive one, and this note names the limitation.
+  Widget _buildStopsFareNote() {
+    return Padding(
+      key: const ValueKey<String>('stops-fare-note'),
+      padding: const EdgeInsets.only(top: 8),
+      child: Row(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Icon(Icons.info_outline, size: 16, color: Colors.grey[600]),
+          const SizedBox(width: 8),
+          Expanded(
+            child: Text(
+              'Stops are not included in the price estimate. The fare is based '
+              'on pickup to the final destination.',
+              style: TextStyle(fontSize: 12, color: Colors.grey[700]),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
 
-    // Error surface: only when there is no stale successful route.
-    if (routeAsync != null && routeAsync.hasError && route == null) {
+  Widget _buildRouteInfo(HomeRoutePreview preview) {
+    // Surfaced for a first-failure (`unavailable`) *and* a retained route whose
+    // refresh failed (`isStale`): the map keeps the road geometry, the row tells
+    // the truth about the refresh.
+    if (preview.hasError) {
       return Row(
         children: [
           const Icon(Icons.error_outline, size: 16, color: Colors.red),
           const SizedBox(width: 8),
           Expanded(
             child: Text(
-              apiErrorMessage(routeAsync.error!, 'Route unavailable'),
+              preview.message ?? HomeRoutePreview.unavailableReason,
               style: const TextStyle(color: Colors.red, fontSize: 14),
             ),
           ),
           TextButton(
-            onPressed: () {
-              final pickup = _pickupLocation != null
-                  ? LatLng(_pickupLocation!.lat, _pickupLocation!.lng)
-                  : _currentPosition;
-              if (pickup != null && _destination != null) {
-                final args = RouteArgs(
-                  fromLat: pickup.latitude,
-                  fromLng: pickup.longitude,
-                  toLat: _destination!.lat,
-                  toLng: _destination!.lng,
-                );
-                ref.invalidate(navigationRouteProvider(args));
-              }
-            },
+            onPressed: _retryRoute,
             child: const Text('Retry'),
           ),
         ],
       );
     }
 
-    if (route == null) return const SizedBox.shrink();
+    // Loading draws no geometry; a quiet affordance keeps the sheet from
+    // looking inert while the first route is in flight.
+    if (preview.isLoading) {
+      return Row(
+        children: [
+          Icon(Icons.route, size: 16, color: Colors.grey[600]),
+          const SizedBox(width: 8),
+          Text(
+            'Finding route…',
+            style: TextStyle(color: Colors.grey[700], fontSize: 14),
+          ),
+        ],
+      );
+    }
 
-    final distanceKm = route.totalDistanceM / 1000;
-    final minutes = (route.totalDurationS / 60).round();
-    final prefix = route.isEstimate ? 'Estimated ' : '';
+    if (!preview.hasRoute) return const SizedBox.shrink();
+
+    final distanceKm = preview.totalDistanceM / 1000;
+    final minutes = (preview.totalDurationS / 60).round();
+    final prefix = preview.isEstimate ? 'Estimated ' : '';
 
     return Row(
       children: [
@@ -493,6 +556,12 @@ class _HomeScreenState extends ConsumerState<HomeScreen>
         ),
       ],
     );
+  }
+
+  void _retryRoute() {
+    final plan = _routePlan();
+    if (plan == null) return;
+    ref.invalidate(multiLegRouteProvider(plan));
   }
 
   Widget _buildRequestTripButton() {
@@ -592,6 +661,7 @@ class _HomeScreenState extends ConsumerState<HomeScreen>
           dropoffLng: destination.lng,
           dropoffAddress: destination.address,
           vehicleType: vehicleType,
+          stops: List<Place>.of(_stops),
         );
 
     if (!mounted) return;

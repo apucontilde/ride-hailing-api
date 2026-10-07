@@ -1,4 +1,4 @@
-.PHONY: all build run test test-integration benchmark bench-integration lint clean docker-up docker-down migrate-up migrate-down seed import-osm import-elevation download-osm download-osm-san-jose export-places openapi flutter-bootstrap flutter-analyze flutter-test
+.PHONY: all build run test test-integration benchmark bench-integration lint clean docker-up docker-down migrate-up migrate-down seed seed-fares import-osm import-elevation download-osm download-osm-san-jose export-places openapi flutter-bootstrap flutter-analyze flutter-test
 
 APP_NAME=ride-hailing-api
 BUILD_DIR=./build
@@ -43,6 +43,17 @@ clean:
 
 seed:
 	psql "$(DATABASE_URL)" -f scripts/seed.sql
+
+# Region pricing bootstrap (api_plans/STATUS.md [fare]). Required
+# per region before it can price rides: a region with no fare card answers 5xx
+# by design (fail closed). The timezone is explicit and never guessed; override
+# with make seed-fares SEED_FARES_REGION=cr-lc SEED_FARES_TIMEZONE=America/Costa_Rica.
+SEED_FARES_REGION ?= cr-sj
+SEED_FARES_TIMEZONE ?= America/Costa_Rica
+FARE_CURRENCY ?= USD
+
+seed-fares:
+	go run ./cmd/faretool --region "$(SEED_FARES_REGION)" --timezone "$(SEED_FARES_TIMEZONE)" --currency "$(FARE_CURRENCY)"
 
 # Region-scoped import (api_plans/05): --region is the only importable unit and
 # defaults to cr-sj, so these two targets keep their old behavior. Region/datasource

@@ -82,36 +82,102 @@ class _RideEstimateSheetState extends State<RideEstimateSheet> {
             width: selected ? 2 : 1,
           ),
         ),
-        child: Row(
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            Icon(Icons.directions_car, size: 40, color: selected ? Colors.blue : Colors.grey),
-            const SizedBox(width: 12),
-            Expanded(
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  Text(
-                    estimate.displayName,
-                    style: const TextStyle(fontWeight: FontWeight.w600, fontSize: 16),
-                  ),
-                  Text(
-                    '${estimate.capacity} passengers',
-                    style: TextStyle(color: Colors.grey[600], fontSize: 13),
-                  ),
-                ],
-              ),
-            ),
-            Column(
-              crossAxisAlignment: CrossAxisAlignment.end,
+            Row(
               children: [
+                Icon(Icons.directions_car,
+                    size: 40, color: selected ? Colors.blue : Colors.grey),
+                const SizedBox(width: 12),
+                Expanded(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Text(
+                        estimate.displayName,
+                        style: const TextStyle(
+                            fontWeight: FontWeight.w600, fontSize: 16),
+                      ),
+                      Text(
+                        '${estimate.capacity} passengers',
+                        style: TextStyle(color: Colors.grey[600], fontSize: 13),
+                      ),
+                    ],
+                  ),
+                ),
                 Text(
-                  estimate.formattedBaseFare,
-                  style: const TextStyle(fontWeight: FontWeight.w600, fontSize: 16),
+                  estimate.formattedTotal,
+                  style: const TextStyle(
+                      fontWeight: FontWeight.w600, fontSize: 16),
                 ),
               ],
             ),
+            if (selected) ...[
+              const Divider(height: 20),
+              _breakdown(estimate),
+            ],
           ],
         ),
+      ),
+    );
+  }
+
+  Widget _breakdown(RideEstimate estimate) {
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        _fareRow('Base fare', estimate.formattedBaseFare),
+        _fareRow(
+          'Distance fare',
+          estimate.formattedDistanceFare,
+          note: estimate.hasGradeUplift
+              ? 'climb +${(estimate.gradeUpliftPct * 100).toStringAsFixed(1)}%'
+              : null,
+        ),
+        _fareRow('Time fare', estimate.formattedTimeFare),
+        _fareRow(
+          'Conditions multiplier',
+          '×${estimate.surgeMultiplier.toStringAsFixed(2)}',
+          note: estimate.demandMultiplier != 1.0 ||
+                  estimate.supplyMultiplier != 1.0
+              ? 'demand ${estimate.demandMultiplier.toStringAsFixed(2)} '
+                  '× supply ${estimate.supplyMultiplier.toStringAsFixed(2)}'
+              : null,
+        ),
+        const Divider(height: 20),
+        _fareRow('Total', estimate.formattedTotal, emphasise: true),
+      ],
+    );
+  }
+
+  Widget _fareRow(String label, String value,
+      {String? note, bool emphasise = false}) {
+    final style = TextStyle(
+      fontSize: emphasise ? 15 : 13,
+      fontWeight: emphasise ? FontWeight.bold : FontWeight.normal,
+      color: emphasise ? null : Colors.grey[700],
+    );
+    return Padding(
+      padding: const EdgeInsets.symmetric(vertical: 2),
+      child: Row(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(label, style: style),
+                if (note != null)
+                  Text(
+                    note,
+                    style: TextStyle(fontSize: 11, color: Colors.grey[600]),
+                  ),
+              ],
+            ),
+          ),
+          Text(value, style: style),
+        ],
       ),
     );
   }

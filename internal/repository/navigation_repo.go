@@ -369,7 +369,7 @@ func newNativeRepo(db *sqlx.DB, pools *DatasourcePools, maxRegions int) *NativeN
 // configureElevation sets the elevation cost model for the native engine. It is
 // called by the engine factory (pgrouting_repo.go), which already holds
 // *config.Config; the repo itself stays config-free. A zero elev / enabled=false
-// reproduces the pre-elevation engine exactly (default off). An invalid weight
+// reproduces the pre-elevation engine exactly (explicit off). An invalid weight
 // set is rejected at this boundary so a misconfigured deploy gets flat routing,
 // never a wrong router (mirrors RouteWithWeights' own Validate fallback).
 func (r *NativeNavigationRepo) configureElevation(elev routing.CostWeights, enabled bool, minCover float64) *NativeNavigationRepo {

@@ -19,7 +19,7 @@ With `ROUTING_ENGINE=pgrouting`, `pgr_dijkstra` reads `road_network_edges_pgr.co
 **pure meters**, so it returns the flat-optimal route while the native engine returns the
 elevation-aware one. Same OD pair, two deployments, two answers. The factory already warns loudly
 when `ROUTING_ELEVATION=on` and `ROUTING_ENGINE=pgrouting`
-(`internal/repository/pgrouting_repo.go:110-115`) — **keep that warning**; it is the correct action
+(`internal/repository/pgrouting_repo.go:124-129`) — **keep that warning**; it is the correct action
 today.
 
 **Do not** fix this by writing a weighted `cost` into `road_network_edges_pgr`. That column is the
@@ -45,9 +45,9 @@ not inline in the importer, and not a weighted `cost`.
    separately; plan 03 explicitly forbade an `edges_sql` that references a `reverse_cost` that
    does not exist.
 2. **Second edges SQL** — an `elevationAwareEdgesSQL` constant beside `edgesSQL`
-   (`internal/repository/pgrouting_repo.go:17`), selecting `cost_ascent` / `reverse_cost_ascent`
+   (`internal/repository/pgrouting_repo.go:19`), selecting `cost_ascent` / `reverse_cost_ascent`
    with `WHERE cost_ascent IS NOT NULL`, **selected by the same elevation flag** as the native
-   path. Add a matching region-scoped variant beside `regionEdgesSQLFmt` (`:50`).
+   path. Add a matching region-scoped variant beside `regionEdgesSQLFmt` (`:52`).
 3. **Backfill script** — a new script that computes `reverse_cost` and the ascent costs from the
    vertices' `elevation_m` + the cost weights, idempotent and coverage-gated, **referenced from
    `scripts/import-road-network.sh`** so a fresh import populates it. Run it after

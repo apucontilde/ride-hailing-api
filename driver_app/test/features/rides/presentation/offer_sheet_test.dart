@@ -74,7 +74,7 @@ void main() {
     await tester.pump();
   }
 
-  void stubRide() {
+  void stubRide({double? totalFare = 12.4, String? fareCurrency}) {
     when(() => mockRepo.fetchRide('r1')).thenAnswer(
       (_) async => Ride(
         id: 'r1',
@@ -86,12 +86,13 @@ void main() {
         dropoffLat: 9.95,
         dropoffLng: -84.10,
         dropoffAddress: 'Airport',
-        totalFare: 12.4,
+        totalFare: totalFare,
+        fareCurrency: fareCurrency,
       ),
     );
   }
 
-  testWidgets('renders pickup/dropoff/fare from fetched ride detail',
+  testWidgets('renders the real cents, never rounded to whole dollars',
       (tester) async {
     await seedOffer(tester, 'r1');
     stubRide();
@@ -100,7 +101,30 @@ void main() {
 
     expect(find.text('Central Park'), findsOneWidget);
     expect(find.text('Airport'), findsOneWidget);
-    expect(find.text(r'$12'), findsOneWidget);
+    expect(find.text('12.40'), findsOneWidget);
+
+    await tester.pumpWidget(const SizedBox());
+  });
+
+  testWidgets('prefixes the API currency when the ride carries one',
+      (tester) async {
+    await seedOffer(tester, 'r1');
+    stubRide(fareCurrency: 'USD');
+    await pumpSheet(tester);
+    await tester.pump();
+
+    expect(find.text('USD12.40'), findsOneWidget);
+
+    await tester.pumpWidget(const SizedBox());
+  });
+
+  testWidgets('keeps the placeholder for a ride with no fare', (tester) async {
+    await seedOffer(tester, 'r1');
+    stubRide(totalFare: null);
+    await pumpSheet(tester);
+    await tester.pump();
+
+    expect(find.text('-'), findsOneWidget);
 
     await tester.pumpWidget(const SizedBox());
   });

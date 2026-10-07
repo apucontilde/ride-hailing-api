@@ -18,18 +18,19 @@ status: deferred
 - `internal/router/router.go:143` — `driver.GET("/me/earnings", platformHandler.StubPayment)`.
 - `internal/router/router.go:221-222` — `r.POST("/api/v1/driver/earnings/withdraw", authMw, RequireRole("driver"), platformHandler.StubPayment)`.
 - `internal/handler/platform.go:487-501` — `StubPayment`, the `200 {"status":"stub",...}` both return.
-- `internal/service/ride.go:175-196` — the `completed` branch of `AdvanceStatus`; the booked fare
+- `internal/service/ride.go:372-391` — the `completed` branch of `AdvanceStatus`; the booked fare
   snapshot (`ride.TotalFare`) is what a completion must credit. No fare is mutated here today.
 - `internal/repository/ride_repo.go:13-25,22,114-167` — `RideRepository` + `UpdateRideStatus` /
   `CreateEvent` split (note: `ride_events` is deliberately best-effort — money must **not** copy
   that, see Invariants).
-- `internal/service/fare.go:75-91` — hardcoded rates + the explicit comment that
-  "earnings/withdraw" is the trigger to move tariffs into a versioned `fare_rates` table.
+- `internal/service/fare.go:112` — `CalculateEstimate` now prices from the **landed** versioned,
+  per-region `fare_rates` card (migration `019_region_fares.up.sql:42`, seeded by
+  `make seed-fares`), which is the tariff the payout split must key off.
 - `internal/model/ride.go` — `Ride` fare fields (`TotalFare float64`); `internal/model/user.go:28-38`
   — `Driver`.
 - `internal/middleware/idempotency.go` — per-user `Idempotency-Key` store, used on create-ride
-  (`router.go:173`). Cross-ref `api_plans/[errors]_idempotent_replay_body.md` (bug #16) — a money
-  endpoint should not reuse a replay path that returns `{}`.
+  (`router.go:248`). Cross-ref `api_plans/STATUS.md` → Landed `[errors]` (bug #22) — the replay path is
+  now byte-faithful; a money endpoint should not reuse a replay path that returns `{}`.
 - `internal/handler/ride.go:360-374` — `TipDriver` is itself a stub, so tips are **not** a money
   source in this plan.
 - `tests/testutil/` — mock repos (invariant).
@@ -50,7 +51,7 @@ status: deferred
 - **No wallet column.** Available balance is `SUM(amount_cents)` over `status='available'` ledger
   rows; the ledger is the single source of truth (no drift, no reconciliation).
 - **Commission defaults to 0** in dev, configurable via `PAYOUT_COMMISSION_RATE`; a per-region /
-  versioned `fare_rates` + payout split is deferred (the `fare.go:75-91` trigger).
+  versioned `fare_rates` + payout split is deferred (the landed `[fare]` card is the trigger).
 - **Withdrawal is a recorded ledger debit, not a bank transfer.** Status `pending` for an out-of-band
   provider/ops step; there is **no** external payout integration in this plan. The API is honest
   about this (`status: "pending"`), so the client shows "requested", not "paid".

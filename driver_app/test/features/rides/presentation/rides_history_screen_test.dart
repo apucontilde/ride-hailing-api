@@ -44,6 +44,7 @@ Ride ride(
   String id, {
   required String status,
   double? fare,
+  String? currency,
   String? completedAt,
   String? cancelledBy,
 }) {
@@ -54,6 +55,7 @@ Ride ride(
     pickupAddress: 'Pick $id',
     dropoffAddress: 'Drop $id',
     totalFare: fare,
+    fareCurrency: currency,
     completedAt: completedAt,
     cancelledBy: cancelledBy,
     requestedAt: '2020-01-05T08:00:00Z',
@@ -161,7 +163,9 @@ void main() {
     await pumpHistory(tester);
 
     expect(find.text('No trips yet'), findsOneWidget);
-    expect(find.text(r'$0.00'), findsOneWidget);
+    // No currency on the loaded fares: the amount renders bare, never a
+    // fabricated `$`.
+    expect(find.text('0.00'), findsOneWidget);
     expect(find.text('0 completed trips'), findsOneWidget);
 
     await tester.pumpWidget(const SizedBox());
@@ -171,17 +175,30 @@ void main() {
     'the earnings card equals the sum of the loaded completed trips',
     (tester) async {
       stubHistory([
-        ride('r1', status: 'completed', fare: 10, completedAt: _thisMonth),
-        ride('r2', status: 'completed', fare: 15.5, completedAt: _thisMonth),
+        ride(
+          'r1',
+          status: 'completed',
+          fare: 10,
+          currency: 'USD',
+          completedAt: _thisMonth,
+        ),
+        ride(
+          'r2',
+          status: 'completed',
+          fare: 15.5,
+          currency: 'USD',
+          completedAt: _thisMonth,
+        ),
         ride('r3', status: 'cancelled', fare: 99, cancelledBy: 'rider'),
       ], total: 3);
 
       await pumpHistory(tester);
 
-      // 10 + 15.5; the cancelled trip paid nothing.
+      // 10 + 15.5; the cancelled trip paid nothing. The aggregate uses the one
+      // currency every loaded fare agrees on, exactly like the tile below it.
       expect(
         tester.widget<Text>(find.byKey(const Key('earnings-month-total'))).data,
-        r'$25.50',
+        'USD25.50',
       );
       expect(find.text('2 completed trips'), findsOneWidget);
       // A cancelled trip is listed, but greyed and without a fare.
@@ -193,27 +210,124 @@ void main() {
     },
   );
 
-  testWidgets('a month breakdown lists the loaded months newest first', (
-    tester,
-  ) async {
+  testWidgets('a completed tile renders the final fare at cents with its currency',
+      (tester) async {
     stubHistory([
-      ride('r1', status: 'completed', fare: 10, completedAt: _thisMonth),
-      ride('r2', status: 'completed', fare: 7, completedAt: _lastMonth),
-    ], total: 2);
+      ride(
+        'r1',
+        status: 'completed',
+        fare: 13.2,
+        currency: 'USD',
+        completedAt: _thisMonth,
+      ),
+    ], total: 1);
 
     await pumpHistory(tester);
 
-    expect(find.text(_thisMonthLabel), findsOneWidget);
-    expect(find.text('1 · \$10.00'), findsOneWidget);
-    expect(find.text(_lastMonthLabel), findsOneWidget);
-    expect(find.text('1 · \$7.00'), findsOneWidget);
-    // No withdraw affordance: that endpoint is a backend stub, so the only
-    // mention of it is the disclaimer.
-    expect(find.textContaining('Withdraw'), findsOneWidget);
-    expect(find.widgetWithText(TextButton, 'Withdraw'), findsNothing);
+    // The final charge from the API, at two decimals and prefixed with the
+    // API's own currency code — never a rounded or invented value. Scoped to
+    // the tile: the earnings card shows the same sum for this one-ride month.
+    expect(
+      find.descendant(
+        of: find.byKey(const Key('ride-tile-r1')),
+        matching: find.text('USD13.20'),
+      ),
+      findsOneWidget,
+    );
+    expect(find.text('USD13.00'), findsNothing);
 
     await tester.pumpWidget(const SizedBox());
   });
+
+    testWidgets('a month breakdown lists the loaded months newest first', (
+      tester,
+    ) async {
+      stubHistory([
+        ride(
+          'r1',
+          status: 'completed',
+          fare: 10,
+          currency: 'USD',
+          completedAt: _thisMonth,
+        ),
+        ride(
+          'r2',
+          status: 'completed',
+          fare: 7,
+          currency: 'USD',
+          completedAt: _lastMonth,
+        ),
+      ], total: 2);
+
+      await pumpHistory(tester);
+
+      expect(find.text(_thisMonthLabel), findsOneWidget);
+      expect(find.text('1 · USD10.00'), findsOneWidget);
+      expect(find.text(_lastMonthLabel), findsOneWidget);
+      expect(find.text('1 · USD7.00'), findsOneWidget);
+      // No withdraw affordance: that endpoint is a backend stub, so the only
+      // mention of it is the disclaimer.
+      expect(find.textContaining('Withdraw'), findsOneWidget);
+      expect(find.widgetWithText(TextButton, 'Withdraw'), findsNothing);
+
+      await tester.pumpWidget(const SizedBox());
+    });
+
+    testWidgets('the aggregate card renders a non-USD region code, never \$', (
+      tester,
+    ) async {
+      stubHistory([
+        ride(
+          'r1',
+          status: 'completed',
+          fare: 8,
+          currency: 'CRC',
+          completedAt: _thisMonth,
+        ),
+      ], total: 1);
+
+      await pumpHistory(tester);
+
+      expect(
+        tester.widget<Text>(find.byKey(const Key('earnings-month-total'))).data,
+        'CRC8.00',
+      );
+      expect(find.text(r'$8.00'), findsNothing);
+
+      await tester.pumpWidget(const SizedBox());
+    });
+
+    testWidgets('mixed-currency fares drop the symbol rather than invent one', (
+      tester,
+    ) async {
+      stubHistory([
+        ride(
+          'r1',
+          status: 'completed',
+          fare: 8,
+          currency: 'USD',
+          completedAt: _thisMonth,
+        ),
+        ride(
+          'r2',
+          status: 'completed',
+          fare: 2,
+          currency: 'CRC',
+          completedAt: _thisMonth,
+        ),
+      ], total: 2);
+
+      await pumpHistory(tester);
+
+      expect(
+        tester.widget<Text>(find.byKey(const Key('earnings-month-total'))).data,
+        '10.00',
+      );
+      expect(find.text('USD10.00'), findsNothing);
+      expect(find.text('CRC10.00'), findsNothing);
+
+      await tester.pumpWidget(const SizedBox());
+    });
 
   testWidgets('only completed rides offer a rating, and only once', (
     tester,

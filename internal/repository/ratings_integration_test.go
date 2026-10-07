@@ -47,7 +47,7 @@ func TestFindRatingsByRaterIntegration(t *testing.T) {
 	repo := NewRideRepo(db)
 
 	// Newest first, scoped to (driver1, driver).
-	page1, total, err := repo.FindRatingsByRater(driver1, "driver", 1, 0)
+	page1, total, err := repo.FindRatingsByRater(driver1, "driver", "", 1, 0)
 	if err != nil {
 		t.Fatalf("FindRatingsByRater page 1: %v", err)
 	}
@@ -62,7 +62,7 @@ func TestFindRatingsByRaterIntegration(t *testing.T) {
 	}
 
 	// Offset advances into the older row.
-	page2, _, err := repo.FindRatingsByRater(driver1, "driver", 1, 1)
+	page2, _, err := repo.FindRatingsByRater(driver1, "driver", "", 1, 1)
 	if err != nil {
 		t.Fatalf("FindRatingsByRater page 2: %v", err)
 	}
@@ -71,7 +71,7 @@ func TestFindRatingsByRaterIntegration(t *testing.T) {
 	}
 
 	// Out-of-range offset is an empty list with the real total, not an error.
-	empty, total, err := repo.FindRatingsByRater(driver1, "driver", 10, 99)
+	empty, total, err := repo.FindRatingsByRater(driver1, "driver", "", 10, 99)
 	if err != nil {
 		t.Fatalf("FindRatingsByRater out-of-range: %v", err)
 	}
@@ -81,7 +81,7 @@ func TestFindRatingsByRaterIntegration(t *testing.T) {
 
 	// Role scoping: driver1's rows are all rater_role='driver', so querying the
 	// same rater_id as a rider returns nothing.
-	noRider, noRiderTotal, err := repo.FindRatingsByRater(driver1, "rider", 10, 0)
+	noRider, noRiderTotal, err := repo.FindRatingsByRater(driver1, "rider", "", 10, 0)
 	if err != nil {
 		t.Fatalf("FindRatingsByRater rider role: %v", err)
 	}
@@ -90,11 +90,48 @@ func TestFindRatingsByRaterIntegration(t *testing.T) {
 	}
 
 	// ...and the rider's own submission is reachable only under rater_role='rider'.
-	riderRows, riderTotal, err := repo.FindRatingsByRater(rider1, "rider", 10, 0)
+	riderRows, riderTotal, err := repo.FindRatingsByRater(rider1, "rider", "", 10, 0)
 	if err != nil {
 		t.Fatalf("FindRatingsByRater rider own: %v", err)
 	}
 	if riderTotal != 1 || len(riderRows) != 1 || riderRows[0].Score != 1 {
 		t.Fatalf("rider1/rider rows=%+v total=%d, want one score-1 row", riderRows, riderTotal)
+	}
+
+	// Per-ride existence filter: a known (rater, ride) pair returns exactly
+	// that rater's row, so a client can resolve rated/unrated for one ride
+	// without walking the paginated list.
+	byRide, byRideTotal, err := repo.FindRatingsByRater(driver1, "driver", ride2, 10, 0)
+	if err != nil {
+		t.Fatalf("FindRatingsByRater by ride: %v", err)
+	}
+	if byRideTotal != 1 || len(byRide) != 1 || byRide[0].RideID != ride2 || byRide[0].Score != 3 {
+		t.Fatalf("driver1/ride2 rows=%+v total=%d, want one ride2/3 row", byRide, byRideTotal)
+	}
+
+	// The same ride under the other rater_role is a different row; scoping by
+	// ride does not leak across roles or raters.
+	byRideRider, byRideRiderTotal, err := repo.FindRatingsByRater(rider1, "rider", ride1, 10, 0)
+	if err != nil {
+		t.Fatalf("FindRatingsByRater by ride rider: %v", err)
+	}
+	if byRideRiderTotal != 1 || len(byRideRider) != 1 || byRideRider[0].Score != 1 {
+		t.Fatalf("rider1/ride1 rows=%+v total=%d, want one score-1 row", byRideRider, byRideRiderTotal)
+	}
+	other, otherTotal, err := repo.FindRatingsByRater(driver2, "driver", ride1, 10, 0)
+	if err != nil {
+		t.Fatalf("FindRatingsByRater by ride other rater: %v", err)
+	}
+	if otherTotal != 0 || len(other) != 0 {
+		t.Fatalf("driver2/ride1 rows=%+v total=%d, want 0 (another rater's row leaked)", other, otherTotal)
+	}
+
+	// An unrated ride is 0 rows, not an error — the definitive "unrated".
+	none, noneTotal, err := repo.FindRatingsByRater(driver1, "driver", "cccccccc-cccc-cccc-cccc-cccccccccccc", 10, 0)
+	if err != nil {
+		t.Fatalf("FindRatingsByRater unrated ride: %v", err)
+	}
+	if noneTotal != 0 || len(none) != 0 {
+		t.Fatalf("driver1/unknown-ride rows=%+v total=%d, want 0", none, noneTotal)
 	}
 }

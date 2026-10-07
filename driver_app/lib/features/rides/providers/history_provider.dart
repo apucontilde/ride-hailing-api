@@ -139,10 +139,17 @@ class EarningsMonth {
   final double total;
   final int trips;
 
+  /// The single ISO-4217 code every completed trip in this month was priced in
+  /// (`USD`, `CRC`, ...), or `null` when the month's rides carry no currency at
+  /// all (booked before region pricing) or disagree on one. `null` renders the
+  /// bare amount rather than inventing a symbol — see [formatMoney].
+  final String? currency;
+
   const EarningsMonth({
     required this.month,
     required this.total,
     required this.trips,
+    this.currency,
   });
 
   /// e.g. `September 2026`. Hand-rolled because `intl` is not a dependency.
@@ -183,12 +190,22 @@ class EarningsSummary {
   /// Newest month first.
   final List<EarningsMonth> months;
 
+  /// The single ISO-4217 code every completed ride was priced in, or `null`
+  /// when the loaded rides carry no currency or span more than one. The
+  /// aggregate is a sum over the loaded rides, so a driver who drove in one
+  /// region gets that region's code on the card; a driver whose loaded fares
+  /// disagree (multi-region) gets no symbol rather than a fabricated one,
+  /// because adding mixed currencies has no single honest unit. Render through
+  /// [formatMoney], which omits the symbol when this is `null`.
+  final String? currency;
+
   const EarningsSummary({
     required this.monthTotal,
     required this.monthTrips,
     required this.loadedTotal,
     required this.completedTrips,
     required this.months,
+    this.currency,
   });
 
   static const empty = EarningsSummary(
@@ -206,6 +223,7 @@ class EarningsSummary {
   factory EarningsSummary.from(List<Ride> rides, {DateTime? now}) {
     final today = (now ?? DateTime.now()).toLocal();
     final accumulators = <String, _MonthAccum>{};
+    final currencies = <String>{};
     var monthTotal = 0.0;
     var monthTrips = 0;
     var loadedTotal = 0.0;
@@ -216,6 +234,9 @@ class EarningsSummary {
       completedTrips++;
       final fare = ride.totalFare ?? 0;
       loadedTotal += fare;
+      final currency = ride.fareCurrency;
+      // A blank code is the pre-region "no currency" case, not a currency.
+      if (currency != null && currency.isNotEmpty) currencies.add(currency);
       final at = _rideDate(ride);
       if (at == null) continue;
       final key = '${at.year}-${at.month}';
@@ -225,6 +246,9 @@ class EarningsSummary {
       );
       accum.total += fare;
       accum.trips++;
+      if (currency != null && currency.isNotEmpty) {
+        accum.currencies.add(currency);
+      }
       if (at.year == today.year && at.month == today.month) {
         monthTotal += fare;
         monthTrips++;
@@ -236,6 +260,7 @@ class EarningsSummary {
               month: a.month,
               total: a.total,
               trips: a.trips,
+              currency: _soleCurrency(a.currencies),
             ))
         .toList()
       ..sort((a, b) => b.month.compareTo(a.month));
@@ -246,8 +271,15 @@ class EarningsSummary {
       loadedTotal: loadedTotal,
       completedTrips: completedTrips,
       months: months,
+      currency: _soleCurrency(currencies),
     );
   }
+
+  /// The one currency when every given code agrees, otherwise `null`. Zero
+  /// codes → `null` (nothing to declare); more than one → `null` (no honest
+  /// single unit to print).
+  static String? _soleCurrency(Set<String> currencies) =>
+      currencies.length == 1 ? currencies.first : null;
 
   /// When the trip happened. `completed_at` is authoritative; `requested_at` is
   /// the fallback for a row the server stamped without it. `null` when neither
@@ -265,6 +297,7 @@ class EarningsSummary {
 
 class _MonthAccum {
   final DateTime month;
+  final Set<String> currencies = <String>{};
   double total = 0;
   int trips = 0;
 
