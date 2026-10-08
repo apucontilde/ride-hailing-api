@@ -46,7 +46,7 @@ What is already in place:
 
 5. Align backend contract usage.
 - Confirm ride creation response shape and make app/docs consistent.
-- Confirm the real response shape for `GET /geo/nearby-drivers`, `GET /estimates/price`, and `GET /places/autocomplete`.
+- Confirm the real response shape for `GET /geo/nearby-drivers`, `POST /estimates/price`, and `GET /places/autocomplete`.
 - Update `POST /rides` docs to match the app payload if the API stays on the current client shape.
 
 6. Update `RIDER_API_GUIDE.md`.

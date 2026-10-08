@@ -25,7 +25,7 @@ This document maps the existing API surface (from `RIDER_API_GUIDE.md`) to the r
 
 | Screen | API Endpoints | User Story | Priority |
 |---|---|---|---|
-| **Ride Request** | `GET /estimates/price`, `POST /rides` | As a user, I want to search for a destination, see the estimated price, and request a ride. | ⚠️ (Partial - Destination selection failing) |
+| **Ride Request** | `POST /estimates/price`, `POST /rides` | As a user, I want to search for a destination, see the estimated price, and request a ride. | ⚠️ (Partial - Destination selection failing) |
 | **Driver Matching** | `GET /geo/nearby-drivers`, WebSocket `ride.offer` | As a user, I want to see that the system is searching for a driver and be notified when one accepts. | ✅ (Implemented) |
 | **Active Ride Tracking** | `GET /rides/current`, `PUT /geo/rider/location`, WebSocket `driver.location` | As a user, I want to see the driver's real-time location and the ETA to my pickup point. | High |
 | **In-Ride Controls** | `GET /rides/:id`, `POST /rides/:id/cancel` | As a user, I want to see ride details and have the ability to cancel the ride if necessary. | High |
@@ -78,7 +78,7 @@ Beyond screens, the following system-level functionalities must be implemented t
 - **Event Dispatcher:** A centralized event bus to route websocket messages (`ride.updated`, `driver.location`) to the appropriate providers.
 
 ### 4. Fare & Estimate Integration
-- **Real-time Price Updates:** Periodically refresh `GET /estimates/price` if the user stays on the request screen for too long (to account for surge pricing).
+- **Real-time Price Updates:** Periodically refresh `POST /estimates/price` (ordered `stops` body) if the user stays on the request screen for too long (to account for surge pricing).
 - **Polyline Rendering:** Use `GET /navigation/route` to draw the actual road path on the map instead of straight lines.
 
 ---
