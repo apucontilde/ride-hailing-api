@@ -407,6 +407,26 @@
 | 23 | ~~`POST /rides` binds the top-level `pickup_*`/`dropoff_*` with `binding:"required"`, so a literal `0` coordinate is rejected `422`; and none of the four top-level coords is range-checked (e.g. `999` is accepted and written to `rides.pickup_*`/`dropoff_*` verbatim), unlike stop coords, which `BuildItinerary` range-checks~~ — **fixed**: pointer fields + `required` distinguish absent from `0`, and all four are range-checked through the shared `service.CoordinateOutOfRange`. See Landed → [rides] | `internal/handler/ride.go:39-42,102-114,140-143`; `internal/service/ride.go:148-157,198`; tests `tests/multi_stop_test.go:639-764` | closed | [rides] |
 | 24 | **Coverage-gate mismatch (surfaced by the Stage-3 audit).** The ingest gate is **0.98** (`cmd/elevtool/main.go:56`, `scripts/import-elevation.sh:23`) but the runtime gate is **0.99** (`defaultElevationMinCoverage`, `internal/config/config.go`). A region that imports at 0.98–0.989 passes ingest, then silently serves **flat routing on the now-default path**; the only signal is a per-graph log line. Before the flip this only meant "elevation off"; now it means the default path is flat for that region. Fix is a shared coverage constant (or aligning the ingest gate up), not a silent tolerance | ingest `cmd/elevtool/main.go:56`, `scripts/import-elevation.sh:23`; runtime `internal/config/config.go:139` (const), gate `internal/repository/navigation_repo.go:439-441` (log) | medium | [elevation] |
 
+## Test-audit follow-ups
+
+> From `tests/AUDIT_REPORT.md` §5. Test-infra debt, not a production bug; no plan file (no design or
+> schedule yet). Verified by reading the fixtures, not by running the tests.
+
+- **DDL fixture duplication across repository integration tests** (`tests/AUDIT_REPORT.md` §5.4) —
+  every `internal/repository/*_integration_test.go` hand-rolls `CREATE TEMP TABLE` DDL that restates
+  the migration schema, so a migration change can leave a fixture silently stale. The `rides` temp
+  table alone is declared four times with different column subsets:
+  `ride_stops_integration_test.go:27` and `fare_snapshot_integration_test.go:32` (full ride schema),
+  `final_fare_integration_test.go:21` (money + `quoted_*`) and `ride_actuals_integration_test.go:21`
+  (actuals only); `routing_regions` recurs at `fare_repo_integration_test.go:57`,
+  `fare_snapshot_integration_test.go:65` and `regions_integration_test.go:83`, and the
+  `road_network_{vertices,edges}_pgr` pair at `pgrouting_repo_integration_test.go:65`,
+  `navigation_elevation_integration_test.go:28`, `regions_integration_test.go:68` and
+  `pgrouting_repo_benchmark_test.go:46`. **Suggested fix:** one shared DDL fixture helper — the
+  existing `connectPG`/`mustExec` (`pgrouting_repo_integration_test.go:22,32`) is its natural home —
+  or derive the temp tables from the migrations. **Requires a live DB** (`make test-integration`) to
+  consolidate, so it is deferred while no DB is available.
+
 ## Preserved records (resolved — not open)
 
 | File | Tag | Why it is kept |
