@@ -661,9 +661,12 @@ void main() {
 
     await tester.tap(find.byKey(const ValueKey<String>('rating-star-5')));
     await tester.pumpAndSettle();
+    await tester.tap(find.byKey(const Key('rate-submit')));
+    await tester.pumpAndSettle();
 
     expect(ratedBodies, hasLength(1));
     expect(ratedBodies.single['score'], 5);
+    expect(ratedBodies.single['comment'], '');
     expect(find.text('Home'), findsOneWidget);
     // A completed trip starts a fresh booking, not the old pickup.
     expect(container.read(pickupMemoryProvider).restoreOnHome, isFalse);
@@ -719,6 +722,8 @@ void main() {
     await tester.pumpAndSettle();
     expect(find.text('Rate your ride'), findsOneWidget);
     await tester.tap(find.byKey(const ValueKey<String>('rating-star-5')));
+    await tester.pump();
+    await tester.tap(find.byKey(const Key('rate-submit')));
     await tester.pumpAndSettle();
     expect(find.text('Home'), findsOneWidget);
 
@@ -745,6 +750,8 @@ void main() {
     expect(find.text('Rate your ride'), findsOneWidget,
         reason: 'FIX-C: the earlier rating must not gate this ride');
     await tester.tap(find.byKey(const ValueKey<String>('rating-star-4')));
+    await tester.pump();
+    await tester.tap(find.byKey(const Key('rate-submit')));
     await tester.pumpAndSettle();
 
     expect(ratedBodies, hasLength(1));

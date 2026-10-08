@@ -227,8 +227,9 @@ void main() {
     Place? destinationResult,
     PickupMemory? pickupMemory,
     List<Map<String, dynamic>>? searchPushes,
+    Size surface = const Size(800, 1600),
   }) async {
-    tester.view.physicalSize = const Size(800, 1600);
+    tester.view.physicalSize = surface;
     tester.view.devicePixelRatio = 1.0;
     addTearDown(tester.view.resetPhysicalSize);
     addTearDown(tester.view.resetDevicePixelRatio);
@@ -1153,5 +1154,156 @@ void main() {
     expect(estimateRequests, hasLength(1));
     expect(estimateRequests.single['dropoff_lat'], destinationPlace.lat);
     expect(estimateRequests.single['dropoff_lng'], destinationPlace.lng);
+  });
+
+  // ---------------------------------------------------------------------------
+  // [home] resizable bottom panel (drag + scroll).
+  // ---------------------------------------------------------------------------
+
+  // A shorter surface than the tall default so the content-driven max is
+  // actually above the initial 0.25 and the panel has room to grow.
+  const resizeSurface = Size(800, 600);
+
+  DraggableScrollableSheet sheetWidget(WidgetTester tester) =>
+      tester.widget<DraggableScrollableSheet>(
+        find.byType(DraggableScrollableSheet),
+      );
+
+  /// The sheet's current size as a fraction of the viewport.
+  double sheetSize(WidgetTester tester) => tester
+      .widget<FractionallySizedBox>(find.descendant(
+        of: find.byType(DraggableScrollableSheet),
+        matching: find.byType(FractionallySizedBox),
+      ))
+      .heightFactor!;
+
+  double mapHeight(WidgetTester tester) =>
+      tester.getSize(find.byKey(const ValueKey<String>('home-map'))).height;
+
+  testWidgets(
+      'scrolling the panel up reaches the content-driven max and shrinks the map',
+      (WidgetTester tester) async {
+    await pumpHome(
+      tester,
+      pickup: pickupPlace,
+      destination: destinationPlace,
+      surface: resizeSurface,
+    );
+
+    final sheet = sheetWidget(tester);
+    expect(sheet.snap, isTrue);
+    expect(sheet.maxChildSize, greaterThan(sheet.initialChildSize));
+    expect(sheet.minChildSize, lessThan(sheet.initialChildSize));
+    expect(sheetSize(tester), closeTo(sheet.initialChildSize, 0.001));
+
+    final beforeMap = mapHeight(tester);
+    expect(beforeMap, closeTo(600 * (1 - sheet.initialChildSize), 1));
+
+    await tester.drag(
+      find.byType(SingleChildScrollView),
+      const Offset(0, -600),
+    );
+    await tester.pumpAndSettle();
+
+    final maxSheet = sheetWidget(tester).maxChildSize;
+    expect(sheetSize(tester), closeTo(maxSheet, 0.01));
+    expect(mapHeight(tester), lessThan(beforeMap));
+    expect(mapHeight(tester), closeTo(600 * (1 - maxSheet), 2));
+  });
+
+  testWidgets(
+      'scrolling the panel down reaches handle-only min and lifts the FAB',
+      (WidgetTester tester) async {
+    await pumpHome(
+      tester,
+      pickup: pickupPlace,
+      destination: destinationPlace,
+      surface: resizeSurface,
+    );
+
+    await tester.drag(
+      find.byType(SingleChildScrollView),
+      const Offset(0, 600),
+    );
+    await tester.pumpAndSettle();
+
+    final minSheet = sheetWidget(tester).minChildSize;
+    expect(sheetSize(tester), closeTo(minSheet, 0.01));
+    expect(mapHeight(tester), closeTo(600 * (1 - minSheet), 2));
+
+    // The my-location control rides above the collapsed panel: its bottom edge
+    // never dips below the panel's top.
+    final fab = tester.getRect(find.byType(FloatingActionButton));
+    final panel = tester.getRect(find.byType(AppBottomSheet));
+    expect(fab.bottom, lessThanOrEqualTo(panel.top));
+  });
+
+  testWidgets('a released drag snaps to the nearest snap point',
+      (WidgetTester tester) async {
+    await pumpHome(
+      tester,
+      pickup: pickupPlace,
+      destination: destinationPlace,
+      surface: resizeSurface,
+    );
+    final sheet = sheetWidget(tester);
+
+    // A small upward drag with no velocity settles back to `initial` (the
+    // offset clears the touch slop so it is a scroll, not a tap on a field).
+    await tester.drag(
+      find.byType(SingleChildScrollView),
+      const Offset(0, -40),
+    );
+    await tester.pumpAndSettle();
+    expect(sheetSize(tester), closeTo(sheet.initialChildSize, 0.01));
+
+    // A drag well past the midpoint snaps up to the content-driven max.
+    await tester.drag(
+      find.byType(SingleChildScrollView),
+      const Offset(0, -500),
+    );
+    await tester.pumpAndSettle();
+    final maxSheet = sheetWidget(tester).maxChildSize;
+    expect(sheetSize(tester), closeTo(maxSheet, 0.01));
+  });
+
+  testWidgets('the keyboard inset pads the sheet without collapsing it',
+      (WidgetTester tester) async {
+    await pumpHome(
+      tester,
+      pickup: pickupPlace,
+      destination: destinationPlace,
+      surface: resizeSurface,
+    );
+    final before = sheetSize(tester);
+
+    tester.view.viewInsets = const FakeViewPadding(bottom: 200);
+    addTearDown(tester.view.resetViewInsets);
+    await tester.pump();
+    await tester.pump();
+
+    // A focused field being lifted does not shrink the panel.
+    expect(sheetSize(tester), closeTo(before, 0.01));
+    await tester.ensureVisible(find.text('Request Trip'));
+    await tester.pump();
+    expect(find.text('Request Trip'), findsOneWidget);
+  });
+
+  testWidgets('the handle is a labeled accessibility resize toggle',
+      (WidgetTester tester) async {
+    await pumpHome(
+      tester,
+      pickup: pickupPlace,
+      destination: destinationPlace,
+      surface: resizeSurface,
+    );
+
+    final semantics = tester
+        .widgetList<Semantics>(find.byType(Semantics))
+        .firstWhere(
+          (widget) =>
+              widget.properties.label == 'Drag to resize booking panel',
+        );
+    expect(semantics.properties.onTap, isNotNull);
   });
 }

@@ -361,10 +361,7 @@ class _ActiveRideScreenState extends ConsumerState<ActiveRideScreen>
       _goHome();
       return;
     }
-    await showDialog<RatingOutcome>(
-      context: context,
-      builder: (dialogContext) => RatingPromptDialog(rideId: rideId),
-    );
+    await showRatingPrompt(context, rideId: rideId);
     _goHome();
   }
 

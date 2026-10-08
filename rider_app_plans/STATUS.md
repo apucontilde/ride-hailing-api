@@ -22,8 +22,10 @@
   `fetchReceipt:147`, `resolveFare:168`, `rateRide:187` (per-ride `RatingOutcome`, a 409
   `UNIQUE(ride_id, rater_role)` maps to `alreadyRated`, not failure); **ride-scoped** `canRate:104`
   (`!isRating && !ratedRideIds.contains(rideId)`; `ratingRideId` scopes the transient outcome so a
-  rated ride no longer suppresses every later ride). `rating_prompt_dialog.dart:27-37` disables all
-  five stars for the in-flight window (double-submit guard over an unhardened backend); completion
+  rated ride no longer suppresses every later ride). The shared `AppRatingSheet` `busy` prop
+  (`shared/lib/src/rating/app_rating_sheet.dart:73,111-113`, passed as `state.isRating` at
+  `rating_prompt_dialog.dart:39`) disables the stars/submit for the in-flight window
+  (double-submit guard over an unhardened backend); completion
   flow `active_ride_screen.dart:207-222`, receipt dialog `:227-286`, manual receipt `:323-333`,
   rating prompt `:297-314`; tests `test/features/home/data/ride_provider_test.dart`.
 - Typed live driver tracking (LC-4) — `features/home/data/driver_tracking_provider.dart`
@@ -117,6 +119,17 @@
   Tests `test/features/home/data/home_route_preview_test.dart` (9),
   `test/features/home/presentation/home_screen_test.dart` (9, incl. the 2 `[multi]` cases), plus
   `is_estimate` parsing in `test/features/home/data/home_provider_test.dart:299-319`.
+
+### [home]
+- Resizable Home booking panel (drag/scroll + snap; the map really shrinks) —
+  `features/home/presentation/home_screen.dart`: session-only `homePanelSizeProvider` `:22`,
+  `DraggableScrollableController` `:71`, `snap: true` + content-driven max capped `0.9`
+  `:356-369,543-551`, the map's layout box shrinks via `AnimatedBuilder` + `SizedBox('home-map')`
+  `:393-404`, `_fitItinerary` bottom padding tracks the panel `:173-181`, FAB lifted above the
+  panel `:517-531`, keyboard inset padding `:566`; the handle is a 48 dp `Semantics`
+  min↔opening-size toggle with **no** `GestureDetector` `:663-689`. `[map]` honesty / single
+  booking path / `StopList` `NeverScrollableScrollPhysics` invariants intact. Tests
+  `test/features/home/presentation/home_screen_test.dart` (+5, `:1183-1308`).
 
 ### [routing]
 - Routing data in the API — landed/superseded by the `api_plans/` series (A* engine
@@ -229,9 +242,22 @@
   **deleted** (no new shim, no app file moved into `shared/`) and its call sites now use the shared
   `AppTextField` (`features/auth/presentation/login_screen.dart:104,114`;
   `register_screen.dart:57,66,75`; `forgot_password_screen.dart:107`).
-- Deliberate deferral (not a bug): `AppMotion` and `AppBadge` are exported/tested but have **zero
-  production consumers yet** — `AppMotion` is consumed by the open `[home]_bottom_panel_resize.md`
-  and `AppBadge` by the driver counterpart (`driver_app_plans/[design]_shared_style_adoption.md`).
+- Deliberate deferral (not a bug): `AppBadge` is exported/tested but has **zero production
+  consumers yet** — it is consumed by the driver counterpart
+  (`driver_app_plans/[design]_shared_style_adoption.md`). `AppMotion` now has a rider consumer
+  (the landed `[home]` resizable panel, `home_screen.dart:349-350,546`).
+
+### [rating]
+- Unified cross-app rating UI (one shared presentation-only widget) — `AppRatingSheet` +
+  `showAppRatingSheet` `shared/lib/src/rating/app_rating_sheet.dart:19,73,109,115,176` (unselected
+  grey / selected amber via `AppColors.muted`/`AppColors.warning` `:119-121`), barrel
+  `shared/lib/ride_hailing_shared.dart:42`; rider `rating_prompt_dialog.dart:14-54` hosts it
+  (`allowComment: true`, `failed`→hold / success+`alreadyRated`→pop `RatingOutcome`), the
+  `active_ride_screen.dart:352-366` gate unchanged, POST body `{score, comment}`
+  `ride_provider.dart:203-206`; driver `rate_sheet.dart:9-70` is a thin wrapper preserving
+  `showRateSheet`, both call sites, `markRated`, the snackbar, the two error strings and the
+  `rate-comment`/`rate-submit`/`rate-skip`/`rate-error` keys. Tests
+  `shared/test/rating/app_rating_sheet_test.dart` (9).
 
 ### [search]
 - Throttled place autocomplete: `placeSearchDebounceProvider` (`Provider<Duration>`, default
@@ -328,6 +354,8 @@ unless they cross a package, in which case they are repo-relative
 | 20 | Destination/stop search still degraded when there is neither a device fix nor a manual pickup: the destination field's `origin == null` guard showed `Could not determine your location` and `_addStop` omitted `lat`/`lng`, so `LocationSearchScreen` short-circuited — **FIXED**: the destination field `onTap` unconditionally pushes with `_searchBias()` (`:465-485`); `_addStop` always supplies `lat`/`lng` (`:173-180`); the biased search never hits the `'Enable location to search nearby'` guard (`location_search_screen.dart:48-52,66-67`); and no location is fabricated — `_routePlan` still requires pickup/fix+destination (`:155-167`) and `canRequest` still requires pickup/fix (`:690-692`) | post-fix `features/home/presentation/home_screen.dart:465-485,173-180,155-167,690-692`; `features/home/presentation/location_search_screen.dart:48-52,66-67`; pre-fix `home_screen.dart:479-488,169-180`; tests `test/features/home/presentation/home_screen_test.dart:1022-1060,1062-1099,1101-1156` | low | [location] |
 | 21 | Residual same-class gap (not covered by #20): **mid-trip change-destination** still omits `lat`/`lng` when `_searchOrigin()` is null, so the generic `/location-search` can still show the blocking `'Enable location to search nearby'` branch from that surface | `features/home/presentation/active_ride_screen.dart:206-213` (`if (origin != null)` guards on `lat`/`lng`) | low | [location]/[trip] |
 | 22 | **Test gap (tracked, not a code defect):** `home_screen_test.dart:1097` `findsNothing('Enable location to search nearby')` is tautological — the test route is a `SizedBox` stub (`:190`), so the string could never render there anyway; the real-screen guarantee rests on `location_search_screen_test.dart:61`, so this assertion should be strengthened later | `test/features/home/presentation/home_screen_test.dart:1097` vs the stub route `:185-193`; real-screen coverage `test/features/home/presentation/location_search_screen_test.dart:61` | low | [location] |
+| 23 | **Test gap (tracked, not a code defect):** the `[home]` handle-toggle test only asserts the handle's `Semantics.onTap` is non-null — it never invokes the toggle, so it would not catch a regression where the tap stops changing the sheet size | `test/features/home/presentation/home_screen_test.dart:1301-1307`; toggle `features/home/presentation/home_screen.dart:342-352,677` | low | [home] |
+| 24 | **Note (test migration, not a defect):** the driver `rate_sheet_test.dart` finder moved from `FilledButton` to a descendant `ElevatedButton` of the `rate-submit` key, because the shared `AppRatingSheet` renders the shared `AppButton` (`ElevatedButton`) instead of the old local `FilledButton`; behavior unchanged | `driver_app/test/features/rides/presentation/rate_sheet_test.dart:35-37`; shared `shared/lib/src/components/app_button.dart:83` | low | [rating] |
 
 ## Open plans
 
@@ -335,8 +363,6 @@ unless they cross a package, in which case they are repo-relative
 | --- | --- | --- | --- |
 | `[auth]_enter_to_login_desktop.md` | auth | `[]` | Web/desktop Enter-to-submit on the rider login password field via a pure `shouldSubmitOnEnter` predicate; mobile unchanged; additive `AuthTextField` keyboard params; no double-submit during an in-flight request. No API/shared change. |
 | `[auth]_web_session_persistence.md` | auth | `[]` | Web cold-start session survival: `checkAuth` recovers via the refresh token and clears only on a definitive 401/400 (transient network/timeout/5xx keeps tokens); `refreshToken` is single-flight and never server-revokes on a transient failure; storage errors never escape `login`/`checkAuth`/`refreshToken`; web `AuthStorage` uses a conditional-import `localStorage` backend. Shared change consumed by both apps (driver counterpart references it). Flutter-only, no API change. |
-| `[rating]_unify_rating_ui.md` | rating | `[]` | Unify the rider `RatingPromptDialog` and driver `RateSheet` into one shared, presentation-only `AppRatingSheet` in `ride_hailing_shared`; preserve the per-app endpoints and `RatingStatus` gates. Corrects the premise: the rider app has one rating form, the driver has one; not two in the rider. Driver adoption needs `driver-planner` coordination. |
-| `[home]_bottom_panel_resize.md` | home | `[]` | Make the Home booking `DraggableScrollableSheet` resizable by drag/scroll with min (handle-only) / initial / max snap points, animated snapping, a real handle, true map resizing, keyboard handling, session-size memory, and accessibility; preserve the `[map]` route-honesty invariants. No API change. |
 | `[nav]_home_destination.md` | nav | `[]` | Home as a first-class shared destination: add `AppNavDestination.home` (`home`/`Home`/`Icons.home_outlined`) and a leading `AppNavSection.home('HOME')` (or first under `account`), prepend it to `buildRiderNavItems()` so the drawer **and** the profile `AppNavLinkCard` can reach `/home`; update the shared/rider parity suites. **CROSS-DOMAIN** — the driver plan adopts the same two shared symbols. No API change. |
 | `[nav]_back_navigation.md` | nav | `[]` | A back affordance on every screen: a shared router-free `AppBackButton` (`onPressed`/`onFallback`, `Icons.arrow_back`; reconciled with the parallel driver plan), a shell-level back on the five non-home sections (recommended `leading → /home`, hamburger to `actions`), explicit backs on `/register`+`/forgot-password` → `/login`, `/location-search` standardization, and arrow/guard decisions for `/driver-matching` + `/active-ride`; `/home`, `/login`, `/splash` stay roots. **CROSS-DOMAIN** — the driver plan adopts `AppBackButton`. No API change. |
 | `[map]_android_tile_access.md` | map | `[]` | **Android-only; LOCKED 2026-10-06.** Add `INTERNET` to the main manifest; OSM-compliance now — drop the spoofed desktop `User-Agent`, send a truthful UA in the exact form `<app>/<version> (+contact: <email>)` (rider `rider_app/…`, driver `driver_app/…`), use `userAgentPackageName` `com.example.rider_app` (finalized by `[release]`); **fully shared** tile factory (`shared/lib/src/map/map_tile_config.dart` + `map_tile_layer.dart` + `map_tile_attribution.dart`; `shared/` gains `flutter_map`) with a nullable provider test seam; render the **shared attribution widget** now; leave the optional `MAP_TILE_API_KEY` seam. UA contact ships as the placeholder `MapTileConfig.defaultContact = 'tiles@example.invalid'` — **must not ship** (Pre-release checklist). Defines the canonical shared contract the driver adopts (co-owned); records the shared-background-service handoff. |
@@ -354,7 +380,9 @@ its `depends_on` when the active map plan lands.
 Earlier wave plans — `[tracking]_ride_detail_receipt_rating.md` (LC-3 + LC-4) and
 `01_[ontrip]_live_route_and_eta.md` — landed, were condensed into Landed above, and were deleted
 (2026-10-03). The most recent open plan, `[multi]_rider_stop_list_ui.md`, landed, was condensed into
-Landed `[multi]` above, and was deleted (2026-10-06).
+Landed `[multi]` above, and was deleted (2026-10-06). `[home]_bottom_panel_resize.md` and
+`[rating]_unify_rating_ui.md` landed, were condensed into Landed `[home]`/`[rating]` above, and
+were deleted (2026-10-08).
 
 ## Invariants
 
@@ -517,3 +545,15 @@ omission is tracked as the new bug #21, and the tautological `home_screen_test.d
 `findsNothing` assertion (the test route is a `SizedBox` stub, so the real-screen guarantee rests on
 `location_search_screen_test.dart:61`) is tracked as the new bug #22. Plan-only / docs change — no
 source or test edited here.
+
+`[rating]` + `[home]` condensation (2026-10-08): static `file:line` evidence verified against the
+post-landing tree; both landing claims adversarially reviewed and **CONFIRMED-LANDED**. Gates
+re-run independently by the reviewer: `melos run analyze` clean; `melos run test` green twice —
+rider **371**, driver **302**, shared **174** (Linux FVM SDK + native Melos 8; `melos` was not
+re-run by this condensation). A one-off shared-suite flake the implementer saw did **not**
+reproduce across the reviewer's 8 runs. Both landed plan files were deleted and their Open-plans
+rows removed; the `[design]` `AppMotion` zero-consumer deferral was updated because `[home]` now
+consumes it. The `[home]` handle-toggle test gap is tracked as bug #23 and the driver
+`rate_sheet_test.dart` `FilledButton`→`ElevatedButton` finder migration as note #24.
+Dangling-`depends_on` check re-run: every remaining rider plan's `depends_on` is `[]` — no
+dangling reference.

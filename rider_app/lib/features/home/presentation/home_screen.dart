@@ -16,6 +16,11 @@ import 'nearby_drivers_chip.dart';
 import 'ride_estimate_sheet.dart';
 import 'stop_list.dart';
 
+/// Session-only memory of the Home booking panel's chosen size (a fraction of
+/// the available height). It is deliberately not persisted: a cold start opens
+/// the panel at its default size again.
+final homePanelSizeProvider = StateProvider<double>((ref) => 0.25);
+
 class HomeScreen extends ConsumerStatefulWidget {
   const HomeScreen({
     super.key,
@@ -62,6 +67,24 @@ class _HomeScreenState extends ConsumerState<HomeScreen>
   final List<Place> _stops = [];
   LocationPingService? _pingService;
 
+  /// Drives the booking panel's snap and the map/FAB relayout.
+  final DraggableScrollableController _sheetController =
+      DraggableScrollableController();
+
+  /// The size the panel opens at, restored from [homePanelSizeProvider].
+  late double _initialSize;
+
+  /// The full height the Home body is laid out in, captured each frame. The
+  /// panel fractions and the map's layout box are relative to it.
+  double _availableHeight = 0;
+
+  /// The content-driven max snap point, measured from the booking form.
+  double _sheetMax = 0.9;
+
+  /// Identifies the booking-form content so [_scheduleSheetMaxMeasure] can read
+  /// its intrinsic height.
+  final GlobalKey _sheetContentKey = GlobalKey();
+
   @override
   void initState() {
     super.initState();
@@ -70,6 +93,8 @@ class _HomeScreenState extends ConsumerState<HomeScreen>
     _destination = widget.initialDestination;
     _pingService = ref.read(locationPingServiceProvider);
     _pingService!.start();
+    _initialSize = ref.read(homePanelSizeProvider);
+    _sheetController.addListener(_onSheetChanged);
 
     // The pickup memory outlives this screen, so read the pending return intent
     // here and restore only the pickup (never destination/stops). Provider
@@ -106,6 +131,9 @@ class _HomeScreenState extends ConsumerState<HomeScreen>
   void dispose() {
     WidgetsBinding.instance.removeObserver(this);
     _pingService?.stop();
+    _sheetController
+      ..removeListener(_onSheetChanged)
+      ..dispose();
     super.dispose();
   }
 
@@ -140,7 +168,17 @@ class _HomeScreenState extends ConsumerState<HomeScreen>
       _mapController.fitCamera(
         CameraFit.bounds(
           bounds: LatLngBounds.fromPoints(points),
-          padding: const EdgeInsets.all(60),
+          // Keep every pin inside the shrinking visible map: the panel covers
+          // the bottom `panelPixels`, so the fit's bottom padding grows with it.
+          padding: EdgeInsets.fromLTRB(
+            60,
+            60,
+            60,
+            _availableHeight <= 0
+                ? 60
+                : (_panelPixels(_availableHeight) + 60)
+                    .clamp(60.0, _availableHeight * 0.7),
+          ),
           maxZoom: 16.0,
         ),
       );
@@ -266,6 +304,70 @@ class _HomeScreenState extends ConsumerState<HomeScreen>
     _fitItinerary();
   }
 
+  /// The panel's current size as a fraction, falling back to the opening size
+  /// before the sheet has attached.
+  double get _panelSize =>
+      _sheetController.isAttached ? _sheetController.size : _initialSize;
+
+  /// The panel's current height in logical pixels.
+  double _panelPixels(double availableHeight) => availableHeight * _panelSize;
+
+  /// The map's layout height: the space the panel does not cover.
+  double _mapHeight(double availableHeight) =>
+      (availableHeight * (1 - _panelSize)).clamp(0.0, availableHeight);
+
+  /// The handle-only minimum: the 48 dp handle touch target plus the sheet's
+  /// top padding, clamped to a sane floor on very tall surfaces.
+  double _minSheetSize(double availableHeight) {
+    if (availableHeight <= 0) return 0.06;
+    const handlePx = 64.0;
+    return (handlePx / availableHeight).clamp(0.06, 0.10);
+  }
+
+  /// Remembers the chosen panel size for the session so returning to Home
+  /// restores it. Deferred to a frame callback: the controller can notify during
+  /// layout, and a provider must not be written mid-build.
+  void _onSheetChanged() {
+    if (!mounted || !_sheetController.isAttached) return;
+    final size = _sheetController.size;
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted) return;
+      ref.read(homePanelSizeProvider.notifier).state = size;
+    });
+  }
+
+  /// The handle's accessible affordance: toggle between the handle-only minimum
+  /// and the opening size. No second drag recognizer exists — resize stays
+  /// list-scroll driven.
+  void _togglePanelSize() {
+    if (!_sheetController.isAttached) return;
+    final minSize = _minSheetSize(_availableHeight);
+    final target =
+        _panelSize > (minSize + _initialSize) / 2 ? minSize : _initialSize;
+    _sheetController.animateTo(
+      target,
+      duration: AppMotion.medium,
+      curve: AppMotion.standard,
+    );
+  }
+
+  /// Measures the booking form (inside a scroll view, so the child gets an
+  /// unbounded main axis) and sets the max snap point to fit it, capped at 0.9.
+  void _scheduleSheetMaxMeasure() {
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted || _availableHeight <= 0) return;
+      final contentContext = _sheetContentKey.currentContext;
+      final box = contentContext?.findRenderObject() as RenderBox?;
+      if (box == null || !box.hasSize) return;
+      final insets = MediaQuery.viewInsetsOf(contentContext!).bottom;
+      final contentHeight = box.size.height + AppSpacing.lg * 2 + insets;
+      final target = (contentHeight / _availableHeight).clamp(_initialSize, 0.9);
+      if ((target - _sheetMax).abs() > 0.001) {
+        setState(() => _sheetMax = target);
+      }
+    });
+  }
+
   @override
   Widget build(BuildContext context) {
     final routePlan = _routePlan();
@@ -279,15 +381,34 @@ class _HomeScreenState extends ConsumerState<HomeScreen>
     // Body-only: the shell (`RiderShell`, wired in `core/router/app_router.dart`)
     // owns the single `Scaffold` + drawer. Keeping no `Scaffold` here is what
     // makes the overlay toggle's `Scaffold.of(context)` open the shell drawer.
-    return Stack(
-      children: [
-        FlutterMap(
-          mapController: _mapController,
-          options: MapOptions(
-            initialCenter: _currentPosition ?? _defaultMapCenter,
-            initialZoom: 15.0,
-          ),
+    return LayoutBuilder(
+      builder: (context, constraints) {
+        _availableHeight = constraints.maxHeight;
+        return Stack(
           children: [
+            // The map's layout box actually shrinks as the panel grows; it is
+            // not merely covered by an overlay. `AnimatedBuilder` sizes a
+            // wrapping `SizedBox` only, so the `FlutterMap` instance stays
+            // stable (it is passed as `child`).
+            Positioned(
+              top: 0,
+              left: 0,
+              right: 0,
+              child: AnimatedBuilder(
+                animation: _sheetController,
+                builder: (context, child) => SizedBox(
+                  key: const ValueKey<String>('home-map'),
+                  height: _mapHeight(_availableHeight),
+                  width: double.infinity,
+                  child: child,
+                ),
+                child: FlutterMap(
+                  mapController: _mapController,
+                  options: MapOptions(
+                    initialCenter: _currentPosition ?? _defaultMapCenter,
+                    initialZoom: 15.0,
+                  ),
+                  children: [
             TileLayer(
               urlTemplate: 'https://tile.openstreetmap.org/{z}/{x}/{y}.png',
               userAgentPackageName: 'com.rider.app',
@@ -371,55 +492,86 @@ class _HomeScreenState extends ConsumerState<HomeScreen>
               ),
           ],
         ),
-        // The inset is owned by the `SafeArea` alone: the old `Positioned`
-        // added `MediaQuery.padding.top` *and* the `SafeArea` added it again,
-        // so the button sat one status-bar height too low.
-        Positioned(
-          top: 8,
-          left: 16,
-          child: SafeArea(
-            child: AppSidebarToggleButton(
-              style: IconButton.styleFrom(
-                backgroundColor: AppColors.surface,
-                elevation: 2,
+      ),
+            ),
+            // The inset is owned by the `SafeArea` alone: the old `Positioned`
+            // added `MediaQuery.padding.top` *and* the `SafeArea` added it again,
+            // so the button sat one status-bar height too low.
+            Positioned(
+              top: 8,
+              left: 16,
+              child: SafeArea(
+                child: AppSidebarToggleButton(
+                  style: IconButton.styleFrom(
+                    backgroundColor: AppColors.surface,
+                    elevation: 2,
+                  ),
+                ),
               ),
             ),
-          ),
-        ),
-        _buildBottomSheet(preview),
-        // The my-location control used to live on home's own `Scaffold`;
-        // body-only means it moves into the map's overlay stack.
-        Positioned(
-          right: 16,
-          bottom: 16,
-          child: FloatingActionButton(
-            onPressed: _initLocation,
-            backgroundColor: AppColors.surface,
-            child: const Icon(Icons.my_location, color: AppColors.info),
-          ),
-        ),
-      ],
+            _buildBottomSheet(preview, _availableHeight),
+            // The my-location control used to live on home's own `Scaffold`;
+            // body-only means it moves into the map's overlay stack. It rides
+            // above the panel's current height so even the collapsed panel
+            // never covers it.
+            Positioned(
+              right: 16,
+              bottom: 16,
+              child: AnimatedBuilder(
+                animation: _sheetController,
+                builder: (context, child) => Transform.translate(
+                  offset: Offset(0, -_panelPixels(_availableHeight)),
+                  child: child,
+                ),
+                child: FloatingActionButton(
+                  onPressed: _initLocation,
+                  backgroundColor: AppColors.surface,
+                  child: const Icon(Icons.my_location, color: AppColors.info),
+                ),
+              ),
+            ),
+          ],
+        );
+      },
     );
   }
 
-  Widget _buildBottomSheet(HomeRoutePreview preview) {
+  Widget _buildBottomSheet(HomeRoutePreview preview, double availableHeight) {
+    final minSize = _minSheetSize(availableHeight);
+    final maxSize = _sheetMax.clamp(_initialSize, 0.9);
+    final initialSize = _initialSize.clamp(minSize, maxSize);
     return DraggableScrollableSheet(
-      initialChildSize: 0.25,
-      minChildSize: 0.1,
-      maxChildSize: 0.4,
+      controller: _sheetController,
+      snap: true,
+      snapAnimationDuration: AppMotion.medium,
+      initialChildSize: initialSize,
+      minChildSize: minSize,
+      maxChildSize: maxSize,
+      // The sheet implies `min` and `max`; `initial` is the middle snap point.
+      snapSizes: [initialSize],
       builder: (context, scrollController) {
+        // The form is measured after layout; its intrinsic height sets the max
+        // snap point so expanding always fits the whole booking form.
+        _scheduleSheetMaxMeasure();
         return AppBottomSheet(
           borderRadius: const BorderRadius.vertical(
             top: Radius.circular(AppRadii.lg),
           ),
-          child: ListView(
+          child: SingleChildScrollView(
             controller: scrollController,
-            padding: const EdgeInsets.all(AppSpacing.lg),
-            children: [
-              const AppSheetHandle(
-                margin: EdgeInsets.only(bottom: AppSpacing.lg),
-              ),
-              _buildNearbyDriversChip(),
+            padding: EdgeInsets.fromLTRB(
+              AppSpacing.lg,
+              AppSpacing.lg,
+              AppSpacing.lg,
+              AppSpacing.lg + MediaQuery.viewInsetsOf(context).bottom,
+            ),
+            child: Column(
+              key: _sheetContentKey,
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.stretch,
+              children: [
+                _buildSheetHandle(),
+                _buildNearbyDriversChip(),
               if (_showLocationNotice) ...[
                 _buildLocationNotice(),
                 const SizedBox(height: 12),
@@ -501,6 +653,35 @@ class _HomeScreenState extends ConsumerState<HomeScreen>
               const SizedBox(height: 8),
               _buildRequestTripButton(),
             ],
+          ),
+        ),
+        );
+      },
+    );
+  }
+
+  /// The panel's drag affordance: a 48 dp touch target with a `Semantics`
+  /// min↔opening-size toggle. There is deliberately no `GestureDetector` —
+  /// resize stays list-scroll driven — so the toggle is exposed to
+  /// accessibility services only.
+  Widget _buildSheetHandle() {
+    return AnimatedBuilder(
+      animation: _sheetController,
+      builder: (context, child) {
+        final minSize = _minSheetSize(_availableHeight);
+        final expanded = _panelSize > (minSize + _initialSize) / 2;
+        return Semantics(
+          label: 'Drag to resize booking panel',
+          value: expanded ? 'Expanded' : 'Collapsed',
+          button: true,
+          onTap: _togglePanelSize,
+          child: const SizedBox(
+            height: 48,
+            child: Center(
+              child: AppSheetHandle(
+                margin: EdgeInsets.only(bottom: AppSpacing.lg),
+              ),
+            ),
           ),
         );
       },
