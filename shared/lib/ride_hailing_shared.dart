@@ -39,6 +39,7 @@ export 'src/navigation/app_sidebar_section.dart';
 export 'src/navigation/app_sidebar_toggle_button.dart';
 export 'src/profile/app_profile_form.dart';
 export 'src/profile/app_profile_header.dart';
+export 'src/rating/app_rating_sheet.dart';
 export 'src/settings/app_settings_row.dart';
 export 'src/settings/app_settings_screen.dart';
 export 'src/settings/app_settings_section.dart';
