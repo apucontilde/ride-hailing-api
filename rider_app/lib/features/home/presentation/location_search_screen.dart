@@ -3,6 +3,7 @@ import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
+import 'package:ride_hailing_shared/ride_hailing_shared.dart';
 import '../data/home_provider.dart';
 import '../model/place.dart';
 
@@ -83,7 +84,7 @@ class _LocationSearchScreenState extends ConsumerState<LocationSearchScreen> {
 
   Widget _buildPlaceTile(Place place) {
     return ListTile(
-      leading: const Icon(Icons.location_on_outlined, color: Colors.grey),
+      leading: const Icon(Icons.location_on_outlined, color: AppColors.muted),
       title: Text(place.name),
       subtitle: Text(place.address, maxLines: 1, overflow: TextOverflow.ellipsis),
       onTap: () => context.pop(place),

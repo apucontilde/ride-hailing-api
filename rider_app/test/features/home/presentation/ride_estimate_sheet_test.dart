@@ -116,11 +116,83 @@ void main() {
     expect(find.text('climb +5.0%'), findsOneWidget);
   });
 
-  testWidgets('shows confirm ride button', (WidgetTester tester) async {
+  testWidgets('confirming pops with the selected vehicle type',
+      (WidgetTester tester) async {
+    String? popped;
+    const sedan = RideEstimate(vehicleType: 'sedan', baseFare: 10.00, total: 10.00);
+    const suv = RideEstimate(vehicleType: 'suv', baseFare: 12.00, total: 12.00);
+
+    await tester.pumpWidget(
+      MaterialApp(
+        home: Scaffold(
+          body: Builder(
+            builder: (context) => Center(
+              child: ElevatedButton(
+                onPressed: () async {
+                  popped = await showModalBottomSheet<String>(
+                    context: context,
+                    isScrollControlled: true,
+                    builder: (_) => const RideEstimateSheet(
+                      estimates: [sedan, suv],
+                      pickupLat: 0,
+                      pickupLng: 0,
+                      dropoffLat: 0,
+                      dropoffLng: 0,
+                    ),
+                  );
+                },
+                child: const Text('Open sheet'),
+              ),
+            ),
+          ),
+        ),
+      ),
+    );
+
+    await tester.tap(find.text('Open sheet'));
+    await tester.pumpAndSettle();
+
+    // Default selection is the first estimate; picking another changes the
+    // value the confirm button pops with.
+    await tester.tap(find.text('SUV'));
+    await tester.pump();
+    await tester.tap(find.text('Confirm Ride'));
+    await tester.pumpAndSettle();
+
+    expect(popped, 'suv');
+  });
+
+  testWidgets('an API estimate is labeled as not fully road-routed',
+      (WidgetTester tester) async {
     await tester.pumpWidget(_sheet([
-      const RideEstimate(vehicleType: 'sedan', baseFare: 10.00, total: 10.00),
+      const RideEstimate(vehicleType: 'sedan', total: 6.50, isEstimate: true),
     ]));
 
-    expect(find.text('Confirm Ride'), findsOneWidget);
+    expect(
+      find.text('Estimated fare — not fully road-routed'),
+      findsOneWidget,
+    );
+  });
+
+  testWidgets('a multi-leg estimate lists the informational legs',
+      (WidgetTester tester) async {
+    await tester.pumpWidget(_sheet([
+      const RideEstimate(
+        vehicleType: 'sedan',
+        total: 6.50,
+        legs: [
+          RideEstimateLeg(distanceM: 1650, durationS: 150),
+          RideEstimateLeg(distanceM: 820, durationS: 75),
+        ],
+      ),
+    ]));
+
+    expect(find.text('Trip legs'), findsOneWidget);
+    expect(find.text('Leg 1'), findsOneWidget);
+    expect(find.text('Leg 2'), findsOneWidget);
+    // 1650 m → 1.65 rounds down to 1.6 at one decimal; half-minutes round away
+    // from zero.
+    expect(find.text('1.6 km · ~3 min'), findsOneWidget);
+    expect(find.text('0.8 km · ~1 min'), findsOneWidget);
   });
 }

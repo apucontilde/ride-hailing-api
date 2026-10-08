@@ -1,4 +1,3 @@
-import 'dart:async';
 import 'package:dio/dio.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_map/flutter_map.dart';
@@ -9,13 +8,15 @@ import 'package:http_mock_adapter/http_mock_adapter.dart';
 import 'package:latlong2/latlong.dart';
 import 'package:rider_app/core/api/api_client.dart';
 import 'package:rider_app/core/auth/auth_provider.dart';
-import 'package:rider_app/core/network/websocket_service.dart';
 import 'package:rider_app/features/home/data/driver_tracking_provider.dart';
 import 'package:rider_app/features/home/data/location_ping_service.dart';
+import 'package:rider_app/features/home/data/pickup_memory_provider.dart';
 import 'package:rider_app/features/home/data/ride_status_provider.dart';
 import 'package:rider_app/features/home/data/trip_route_provider.dart';
 import 'package:rider_app/features/home/model/place.dart';
 import 'package:rider_app/features/home/presentation/active_ride_screen.dart';
+
+import '../../../support/fake_websocket_service.dart';
 
 /// Records only the lifecycle the screen drives; the real throttled stream and
 /// its geolocator platform channel are exercised in the service unit tests.
@@ -40,18 +41,6 @@ class FakeLocationPingService extends LocationPingService {
 
   @override
   bool get isActive => _active;
-}
-
-class FakeWebSocketService extends WebSocketService {
-  final StreamController<Map<String, dynamic>> _controller =
-      StreamController<Map<String, dynamic>>.broadcast();
-
-  @override
-  Stream<Map<String, dynamic>> get events => _controller.stream;
-
-  void emit(Map<String, dynamic> event) => _controller.add(event);
-
-  void disposeController() => _controller.close();
 }
 
 Map<String, dynamic> acceptedEvent({
@@ -177,6 +166,8 @@ void main() {
   late Map<String, dynamic> rideResponse;
   /// Every `GET /navigation/route` query, in order, to prove re-requests.
   late List<Map<String, dynamic>> routeRequests;
+  /// The scope the screen runs in, so a test can read the pickup-return intent.
+  late ProviderContainer container;
 
   /// Built **inside** each test body, not in `setUp`, and that is load-bearing:
   /// a broadcast `StreamController` captures `Zone.current` at `listen()`, and
@@ -292,7 +283,7 @@ void main() {
           ),
       ],
     );
-    return ProviderScope(
+    container = ProviderContainer(
       overrides: [
         apiClientProvider.overrideWithValue(apiClient),
         rideStatusProvider.overrideWith((ref) => rideNotifier),
@@ -310,6 +301,10 @@ void main() {
         }),
         if (ping != null) locationPingServiceProvider.overrideWithValue(ping),
       ],
+    );
+    addTearDown(container.dispose);
+    return UncontrolledProviderScope(
+      container: container,
       child: MaterialApp.router(routerConfig: router),
     );
   }
@@ -428,6 +423,8 @@ void main() {
 
     expect(find.text('Ride cancelled successfully'), findsOneWidget);
     expect(find.text('Home'), findsOneWidget);
+    // A cancel keeps the pickup so the rider can retry immediately.
+    expect(container.read(pickupMemoryProvider).restoreOnHome, isTrue);
 
     await settleAndDispose(tester);
   });
@@ -465,6 +462,8 @@ void main() {
     }, settle: true);
 
     expect(find.text('Home'), findsOneWidget);
+    // A driver-side cancel is a cancel: keep the pickup for a retry.
+    expect(container.read(pickupMemoryProvider).restoreOnHome, isTrue);
 
     await settleAndDispose(tester);
   });
@@ -666,6 +665,8 @@ void main() {
     expect(ratedBodies, hasLength(1));
     expect(ratedBodies.single['score'], 5);
     expect(find.text('Home'), findsOneWidget);
+    // A completed trip starts a fresh booking, not the old pickup.
+    expect(container.read(pickupMemoryProvider).restoreOnHome, isFalse);
 
     await settleAndDispose(tester);
   });

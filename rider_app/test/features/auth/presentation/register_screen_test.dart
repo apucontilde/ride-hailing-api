@@ -98,11 +98,11 @@ void main() {
     await tester.pump();
 
     await tester.enterText(
-        find.byType(TextFormField).at(0), 'new@test.com');
+        find.widgetWithText(TextFormField, 'Email'), 'new@test.com');
     await tester.enterText(
-        find.byType(TextFormField).at(1), '+1234567890');
+        find.widgetWithText(TextFormField, 'Phone'), '+1234567890');
     await tester.enterText(
-        find.byType(TextFormField).at(2), 'Password1');
+        find.widgetWithText(TextFormField, 'Password'), 'Password1');
     await tester.tap(find.widgetWithText(ElevatedButton, 'Sign Up'));
     await tester.pumpAndSettle();
 
@@ -121,11 +121,11 @@ void main() {
     await tester.pump();
 
     await tester.enterText(
-        find.byType(TextFormField).at(0), 'new@test.com');
+        find.widgetWithText(TextFormField, 'Email'), 'new@test.com');
     await tester.enterText(
-        find.byType(TextFormField).at(1), '+1234567890');
+        find.widgetWithText(TextFormField, 'Phone'), '+1234567890');
     await tester.enterText(
-        find.byType(TextFormField).at(2), 'Password1');
+        find.widgetWithText(TextFormField, 'Password'), 'Password1');
     await tester.tap(find.widgetWithText(ElevatedButton, 'Sign Up'));
     await tester.pump();
 
@@ -145,6 +145,9 @@ void main() {
       },
     ));
     await tester.pumpAndSettle();
+
+    // Registration stores the session and lands on the authenticated home route.
+    expect(find.text('Home'), findsOneWidget);
   });
 
   testWidgets('navigates to login screen', (WidgetTester tester) async {

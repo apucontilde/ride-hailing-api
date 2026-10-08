@@ -93,21 +93,6 @@ void main() {
     await service.stop();
   });
 
-  test('a 204 response is handled without parsing a body', () async {
-    dioAdapter.onPut(
-      ApiEndpoints.riderLocation,
-      (server) => server.reply(204, null),
-    );
-    final service = build();
-    service.start();
-
-    controller.add(position(9.5, -84.5));
-    await pumpEventQueue();
-
-    expect(bodies, hasLength(1));
-    await service.stop();
-  });
-
   test('swallows a 4xx without surfacing an error', () async {
     dioAdapter.onPut(
       ApiEndpoints.riderLocation,

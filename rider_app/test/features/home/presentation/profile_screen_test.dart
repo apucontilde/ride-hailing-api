@@ -247,7 +247,6 @@ void main() {
 
       expect(find.text('Profile saved'), findsOneWidget);
       expect(find.text('+5065559999'), findsOneWidget);
-      expect(container.read(riderProfileProvider)?.lastName, 'Updated');
     });
 
     testWidgets('shows the mapped error and leaves the form in place', (

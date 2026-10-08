@@ -1,25 +1,13 @@
-import 'dart:async';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:http_mock_adapter/http_mock_adapter.dart';
 import 'package:rider_app/core/api/api_client.dart';
 import 'package:rider_app/core/auth/auth_provider.dart';
-import 'package:rider_app/core/network/websocket_service.dart';
 import 'package:rider_app/features/home/data/driver_tracking_provider.dart';
 import 'package:rider_app/features/home/data/ride_status_provider.dart';
 import 'package:rider_app/features/home/model/driver.dart';
 
-/// The tracker and the ride-state merge only need the event stream, never a
-/// live socket.
-class FakeWebSocketService extends WebSocketService {
-  final StreamController<Map<String, dynamic>> _controller =
-      StreamController<Map<String, dynamic>>.broadcast();
-
-  @override
-  Stream<Map<String, dynamic>> get events => _controller.stream;
-
-  void disposeController() => _controller.close();
-}
+import '../../../support/fake_websocket_service.dart';
 
 void main() {
   group('DriverTrackingNotifier', () {
@@ -122,16 +110,15 @@ void main() {
       expect(tracker.state.httpPolls, 0);
     });
 
-    test('noteWsLocation publishes the fix and restarts the silence window',
-        () async {
-      expect(tracker.silentTicks, 0);
-
+    // Narrows a prior over-promise ("restarts the silence window"): the reset
+    // cannot be observed from a zero baseline, so this pins the part that is
+    // actually exercised — the WS fix is published without an HTTP poll.
+    test('noteWsLocation publishes the fix without an HTTP poll', () async {
       tracker.noteWsLocation(
         const DriverLocation(driverId: 'driver-1', lat: 1, lng: 2),
       );
 
       expect(tracker.state.location!.lat, 1);
-      expect(tracker.silentTicks, 0);
       expect(tracker.state.httpPolls, 0);
     });
 

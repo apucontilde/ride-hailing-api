@@ -23,16 +23,95 @@ final nearbyDriversProvider =
       .toList();
 });
 
-final priceEstimatesProvider = FutureProvider.family<List<RideEstimate>, Map<String, double>>((ref, coords) async {
+/// One ordered intermediate stop of a price-estimate request. Held **by value**
+/// so the [priceEstimatesProvider] family key is stable across rebuilds: a
+/// `Place` compares by identity and would re-fetch the estimate every frame.
+class EstimateStop {
+  final double lat;
+  final double lng;
+  final String? address;
+
+  const EstimateStop({required this.lat, required this.lng, this.address});
+
+  @override
+  bool operator ==(Object other) =>
+      other is EstimateStop &&
+      other.lat == lat &&
+      other.lng == lng &&
+      other.address == address;
+
+  @override
+  int get hashCode => Object.hash(lat, lng, address);
+}
+
+/// The `POST /estimates/price` request: the pickup/dropoff pair plus the same
+/// ordered intermediate stops the create-ride body takes. Array position **is**
+/// the visit order; an empty list is omitted so the single-stop body is
+/// byte-for-byte the pre-waypoint payload.
+class PriceEstimateArgs {
+  final double pickupLat;
+  final double pickupLng;
+  final double dropoffLat;
+  final double dropoffLng;
+  final List<EstimateStop> stops;
+
+  const PriceEstimateArgs({
+    required this.pickupLat,
+    required this.pickupLng,
+    required this.dropoffLat,
+    required this.dropoffLng,
+    this.stops = const [],
+  });
+
+  @override
+  bool operator ==(Object other) {
+    if (other is! PriceEstimateArgs) return false;
+    if (other.pickupLat != pickupLat ||
+        other.pickupLng != pickupLng ||
+        other.dropoffLat != dropoffLat ||
+        other.dropoffLng != dropoffLng ||
+        other.stops.length != stops.length) {
+      return false;
+    }
+    for (var i = 0; i < stops.length; i++) {
+      if (other.stops[i] != stops[i]) return false;
+    }
+    return true;
+  }
+
+  @override
+  int get hashCode => Object.hash(
+        pickupLat,
+        pickupLng,
+        dropoffLat,
+        dropoffLng,
+        Object.hashAll(stops),
+      );
+}
+
+/// The waypoint-aware price estimate. `[fare]_waypoint_fare` hard-cut the
+/// endpoint from `GET` to `POST` (the `GET` route is removed with no alias), so
+/// this must use `POST` with a JSON body. The ordered `stops` are a top-level
+/// sibling of the pickup/dropoff fields, mirroring `createRide` below; the API
+/// prices the whole itinerary and returns the same `estimates` envelope.
+final priceEstimatesProvider =
+    FutureProvider.family<List<RideEstimate>, PriceEstimateArgs>((ref, args) async {
   final apiClient = ref.read(apiClientProvider);
-  final response = await apiClient.dio.get(
+  final body = <String, dynamic>{
+    'pickup_lat': args.pickupLat,
+    'pickup_lng': args.pickupLng,
+    'dropoff_lat': args.dropoffLat,
+    'dropoff_lng': args.dropoffLng,
+  };
+  if (args.stops.isNotEmpty) {
+    body['stops'] = [
+      for (final stop in args.stops)
+        {'lat': stop.lat, 'lng': stop.lng, 'address': stop.address},
+    ];
+  }
+  final response = await apiClient.dio.post(
     ApiEndpoints.priceEstimate,
-    queryParameters: {
-      'pickup_lat': coords['pickup_lat'],
-      'pickup_lng': coords['pickup_lng'],
-      'dropoff_lat': coords['dropoff_lat'],
-      'dropoff_lng': coords['dropoff_lng'],
-    },
+    data: body,
   );
   final data = (response.data as Map<String, dynamic>)['estimates'] as List<dynamic>? ?? [];
   return data.map((json) => RideEstimate.fromJson(json as Map<String, dynamic>)).toList();

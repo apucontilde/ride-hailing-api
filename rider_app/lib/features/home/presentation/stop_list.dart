@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'package:ride_hailing_shared/ride_hailing_shared.dart';
 
 import '../model/place.dart';
 
@@ -56,7 +57,7 @@ class StopList extends StatelessWidget {
             itemBuilder: (context, index) {
               final stop = stops[index];
               final label = stop.name.isNotEmpty ? stop.name : stop.address;
-              return ListTile(
+              return AppListTile(
                 key: ObjectKey(stop),
                 dense: true,
                 contentPadding: EdgeInsets.zero,
@@ -79,11 +80,12 @@ class StopList extends StatelessWidget {
           ),
         Align(
           alignment: Alignment.centerLeft,
-          child: TextButton.icon(
+          child: AppButton(
             key: const ValueKey<String>('add-stop-button'),
+            label: 'Add stop',
+            variant: AppButtonVariant.text,
+            icon: Icons.add,
             onPressed: onAdd,
-            icon: const Icon(Icons.add, size: 18),
-            label: const Text('Add stop'),
           ),
         ),
       ],

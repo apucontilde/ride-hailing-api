@@ -1,4 +1,3 @@
-import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
@@ -6,10 +5,12 @@ import 'package:go_router/go_router.dart';
 import 'package:http_mock_adapter/http_mock_adapter.dart';
 import 'package:rider_app/core/api/api_client.dart';
 import 'package:rider_app/core/auth/auth_provider.dart';
-import 'package:rider_app/core/network/websocket_service.dart';
 import 'package:rider_app/features/home/data/location_ping_service.dart';
+import 'package:rider_app/features/home/data/pickup_memory_provider.dart';
 import 'package:rider_app/features/home/data/ride_status_provider.dart';
 import 'package:rider_app/features/home/presentation/driver_matching_screen.dart';
+
+import '../../../support/fake_websocket_service.dart';
 
 /// Records only the lifecycle the screen drives; the service's own throttling
 /// and lease accounting live in `location_ping_service_test.dart`.
@@ -36,23 +37,12 @@ class FakeLocationPingService extends LocationPingService {
   bool get isActive => _active;
 }
 
-class FakeWebSocketService extends WebSocketService {
-  final StreamController<Map<String, dynamic>> _controller =
-      StreamController<Map<String, dynamic>>.broadcast();
-
-  @override
-  Stream<Map<String, dynamic>> get events => _controller.stream;
-
-  void emit(Map<String, dynamic> event) => _controller.add(event);
-
-  void disposeController() => _controller.close();
-}
-
 void main() {
   late FakeWebSocketService ws;
   late RideStatusNotifier rideNotifier;
   late ApiClient apiClient;
   late DioAdapter dioAdapter;
+  late ProviderContainer container;
 
   setUp(() {
     ws = FakeWebSocketService();
@@ -89,12 +79,16 @@ void main() {
         ),
       ],
     );
-    return ProviderScope(
+    container = ProviderContainer(
       overrides: [
         apiClientProvider.overrideWithValue(apiClient),
         rideStatusProvider.overrideWith((ref) => rideNotifier),
         if (ping != null) locationPingServiceProvider.overrideWithValue(ping),
       ],
+    );
+    addTearDown(container.dispose);
+    return UncontrolledProviderScope(
+      container: container,
       child: MaterialApp.router(routerConfig: router),
     );
   }
@@ -138,8 +132,36 @@ void main() {
 
     expect(find.text('Ride cancelled successfully'), findsOneWidget);
     expect(find.text('Home'), findsOneWidget);
+    // A cancel keeps the pickup for an immediate retry.
+    expect(container.read(pickupMemoryProvider).restoreOnHome, isTrue);
 
     await tester.pump(const Duration(seconds: 5));
+    await tester.pump(const Duration(milliseconds: 1));
+  });
+
+  testWidgets('no-driver Back to Home keeps the pickup for a retry',
+      (WidgetTester tester) async {
+    dioAdapter.onGet(
+      '/api/v1/rides/current',
+      (server) => server.reply(200, {
+        'ride': {'id': 'ride-1', 'status': 'no_driver_available'},
+      }),
+    );
+    await makeMatching(tester);
+
+    await tester.pumpWidget(buildRouter());
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 10));
+
+    await tester.tap(find.text('Back to Home'));
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 10));
+
+    expect(find.text('Home'), findsOneWidget);
+    expect(container.read(pickupMemoryProvider).restoreOnHome, isTrue);
+
+    await tester.pump(const Duration(seconds: 5));
+    await tester.pumpWidget(const SizedBox());
     await tester.pump(const Duration(milliseconds: 1));
   });
 
@@ -180,6 +202,21 @@ void main() {
     await tester.pump();
     await tester.pump(const Duration(milliseconds: 10));
 
+    expect(find.text('No drivers found right now. Please try again.'),
+        findsOneWidget);
+
+    // The same no-driver signal arriving again (twice) must not stack two
+    // toasts: the messenger renders exactly one at a time.
+    for (var i = 0; i < 2; i++) {
+      ws.emit({
+        'type': 'ride.updated',
+        'data': {'ride_id': 'ride-1', 'status': 'no_driver_available'},
+      });
+    }
+    await tester.pump();
+    await tester.pump();
+
+    expect(find.byType(SnackBar), findsOneWidget);
     expect(find.text('No drivers found right now. Please try again.'),
         findsOneWidget);
 

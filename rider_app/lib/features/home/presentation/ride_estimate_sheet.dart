@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'package:ride_hailing_shared/ride_hailing_shared.dart';
 import '../model/ride_estimate.dart';
 
 class RideEstimateSheet extends StatefulWidget {
@@ -38,29 +39,28 @@ class _RideEstimateSheetState extends State<RideEstimateSheet> {
       mainAxisSize: MainAxisSize.min,
       children: [
         Padding(
-          padding: const EdgeInsets.fromLTRB(16, 16, 16, 8),
-          child: Row(
-            children: [
-              Text(
-                'Choose a ride',
-                style: Theme.of(context).textTheme.titleMedium,
-              ),
-              const Spacer(),
-              TextButton(
-                onPressed: () => Navigator.of(context).pop(),
-                child: const Text('Cancel'),
-              ),
-            ],
+          padding: const EdgeInsets.fromLTRB(
+            AppSpacing.lg,
+            AppSpacing.lg,
+            AppSpacing.lg,
+            AppSpacing.sm,
+          ),
+          child: AppSectionHeader(
+            title: 'Choose a ride',
+            trailing: TextButton(
+              onPressed: () => Navigator.of(context).pop(),
+              child: const Text('Cancel'),
+            ),
           ),
         ),
         ...widget.estimates.map(_buildOption),
         Padding(
-          padding: const EdgeInsets.all(16),
-          child: ElevatedButton(
+          padding: const EdgeInsets.all(AppSpacing.lg),
+          child: AppButton(
+            label: 'Confirm Ride',
             onPressed: _selectedType != null
                 ? () => Navigator.of(context).pop(_selectedType)
                 : null,
-            child: const Text('Confirm Ride'),
           ),
         ),
       ],
@@ -72,13 +72,18 @@ class _RideEstimateSheetState extends State<RideEstimateSheet> {
     return InkWell(
       onTap: () => setState(() => _selectedType = estimate.vehicleType),
       child: Container(
-        margin: const EdgeInsets.symmetric(horizontal: 16, vertical: 4),
-        padding: const EdgeInsets.all(12),
+        margin: const EdgeInsets.symmetric(
+          horizontal: AppSpacing.lg,
+          vertical: AppSpacing.xs,
+        ),
+        padding: const EdgeInsets.all(AppSpacing.md),
         decoration: BoxDecoration(
-          color: selected ? Colors.blue.withValues(alpha: 0.1) : Colors.grey[50],
-          borderRadius: BorderRadius.circular(12),
+          color: selected
+              ? AppColors.primary.withValues(alpha: 0.1)
+              : AppColors.surfaceLow,
+          borderRadius: BorderRadius.circular(AppRadii.md),
           border: Border.all(
-            color: selected ? Colors.blue : Colors.grey[300]!,
+            color: selected ? AppColors.primary : AppColors.outline,
             width: selected ? 2 : 1,
           ),
         ),
@@ -87,30 +92,38 @@ class _RideEstimateSheetState extends State<RideEstimateSheet> {
           children: [
             Row(
               children: [
-                Icon(Icons.directions_car,
-                    size: 40, color: selected ? Colors.blue : Colors.grey),
-                const SizedBox(width: 12),
+                Icon(
+                  Icons.directions_car,
+                  size: 40,
+                  color: selected ? AppColors.primary : AppColors.muted,
+                ),
+                const SizedBox(width: AppSpacing.md),
                 Expanded(
                   child: Column(
                     crossAxisAlignment: CrossAxisAlignment.start,
                     children: [
                       Text(
                         estimate.displayName,
-                        style: const TextStyle(
-                            fontWeight: FontWeight.w600, fontSize: 16),
+                        style: AppTextStyles.subtitle,
                       ),
                       Text(
                         '${estimate.capacity} passengers',
-                        style: TextStyle(color: Colors.grey[600], fontSize: 13),
+                        style: AppTextStyles.label.copyWith(
+                          color: AppColors.muted,
+                          fontWeight: FontWeight.w400,
+                        ),
                       ),
+                      if (estimate.isEstimate)
+                        Text(
+                          'Estimated fare — not fully road-routed',
+                          style: AppTextStyles.caption.copyWith(
+                            color: AppColors.warningForeground,
+                          ),
+                        ),
                     ],
                   ),
                 ),
-                Text(
-                  estimate.formattedTotal,
-                  style: const TextStyle(
-                      fontWeight: FontWeight.w600, fontSize: 16),
-                ),
+                Text(estimate.formattedTotal, style: AppTextStyles.fare),
               ],
             ),
             if (selected) ...[
@@ -145,19 +158,41 @@ class _RideEstimateSheetState extends State<RideEstimateSheet> {
                   '× supply ${estimate.supplyMultiplier.toStringAsFixed(2)}'
               : null,
         ),
+        if (estimate.hasMultipleLegs) ...[
+          const Divider(height: 20),
+          Text(
+            'Trip legs',
+            style: AppTextStyles.caption.copyWith(
+              fontWeight: FontWeight.w600,
+              color: AppColors.mutedStrong,
+            ),
+          ),
+          for (var i = 0; i < estimate.legs.length; i++)
+            _fareRow('Leg ${i + 1}', _formatLeg(estimate.legs[i])),
+        ],
         const Divider(height: 20),
         _fareRow('Total', estimate.formattedTotal, emphasise: true),
       ],
     );
   }
 
+  /// Informational per-leg distance/duration only. The API's per-leg *fares*
+  /// exclude the once-per-trip base and multiplier, so rendering them as money
+  /// would invite the rider to sum them; the total stays authoritative.
+  String _formatLeg(RideEstimateLeg leg) {
+    final km = (leg.distanceM / 1000).toStringAsFixed(1);
+    final minutes = (leg.durationS / 60).round();
+    return '$km km · ~$minutes min';
+  }
+
   Widget _fareRow(String label, String value,
       {String? note, bool emphasise = false}) {
-    final style = TextStyle(
-      fontSize: emphasise ? 15 : 13,
-      fontWeight: emphasise ? FontWeight.bold : FontWeight.normal,
-      color: emphasise ? null : Colors.grey[700],
-    );
+    final style = emphasise
+        ? AppTextStyles.fare.copyWith(fontSize: 15)
+        : AppTextStyles.label.copyWith(
+            fontWeight: FontWeight.w400,
+            color: AppColors.mutedStrong,
+          );
     return Padding(
       padding: const EdgeInsets.symmetric(vertical: 2),
       child: Row(
@@ -171,7 +206,10 @@ class _RideEstimateSheetState extends State<RideEstimateSheet> {
                 if (note != null)
                   Text(
                     note,
-                    style: TextStyle(fontSize: 11, color: Colors.grey[600]),
+                    style: AppTextStyles.caption.copyWith(
+                      fontSize: 11,
+                      color: AppColors.muted,
+                    ),
                   ),
               ],
             ),

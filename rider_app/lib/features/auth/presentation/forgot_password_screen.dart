@@ -2,10 +2,8 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
 import 'package:dio/dio.dart';
-import '../../../core/api/api_exceptions.dart';
+import 'package:ride_hailing_shared/ride_hailing_shared.dart';
 import '../../../core/auth/auth_provider.dart';
-import '../../../core/utils/validators.dart';
-import 'widgets/auth_text_field.dart';
 
 class ForgotPasswordScreen extends ConsumerStatefulWidget {
   const ForgotPasswordScreen({super.key});
@@ -75,7 +73,7 @@ class _ForgotPasswordScreenState extends ConsumerState<ForgotPasswordScreen> {
                 mainAxisAlignment: MainAxisAlignment.center,
                 children: [
                   const Icon(Icons.check_circle_outline,
-                      size: 64, color: Colors.green),
+                      size: 64, color: AppColors.success),
                   const SizedBox(height: 16),
                   Text(
                     'Check your email',
@@ -106,7 +104,7 @@ class _ForgotPasswordScreenState extends ConsumerState<ForgotPasswordScreen> {
                       textAlign: TextAlign.center,
                     ),
                     const SizedBox(height: 24),
-                    AuthTextField(
+                    AppTextField(
                       controller: _emailController,
                       label: 'Email',
                       hint: 'Enter your email',
@@ -118,21 +116,16 @@ class _ForgotPasswordScreenState extends ConsumerState<ForgotPasswordScreen> {
                       const SizedBox(height: 12),
                       Text(
                         _error!,
-                        style: TextStyle(
+                        style: AppTextStyles.body.copyWith(
                           color: Theme.of(context).colorScheme.error,
                         ),
                       ),
                     ],
                     const SizedBox(height: 24),
-                    ElevatedButton(
-                      onPressed: _isLoading ? null : _submit,
-                      child: _isLoading
-                          ? const SizedBox(
-                              height: 20,
-                              width: 20,
-                              child: CircularProgressIndicator(strokeWidth: 2),
-                            )
-                          : const Text('Send Reset Link'),
+                    AppButton(
+                      label: 'Send Reset Link',
+                      onPressed: _submit,
+                      isLoading: _isLoading,
                     ),
                     const SizedBox(height: 16),
                     TextButton(

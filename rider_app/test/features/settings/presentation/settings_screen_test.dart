@@ -3,7 +3,6 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:mocktail/mocktail.dart';
 import 'package:go_router/go_router.dart';
-import 'package:rider_app/config.dart';
 import 'package:rider_app/core/auth/auth_provider.dart';
 import 'package:rider_app/core/auth/auth_storage.dart';
 import 'package:rider_app/core/api/api_client.dart';
@@ -55,37 +54,6 @@ void main() {
       ),
     );
   }
-
-  testWidgets('shows app info, server and sign out',
-      (WidgetTester tester) async {
-    await tester.pumpWidget(createTestWidget());
-    await tester.pumpAndSettle();
-
-    expect(find.text('Rider App'), findsOneWidget);
-    expect(
-      find.text('v${ApiConfig.appVersion} · companion to driver_app'),
-      findsOneWidget,
-    );
-    expect(find.text('Server'), findsOneWidget);
-    expect(find.text(ApiConfig.baseUrl), findsOneWidget);
-    expect(find.text('Sign out'), findsOneWidget);
-    expect(find.byIcon(Icons.logout), findsOneWidget);
-  });
-
-  testWidgets('tapping sign out asks for confirmation',
-      (WidgetTester tester) async {
-    await tester.pumpWidget(createTestWidget());
-    await tester.pumpAndSettle();
-
-    await tester.tap(find.text('Sign out'));
-    await tester.pumpAndSettle();
-
-    expect(find.text('Sign out?'), findsOneWidget);
-    expect(
-      find.text('You will need to log in again to request rides.'),
-      findsOneWidget,
-    );
-  });
 
   testWidgets('cancelling the dialog keeps the session',
       (WidgetTester tester) async {

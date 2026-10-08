@@ -1,10 +1,12 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
+import 'package:ride_hailing_shared/ride_hailing_shared.dart';
 import '../data/ride_status_provider.dart';
 import '../data/current_ride_provider.dart';
 import '../data/home_provider.dart';
 import '../data/location_ping_service.dart';
+import '../data/trip_return.dart';
 
 class DriverMatchingScreen extends ConsumerStatefulWidget {
   final VoidCallback? onCancelled;
@@ -55,10 +57,12 @@ class _DriverMatchingScreenState extends ConsumerState<DriverMatchingScreen>
     super.dispose();
   }
 
+  /// Every path out of matching (cancel, driver cancel, `no_driver_available`,
+  /// close) lands on Home and keeps the rider's pickup for an immediate retry.
   void _goHome() {
     if (_navigating) return;
     _navigating = true;
-    _currentRideNotifier.stopPolling();
+    markTripReturn(ref, restorePickup: true);
     context.go('/home');
   }
 
@@ -160,19 +164,20 @@ class _DriverMatchingScreenState extends ConsumerState<DriverMatchingScreen>
         const SizedBox(height: 24),
         Text(
           'Finding your driver...',
-          style: Theme.of(context).textTheme.titleLarge,
+          style: AppTextStyles.title,
         ),
         const SizedBox(height: 8),
         Text(
           pollState.stillSearching
               ? 'No driver nearby yet, still searching'
               : 'Searching for nearby drivers',
-          style: TextStyle(color: Colors.grey[600]),
+          style: AppTextStyles.body.copyWith(color: AppColors.muted),
         ),
         const SizedBox(height: 24),
-        TextButton(
+        AppButton(
+          label: 'Cancel request',
+          variant: AppButtonVariant.text,
           onPressed: _cancelInFlight ? null : _cancelRequest,
-          child: const Text('Cancel request'),
         ),
       ],
     );
@@ -182,22 +187,22 @@ class _DriverMatchingScreenState extends ConsumerState<DriverMatchingScreen>
     return Column(
       mainAxisAlignment: MainAxisAlignment.center,
       children: [
-        Icon(Icons.no_accounts_outlined, size: 80, color: Colors.grey[500]),
+        Icon(Icons.no_accounts_outlined, size: 80, color: AppColors.mutedFaint),
         const SizedBox(height: 24),
         Text(
           'No drivers found',
-          style: Theme.of(context).textTheme.titleLarge,
+          style: AppTextStyles.title,
         ),
         const SizedBox(height: 8),
         Text(
           'No nearby drivers are available right now. Please try again later.',
           textAlign: TextAlign.center,
-          style: TextStyle(color: Colors.grey[600]),
+          style: AppTextStyles.body.copyWith(color: AppColors.muted),
         ),
         const SizedBox(height: 24),
-        FilledButton(
+        AppButton(
+          label: 'Back to Home',
           onPressed: _goHome,
-          child: const Text('Back to Home'),
         ),
       ],
     );

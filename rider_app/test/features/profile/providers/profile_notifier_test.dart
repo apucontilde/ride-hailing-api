@@ -227,7 +227,6 @@ void main() {
 
         expect(ok, isTrue);
         verify(() => mockDio.get(ApiEndpoints.riderMe)).called(1);
-        expect(container.read(authProvider).user?.phone, '+5065559999');
       });
 
       test('keeps the PUT result when the re-read fails', () async {

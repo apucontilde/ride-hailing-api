@@ -1,19 +1,7 @@
-import 'dart:async';
 import 'package:flutter_test/flutter_test.dart';
-import 'package:rider_app/core/network/websocket_service.dart';
 import 'package:rider_app/features/home/data/ride_status_provider.dart';
 
-class FakeWebSocketService extends WebSocketService {
-  final StreamController<Map<String, dynamic>> _controller =
-      StreamController<Map<String, dynamic>>.broadcast();
-
-  @override
-  Stream<Map<String, dynamic>> get events => _controller.stream;
-
-  void emit(Map<String, dynamic> event) => _controller.add(event);
-
-  void disposeController() => _controller.close();
-}
+import '../../../support/fake_websocket_service.dart';
 
 Map<String, dynamic> rideUpdated(Map<String, dynamic> data) =>
     {'type': 'ride.updated', 'data': data};
@@ -34,8 +22,9 @@ void main() {
 
   Future<void> emitAndSettle(Map<String, dynamic> event) async {
     ws.emit(event);
-    await Future<void>.delayed(Duration.zero);
-    await Future<void>.delayed(Duration.zero);
+    // Drain the broadcast delivery microtask deterministically instead of
+    // racing two zero-duration timers.
+    await pumpEventQueue();
   }
 
   Map<String, dynamic> acceptedData() => {

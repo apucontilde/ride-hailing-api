@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:ride_hailing_shared/ride_hailing_shared.dart';
 import '../data/history_provider.dart';
 import '../model/ride_summary.dart';
 
@@ -51,20 +52,13 @@ class _HistoryScreenState extends ConsumerState<HistoryScreen> {
       return const Center(child: CircularProgressIndicator());
     }
     if (state.error != null && state.rides.isEmpty) {
-      return _buildScrollableMessage(
-        icon: Icons.error_outline,
+      return AppErrorState(
         message: state.error!,
-        action: TextButton(
-          onPressed: () => ref.read(historyProvider.notifier).firstPage(),
-          child: const Text('Retry'),
-        ),
+        onRetry: () => ref.read(historyProvider.notifier).firstPage(),
       );
     }
     if (state.rides.isEmpty) {
-      return _buildScrollableMessage(
-        icon: Icons.history,
-        message: 'No rides yet',
-      );
+      return const AppEmptyState(icon: Icons.history, message: 'No rides yet');
     }
     return ListView.builder(
       controller: _scrollController,
@@ -73,35 +67,12 @@ class _HistoryScreenState extends ConsumerState<HistoryScreen> {
       itemBuilder: (context, index) {
         if (index == state.rides.length) {
           return const Padding(
-            padding: EdgeInsets.all(16),
+            padding: EdgeInsets.all(AppSpacing.lg),
             child: Center(child: CircularProgressIndicator()),
           );
         }
         return _RideHistoryTile(ride: state.rides[index]);
       },
-    );
-  }
-
-  Widget _buildScrollableMessage({
-    required IconData icon,
-    required String message,
-    Widget? action,
-  }) {
-    return ListView(
-      physics: const AlwaysScrollableScrollPhysics(),
-      children: [
-        const SizedBox(height: 160),
-        Icon(icon, size: 48, color: Colors.grey[400]),
-        const SizedBox(height: 12),
-        Center(
-          child: Text(
-            message,
-            textAlign: TextAlign.center,
-            style: TextStyle(color: Colors.grey[600]),
-          ),
-        ),
-        if (action != null) Center(child: action),
-      ],
     );
   }
 }
@@ -113,50 +84,58 @@ class _RideHistoryTile extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    return Card(
-      margin: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
-      child: Padding(
-        padding: const EdgeInsets.all(12),
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            Row(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Expanded(
-                  child: Text(
-                    '${ride.pickupAddress} \u2192 ${ride.dropoffAddress}',
-                    style: const TextStyle(fontWeight: FontWeight.w600),
+    return AppCard(
+      padding: const EdgeInsets.all(AppSpacing.md),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Expanded(
+                child: Text(
+                  '${ride.pickupAddress} \u2192 ${ride.dropoffAddress}',
+                  style: AppTextStyles.body.copyWith(
+                    fontWeight: FontWeight.w600,
                   ),
                 ),
-                const SizedBox(width: 8),
-                Text(
-                  ride.status,
-                  style: TextStyle(color: Colors.grey[700], fontSize: 12),
+              ),
+              const SizedBox(width: AppSpacing.sm),
+              Text(
+                ride.status,
+                style: AppTextStyles.caption.copyWith(
+                  color: AppColors.mutedStrong,
                 ),
-              ],
-            ),
-            const SizedBox(height: 8),
-            Row(
-              children: [
-                Text(
-                  ride.vehicleType,
-                  style: TextStyle(color: Colors.grey[700], fontSize: 13),
+              ),
+            ],
+          ),
+          const SizedBox(height: AppSpacing.sm),
+          Row(
+            children: [
+              Text(
+                ride.vehicleType,
+                style: AppTextStyles.label.copyWith(
+                  color: AppColors.mutedStrong,
+                  fontWeight: FontWeight.w400,
                 ),
-                const Spacer(),
-                Text(
-                  '\$${ride.totalFare.toStringAsFixed(2)}',
-                  style: const TextStyle(fontWeight: FontWeight.w600),
+              ),
+              const Spacer(),
+              Text(
+                '\$${ride.totalFare.toStringAsFixed(2)}',
+                style: AppTextStyles.body.copyWith(
+                  fontWeight: FontWeight.w600,
                 ),
-              ],
+              ),
+            ],
+          ),
+          const SizedBox(height: AppSpacing.xs),
+          Text(
+            _timestamps(ride),
+            style: AppTextStyles.caption.copyWith(
+              color: AppColors.mutedFaint,
             ),
-            const SizedBox(height: 4),
-            Text(
-              _timestamps(ride),
-              style: TextStyle(color: Colors.grey[500], fontSize: 12),
-            ),
-          ],
-        ),
+          ),
+        ],
       ),
     );
   }

@@ -7,6 +7,7 @@ import '../api/endpoints.dart';
 import '../network/websocket_service.dart';
 import '../push/device_token_service.dart';
 import '../../features/home/model/rider_profile.dart';
+import '../../features/home/data/pickup_memory_provider.dart';
 
 export 'package:ride_hailing_shared/ride_hailing_shared.dart'
     show AuthStatus, AuthState;
@@ -75,6 +76,9 @@ class AuthNotifier extends AppAuthController {
     // Without this the previous rider's name/photo stay in the container and
     // greet the next sign-in.
     _ref.read(riderProfileProvider.notifier).state = null;
+    // The remembered pickup is rider-scoped too; one rider's pickup must not
+    // greet the next session.
+    _ref.read(pickupMemoryProvider.notifier).clear();
   }
 
   @override

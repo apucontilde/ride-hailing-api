@@ -3,17 +3,12 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:dio/dio.dart';
 import 'package:http_mock_adapter/http_mock_adapter.dart';
-import 'package:mocktail/mocktail.dart';
 import 'package:rider_app/features/home/data/home_provider.dart';
 import 'package:rider_app/features/home/presentation/location_search_screen.dart';
 import 'package:rider_app/core/auth/auth_provider.dart';
-import 'package:rider_app/core/auth/auth_storage.dart';
 import 'package:rider_app/core/api/api_client.dart';
 
-class MockAuthStorage extends Mock implements AuthStorage {}
-
 void main() {
-  late MockAuthStorage mockStorage;
   late ApiClient apiClient;
   late DioAdapter dioAdapter;
   late List<Map<String, dynamic>> requests;
@@ -21,7 +16,6 @@ void main() {
   const debounce = Duration(milliseconds: 300);
 
   setUp(() {
-    mockStorage = MockAuthStorage();
     apiClient = ApiClient(baseUrl: 'http://localhost:8080');
     dioAdapter = DioAdapter(
       dio: apiClient.dio,
@@ -45,7 +39,6 @@ void main() {
   Widget createTestWidget({double? lat = 9.93, double? lng = -84.08}) {
     return ProviderScope(
       overrides: [
-        authStorageProvider.overrideWithValue(mockStorage),
         apiClientProvider.overrideWithValue(apiClient),
         placeSearchDebounceProvider.overrideWithValue(debounce),
       ],
@@ -53,11 +46,19 @@ void main() {
     );
   }
 
-  testWidgets('shows search field', (WidgetTester tester) async {
+  testWidgets('shows the search field with a start-typing empty state',
+      (WidgetTester tester) async {
     await tester.pumpWidget(createTestWidget());
     await tester.pump();
 
     expect(find.byType(TextField), findsOneWidget);
+    // The autofocus'd field carries the destination hint.
+    expect(find.text('Search destinations...'), findsOneWidget);
+    // No query yet: no place tiles render.
+    expect(find.byType(ListTile), findsNothing);
+    // With a bias center supplied (Home always supplies one) the blocking
+    // "enable location" state must never render.
+    expect(find.text('Enable location to search nearby'), findsNothing);
   });
 
   testWidgets('debounces a keystroke stream into one request',

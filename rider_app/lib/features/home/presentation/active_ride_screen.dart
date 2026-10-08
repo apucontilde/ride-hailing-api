@@ -4,7 +4,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_map/flutter_map.dart';
 import 'package:go_router/go_router.dart';
 import 'package:latlong2/latlong.dart';
-import '../../../core/utils/location_helper.dart';
+import 'package:ride_hailing_shared/ride_hailing_shared.dart';
 import '../model/driver.dart';
 import '../model/fare.dart';
 import '../model/place.dart';
@@ -15,6 +15,7 @@ import '../data/location_ping_service.dart';
 import '../data/ride_provider.dart';
 import '../data/driver_tracking_provider.dart';
 import '../data/trip_eta.dart';
+import '../data/trip_return.dart';
 import '../data/trip_route_provider.dart';
 import 'rating_prompt_dialog.dart';
 
@@ -190,7 +191,7 @@ class _ActiveRideScreenState extends ConsumerState<ActiveRideScreen>
     ScaffoldMessenger.of(context).showSnackBar(
       const SnackBar(content: Text('Ride cancelled successfully')),
     );
-    context.go('/home');
+    _goHomeAfterCancel();
   }
 
   /// `[multi]` — pick a new final destination and `PUT /rides/:id/destination`.
@@ -305,7 +306,9 @@ class _ActiveRideScreenState extends ConsumerState<ActiveRideScreen>
                       fromWs
                           ? 'Fare from your live trip.'
                           : 'Fare from the ride receipt.',
-                      style: TextStyle(fontSize: 12, color: Colors.grey[600]),
+                      style: AppTextStyles.caption.copyWith(
+                        color: AppColors.muted,
+                      ),
                     ),
                   ],
                 ),
@@ -322,10 +325,7 @@ class _ActiveRideScreenState extends ConsumerState<ActiveRideScreen>
 
   Widget _fareRow(String label, double? amount,
       {String? suffix, bool emphasise = false}) {
-    final style = TextStyle(
-      fontSize: emphasise ? 16 : 14,
-      fontWeight: emphasise ? FontWeight.bold : FontWeight.normal,
-    );
+    final style = emphasise ? AppTextStyles.fare : AppTextStyles.body;
     return Padding(
       padding: const EdgeInsets.symmetric(vertical: 2),
       child: Row(
@@ -371,6 +371,16 @@ class _ActiveRideScreenState extends ConsumerState<ActiveRideScreen>
   void _goHome() {
     if (_leaving) return;
     _leaving = true;
+    markTripReturn(ref, restorePickup: false);
+    if (mounted) context.go('/home');
+  }
+
+  /// Cancel/terminal-cancel exit: unlike completion, the rider's pickup is kept
+  /// so they can retry the same trip immediately.
+  void _goHomeAfterCancel() {
+    if (_leaving) return;
+    _leaving = true;
+    markTripReturn(ref, restorePickup: true);
     if (mounted) context.go('/home');
   }
 
@@ -449,7 +459,7 @@ class _ActiveRideScreenState extends ConsumerState<ActiveRideScreen>
         ScaffoldMessenger.of(context).showSnackBar(
           const SnackBar(content: Text('Ride cancelled successfully')),
         );
-        context.go('/home');
+        _goHomeAfterCancel();
       } else {
         // The id can land on any non-terminal transition (arrived, on trip).
         unawaited(_ensureRideDetail());
@@ -493,8 +503,8 @@ class _ActiveRideScreenState extends ConsumerState<ActiveRideScreen>
                     Polyline(
                       points: tripRoute.polyline,
                       color: tripRoute.hasRoadRoute
-                          ? Colors.blue
-                          : Colors.grey,
+                          ? AppColors.routeReady
+                          : AppColors.routeEstimate,
                       strokeWidth: 4.0,
                       pattern: tripRoute.hasRoadRoute
                           ? const StrokePattern.solid()
@@ -509,7 +519,7 @@ class _ActiveRideScreenState extends ConsumerState<ActiveRideScreen>
                       point: _riderPosition!,
                       width: 40,
                       height: 40,
-                      child: const Icon(Icons.my_location, color: Colors.blue, size: 40),
+                      child: const Icon(Icons.my_location, color: AppColors.info, size: 40),
                     ),
                   if (driverPosition != null)
                     Marker(
@@ -546,39 +556,34 @@ class _ActiveRideScreenState extends ConsumerState<ActiveRideScreen>
       key: ValueKey<String>(
         estimate ? 'trip-route-estimate' : 'trip-route-error',
       ),
-      elevation: 3,
-      borderRadius: BorderRadius.circular(12),
-      color: estimate ? const Color(0xFFFFF8E1) : const Color(0xFFFFEBEE),
+      elevation: AppElevation.banner,
+      borderRadius: BorderRadius.circular(AppRadii.md),
+      color: estimate ? AppColors.estimateBanner : AppColors.errorBanner,
       child: Padding(
-        padding: const EdgeInsets.fromLTRB(12, 10, 8, 10),
+        padding: const EdgeInsets.fromLTRB(AppSpacing.md, 10, AppSpacing.sm, 10),
         child: Row(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
             Icon(
               estimate ? Icons.warning_amber_rounded : Icons.error_outline,
               size: 20,
-              color: estimate ? Colors.orange[800] : Colors.red[700],
+              color: estimate
+                  ? AppColors.warningForeground
+                  : AppColors.dangerForeground,
             ),
-            const SizedBox(width: 8),
+            const SizedBox(width: AppSpacing.sm),
             Expanded(
               child: Column(
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
-                  Text(
-                    title,
-                    style: const TextStyle(
-                      fontSize: 13,
-                      fontWeight: FontWeight.bold,
-                    ),
-                  ),
+                  Text(title, style: AppTextStyles.label),
                   if (message != null && message.isNotEmpty)
                     Padding(
                       padding: const EdgeInsets.only(top: 2),
                       child: Text(
                         message,
-                        style: TextStyle(
-                          fontSize: 12,
-                          color: Colors.grey[800],
+                        style: AppTextStyles.caption.copyWith(
+                          color: AppColors.mutedStrong,
                         ),
                       ),
                     ),
@@ -624,113 +629,90 @@ class _ActiveRideScreenState extends ConsumerState<ActiveRideScreen>
       bottom: 0,
       left: 0,
       right: 0,
-      child: Container(
+      child: AppBottomSheet(
         padding: const EdgeInsets.all(20),
-        decoration: const BoxDecoration(
-          color: Colors.white,
-          borderRadius: BorderRadius.vertical(top: Radius.circular(20)),
-          boxShadow: [
-            BoxShadow(color: Colors.black26, blurRadius: 10, offset: Offset(0, -2)),
-          ],
-        ),
         child: Column(
           mainAxisSize: MainAxisSize.min,
           children: [
-            Container(
-              width: 40,
-              height: 4,
-              decoration: BoxDecoration(
-                color: Colors.grey[300],
-                borderRadius: BorderRadius.circular(2),
-              ),
-            ),
+            const AppSheetHandle(),
             const SizedBox(height: 20),
             Row(
               children: [
                 CircleAvatar(
                   radius: 30,
-                  backgroundColor: Colors.grey,
+                  backgroundColor: AppColors.muted,
                   // LC-4: the typed `photo_url`. A photo that 404s (or is
                   // unreachable) must not take the trip screen down — the
                   // `Icon` child below is the fallback.
                   backgroundImage:
                       hasPhoto ? NetworkImage(photoUrl) : null,
                   onBackgroundImageError: hasPhoto ? (_, _) {} : null,
-                  child: const Icon(Icons.person, color: Colors.white, size: 30),
+                  child: const Icon(
+                    Icons.person,
+                    color: AppColors.onPrimary,
+                    size: 30,
+                  ),
                 ),
                 const SizedBox(width: 16),
                 Expanded(
                   child: Column(
                     crossAxisAlignment: CrossAxisAlignment.start,
                     children: [
-                      Text(
-                        driverName,
-                        style: const TextStyle(fontSize: 18, fontWeight: FontWeight.bold),
-                      ),
+                      Text(driverName, style: AppTextStyles.title),
                       if (vehicleLine != null)
                         Text(
                           vehicleLine,
-                          style: TextStyle(fontSize: 14, color: Colors.grey[600]),
+                          style: AppTextStyles.body.copyWith(
+                            color: AppColors.muted,
+                          ),
                         ),
                       if (ratingLine != null)
                         Text(
                           '★ $ratingLine',
-                          style: TextStyle(fontSize: 13, color: Colors.grey[600]),
+                          style: AppTextStyles.label.copyWith(
+                            color: AppColors.muted,
+                          ),
                         ),
                     ],
                   ),
                 ),
-                Chip(
-                  label: Text(statusText),
-                  backgroundColor: Colors.blue[50],
-                  labelStyle: TextStyle(color: Colors.blue[700], fontSize: 12),
-                ),
+                AppStatusChip(label: statusText),
               ],
             ),
             const SizedBox(height: 12),
             Row(
               children: [
-                Icon(Icons.schedule, size: 16, color: Colors.grey[700]),
+                Icon(Icons.schedule, size: 16, color: AppColors.mutedStrong),
                 const SizedBox(width: 6),
                 Text(
                   etaText,
                   key: const ValueKey<String>('trip-eta'),
-                  style: TextStyle(
-                    fontSize: 14,
+                  style: AppTextStyles.body.copyWith(
                     fontWeight: FontWeight.w600,
-                    color: Colors.grey[800],
+                    color: AppColors.mutedStrong,
                   ),
                 ),
               ],
             ),
             if (driverPosition != null) ...[
               const SizedBox(height: 16),
-              SizedBox(
-                width: double.infinity,
-                child: OutlinedButton(
-                  onPressed: _showReceiptOnTap,
-                  child: const Text('View receipt'),
-                ),
+              AppButton(
+                label: 'View receipt',
+                variant: AppButtonVariant.secondary,
+                expand: true,
+                onPressed: _showReceiptOnTap,
               ),
             ],
             if (isDestinationChangeable(rideState.status)) ...[
               const SizedBox(height: 16),
-              _buildChangeDestinationButton(rideState.status),
+              _buildChangeDestinationButton(),
             ],
             const SizedBox(height: 16),
-            SizedBox(
-              width: double.infinity,
-              child: ElevatedButton(
-                onPressed: _cancelRide,
-                style: ElevatedButton.styleFrom(
-                  backgroundColor: Colors.red[50],
-                  foregroundColor: Colors.red,
-                  elevation: 0,
-                  padding: const EdgeInsets.symmetric(vertical: 12),
-                  shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
-                ),
-                child: const Text('Cancel Ride'),
-              ),
+            AppButton(
+              label: 'Cancel Ride',
+              variant: AppButtonVariant.danger,
+              expand: true,
+              onPressed: _cancelRide,
             ),
           ],
         ),
@@ -742,32 +724,15 @@ class _ActiveRideScreenState extends ConsumerState<ActiveRideScreen>
   /// on the trip and lighter while waiting for the driver. It is only built for
   /// a changeable status (see [isDestinationChangeable]), so it is absent on a
   /// completed/cancelled ride.
-  Widget _buildChangeDestinationButton(RideStatus status) {
-    final onTrip = status == RideStatus.onTrip;
+  Widget _buildChangeDestinationButton() {
     final submitting = ref.watch(changeDestinationProvider).isSubmitting;
-    return SizedBox(
-      width: double.infinity,
-      child: ElevatedButton.icon(
-        key: const ValueKey<String>('change-destination-button'),
-        onPressed: submitting ? null : _changeDestination,
-        icon: submitting
-            ? const SizedBox(
-                width: 16,
-                height: 16,
-                child: CircularProgressIndicator(strokeWidth: 2),
-              )
-            : const Icon(Icons.edit_location_alt, size: 18),
-        label: const Text('Change destination'),
-        style: ElevatedButton.styleFrom(
-          backgroundColor: onTrip ? Colors.blue : Colors.blue[50],
-          foregroundColor: onTrip ? Colors.white : Colors.blue[700],
-          elevation: onTrip ? 2 : 0,
-          padding: const EdgeInsets.symmetric(vertical: 12),
-          shape: RoundedRectangleBorder(
-            borderRadius: BorderRadius.circular(12),
-          ),
-        ),
-      ),
+    return AppButton(
+      key: const ValueKey<String>('change-destination-button'),
+      label: 'Change destination',
+      icon: Icons.edit_location_alt,
+      expand: true,
+      isLoading: submitting,
+      onPressed: _changeDestination,
     );
   }
 

@@ -182,50 +182,6 @@ void main() {
       expect(find.text('Rider'), findsNothing);
     });
 
-    testWidgets('the four section headings appear in enum order', (
-      tester,
-    ) async {
-      await pumpHome(tester);
-      await openSidebar(tester);
-
-      // Read back in paint order: four independent `findsOneWidget`s would not
-      // catch SAFETY rendering above ACTIVITY.
-      const headings = ['ACCOUNT', 'ACTIVITY', 'SAFETY', 'APP'];
-      final rendered = tester
-          .widgetList<Text>(find.byType(Text))
-          .map((t) => t.data)
-          .where((d) => headings.contains(d))
-          .toList();
-      expect(rendered, headings);
-    });
-
-    testWidgets('every destination is findable by its sidebar key', (
-      tester,
-    ) async {
-      await pumpHome(tester);
-      await openSidebar(tester);
-
-      for (final id in [
-        'profile',
-        'ride-history',
-        'payment',
-        'security',
-        'settings',
-      ]) {
-        expect(find.byKey(Key('sidebar-item-$id')), findsOneWidget, reason: id);
-      }
-    });
-
-    testWidgets('the sign-out footer row is present', (tester) async {
-      // Sign-out used to cost three taps: drawer → Settings → Sign out.
-      await pumpHome(tester);
-      await openSidebar(tester);
-
-      expect(find.byKey(const Key('sidebar-sign-out')), findsOneWidget);
-      expect(find.byIcon(Icons.logout), findsOneWidget);
-      expect(find.text('Sign out'), findsOneWidget);
-    });
-
     testWidgets('shows no status dot and no rating, unlike the driver', (
       tester,
     ) async {

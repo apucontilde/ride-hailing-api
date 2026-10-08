@@ -69,11 +69,19 @@
   `ride.updated` re-read; no client reprice/re-route. Tests
   `test/features/home/data/change_destination_provider_test.dart`,
   `test/features/home/presentation/active_ride_screen_test.dart:1010,1093`.
-- Fare honesty for stops (API gap, client-honest) — `home_screen.dart:474-499`
-  (`stops-fare-note`): the estimate stays the single-leg API number and the limitation is named;
-  no client stop surcharge. Tests `test/features/home/presentation/stop_list_test.dart`,
-  `test/features/home/data/multi_leg_route_provider_test.dart:66-140`,
-  `test/features/home/presentation/home_screen_test.dart:343+`.
+- Fare honesty for stops (API gap, client-honest) — **SUPERSEDED** by the waypoint-aware estimate
+  in Landed `[fare]` (bug #13 fixed): the API now prices the ordered itinerary, so the
+  single-leg limitation the client used to name no longer exists. The `_buildStopsFareNote` /
+  `stops-fare-note` caveat is removed (pre-fix `home_screen.dart:474-499`;
+  `home_screen_test.dart:455` asserts `findsNothing`). Stop-list UI and the multi-leg preview
+  remain covered by `stop_list_test.dart` and
+  `test/features/home/data/multi_leg_route_provider_test.dart:66-140`.
+
+### [location]
+- Manual pickup fallback when the device fix is unavailable — injectable `LocationAvailability`/`LocationService`/`locationServiceProvider` (`features/home/data/location_service.dart:7,18,72`) plus the additive `LocationHelper.isLocationServiceEnabled`/`openAppSettings`/`openLocationSettings` wrappers (`shared/lib/src/utils/location_helper.dart:39-47`); `_defaultMapCenter` (`features/home/presentation/home_screen.dart:50`) + `_searchBias()` (`:249`) bias the pickup search (pickup → device fix → map center → default, never written as a location); the pickup field always opens `/location-search` with that bias and a `Use current location` clear (`:440-471`); the persistent notice offers `Open settings`/`Open location settings` + `Try again` (`:580-640`); `_createRide` remembers the pickup (`:801`). Tests `test/features/home/data/location_service_test.dart` (6), extended `home_screen_test.dart`, `location_search_screen_test.dart`.
+
+### [trip]
+- Pre-trip pickup recovery after a trip ends — global `pickupMemoryProvider` (`PickupMemory` with `remember`/`markReturning`/`consumeReturn`/`clear`) survives `HomeScreen` disposal `features/home/data/pickup_memory_provider.dart:6,26,34,43,50`, with the centralized `markTripReturn`/`resetRideState` exit helper `features/home/data/trip_return.dart:9,22`; Home consumes the return intent in `initState` and post-frame resets state / restores the manual `Place` / re-fits (`features/home/presentation/home_screen.dart:74-103`); cancel + no-driver exits mark `restore: true` (`driver_matching_screen.dart:61-65`, `active_ride_screen.dart:194,381-386,463`) and completion marks `restore: false` (`active_ride_screen.dart:372-375`); logout clears the memory (`core/auth/auth_provider.dart:79-81`). Tests `test/features/home/data/pickup_memory_provider_test.dart` (5), extended home/matching/active-ride suites.
 
 ### [web]
 - Ride creation on web/CORS: backend allows `Idempotency-Key`
@@ -120,14 +128,28 @@
 - Pre-booking estimate shows the API **total** + a receipt-style breakdown — `RideEstimate` maps
   `total` and the additive legs (`distance_fare`/`time_fare`/`demand_multiplier`/
   `supply_multiplier`/`grade_uplift_pct`/`currency`) and no longer parses the dead `price` field
-  `features/home/model/ride_estimate.dart:37,32-40,47,49,60`; the selected option renders
+  `features/home/model/ride_estimate.dart:32-41,68-87,110`; the selected option renders
   `formattedTotal` plus base/distance/time/conditions/total lines, with a `climb +x%` note on the
   distance leg only when the uplift is non-zero and **no fuel line** —
-  `features/home/presentation/ride_estimate_sheet.dart:110,126-152` (climb `:134-136`); currency
-  comes from the API and an absent code renders the bare amount (`ride_estimate.dart:60`); tests
+  `features/home/presentation/ride_estimate_sheet.dart:115-171` (climb `:140-142`); currency
+  comes from the API and an absent code renders the bare amount (`ride_estimate.dart:110`); tests
   `test/features/home/model/ride_estimate_test.dart`,
   `test/features/home/presentation/ride_estimate_sheet_test.dart`,
-  `test/features/home/data/home_provider_test.dart:304-366`.
+  `test/features/home/data/home_provider_test.dart:374-492`.
+- Waypoint-aware pre-booking estimate (closes bug #13, rider half; API landed — `api_plans/STATUS.md` → Landed `[fare]`) —
+  `priceEstimatesProvider` POSTs `/estimates/price` with an ordered `stops` body mirroring
+  `createRide` (empty list omitted, so the no-stop body is unchanged); new `EstimateStop` /
+  `PriceEstimateArgs` value types keep the family key stable across rebuilds —
+  `features/home/data/home_provider.dart:29,51,97-118`. Home threads `_stops` into the request
+  `features/home/presentation/home_screen.dart:584-593`; the obsolete `_buildStopsFareNote` and its
+  `stops-fare-note` call site are removed (`home_screen_test.dart:455` asserts `findsNothing`).
+- Honest waypoint estimate UI — `RideEstimate` parses the additive `is_estimate` + `legs`
+  (`RideEstimateLeg`, `hasMultipleLegs`) `features/home/model/ride_estimate.dart:7,46,50,81-91`;
+  the sheet renders an `Estimated fare — not fully road-routed` caption `:106-111` and an
+  informational per-leg distance/duration breakdown `:154-180` (per-leg fares are never summed;
+  `total` stays authoritative). Tests: `home_provider_test.dart:374-492` (`onPost` + POST-body
+  assertion, incl. the ordered-stops case), `home_screen_test.dart:382-478` (ordered stops threaded;
+  no `stops-fare-note`), `ride_estimate_test.dart:82-119` (`is_estimate`/`legs` parse + defaults).
 
 ### [auth]
 - Real rider profile / account — `rider_app/lib/core/auth/auth_provider.dart:20,38-99`
@@ -187,6 +209,29 @@
   `rider_app/lib/core/router/app_router.dart:56-86`; `selectedRoute: path` `rider_shell.dart:69`;
   flow routes (`/location-search`, `/driver-matching`, `/active-ride`) stay outside
   `app_router.dart:87-105`; tests `test/features/navigation/rider_shell_test.dart:71-105,157-169`.
+
+### [design]
+- Shared style system — extended token set: `AppColors` semantic roles + the exact
+  `routeReady == Colors.blue` / `routeEstimate == Colors.grey` aliases
+  `shared/lib/src/theme/app_colors.dart:21-69`; role `AppTextStyles` + `AppRadii.sheet`/`dialog`/
+  `pill`/`handle` `shared/lib/src/theme/app_theme.dart:13-96,151-153` (Material mappings preserved,
+  incl. `dialog == 28`); `AppElevation` `app_elevation.dart:10-16`; `AppMotion`
+  `app_motion.dart:10-18`; barrel `shared/lib/ride_hailing_shared.dart:8-14`.
+- Shared component library (9 pure files — no providers, `go_router` or `ApiConfig`): `AppButton`
+  `shared/lib/src/components/app_button.dart:28`, `AppTextField` `app_text_field.dart:9`, `AppCard`
+  `app_card.dart:8`, `AppListTile` `app_list_tile.dart:8`, `AppBottomSheet`/`AppSheetHandle`
+  `app_bottom_sheet.dart:10,55`, `AppEmptyState` `app_empty_state.dart:12`,
+  `AppErrorState`/`AppErrorRow` `app_error_state.dart:10,52`, `AppSectionHeader`
+  `app_section_header.dart:6`, `AppStatusChip`/`AppBadge` `app_status_chip.dart:11,42`; barrel
+  `:15-23`; tests `shared/test/theme/app_tokens_test.dart` (6) + `shared/test/components/*` (19),
+  25 total.
+- Rider migration: 12 feature files consume the components; the rider-local `AuthTextField` was
+  **deleted** (no new shim, no app file moved into `shared/`) and its call sites now use the shared
+  `AppTextField` (`features/auth/presentation/login_screen.dart:104,114`;
+  `register_screen.dart:57,66,75`; `forgot_password_screen.dart:107`).
+- Deliberate deferral (not a bug): `AppMotion` and `AppBadge` are exported/tested but have **zero
+  production consumers yet** — `AppMotion` is consumed by the open `[home]_bottom_panel_resize.md`
+  and `AppBadge` by the driver counterpart (`driver_app_plans/[design]_shared_style_adoption.md`).
 
 ### [search]
 - Throttled place autocomplete: `placeSearchDebounceProvider` (`Provider<Duration>`, default
@@ -272,17 +317,44 @@ unless they cross a package, in which case they are repo-relative
 | 9 | Sidebar existed only on `/home`; `AppSidebar.selectedRoute` wired but unconsumed — **FIXED**: app-wide `RiderShell` `ShellRoute` consumes `selectedRoute`; flow routes stay drawer-free | `features/navigation/rider_shell.dart:26-92`; `core/router/app_router.dart:56-86` | low | [nav] |
 | 10 | Place autocomplete fired one request per keystroke (no debounce) AND up to 4 sequential requests per query via the `_radiusSteps` 1000/3000/10000/30000 m loop — **FIXED** by `[search]_throttle_place_autocomplete.md`: 350 ms `placeSearchDebounceProvider` (`features/home/data/home_provider.dart:53-54`) with cancel-then-rearm `_debounceTimer` (`features/home/presentation/location_search_screen.dart:28,37-43`), and a single `_searchRadiusM = 30000.0` request (`features/home/data/home_provider.dart:51,56-74`) | pre-fix `features/home/presentation/location_search_screen.dart:50-52`; `features/home/data/home_provider.dart:51,58-73` | medium | [search] |
 | 11 | `riderRatedRideIdsProvider` seed walk is a **documented bound**: `ratedRideIdsMaxPages` = 20 × 50 = 1000 rated rides. A rider past that ceiling could be re-prompted for an ancient completed ride — **FIXED** by `01_[history]_rated_seed_past_cap.md`: the seed is `partial` when `total > 1000` and a ride outside it is resolved with the `ride_id` filter; a truncated / loading / failed seed is `unknown`, never `unrated` | pre-fix `features/home/data/ride_provider.dart:239,247-271`; post-fix `features/home/data/ride_provider.dart:26-40,272-380` | low | [history] |
-| 12 | Pre-booking estimate sheet showed the fixed `base_fare` instead of the computed `total`, and `RideEstimate` parsed a dead `price` JSON field the API never sends (always 0, unused) — **FIXED** by `[fare]_estimate_total_and_breakdown.md`: maps `total` + breakdown legs, removes `price`, renders the total with a receipt-style breakdown and API currency | post-fix `features/home/model/ride_estimate.dart:37,49,60`; `features/home/presentation/ride_estimate_sheet.dart:110,126-152`; pre-fix sheet `:108`, model `:26,58`; API sends `total`/`grade_uplift_pct` `internal/handler/responses.go:185,194` | medium | [fare] |
-| 13 | **API gap (not rider work):** there is no waypoint-aware fare. `POST /rides` computes the quote from `pickup → dropoff` only and ignores the `stops[]` itinerary (`internal/service/ride.go:234`), and `GET /estimates/price` takes no stops — so a multi-stop trip is priced short. The rider UI is deliberately honest (single-leg API estimate + the `stops-fare-note` caveat) rather than inventing a client surcharge; fixing it is a future `api_plans [fare]` item | `internal/service/ride.go:234`; `features/home/presentation/home_screen.dart:474-499` | low | api_plans `[fare]` |
+| 12 | Pre-booking estimate sheet showed the fixed `base_fare` instead of the computed `total`, and `RideEstimate` parsed a dead `price` JSON field the API never sends (always 0, unused) — **FIXED** by `[fare]_estimate_total_and_breakdown.md`: maps `total` + breakdown legs, removes `price`, renders the total with a receipt-style breakdown and API currency | post-fix `features/home/model/ride_estimate.dart:32-41,68-87,110`; `features/home/presentation/ride_estimate_sheet.dart:115-171`; pre-fix sheet `:108`, model `:26,58`; API sends `total`/`grade_uplift_pct` `internal/handler/responses.go:189,199` | medium | [fare] |
+| 13 | **API gap (not rider work):** there was no waypoint-aware fare — `POST /rides` priced `pickup → dropoff` only and ignored the `stops[]` itinerary, and `GET /estimates/price` took no stops, so a multi-stop trip was priced short; the rider UI stayed honest with the single-leg API number + `stops-fare-note`. — **FIXED** by the API half (coordinated API + rider wave; `api_plans/STATUS.md` → Landed `[fare]`): the API now prices the ordered itinerary (`RequestRide` → `CalculateItineraryEstimate`) and `POST /estimates/price` takes the same ordered `stops` body, and the rider switched to `POST` with stops and dropped the caveat (see Landed `[fare]`) | post-fix `internal/service/ride.go:264`; `internal/service/fare.go:158`; `internal/router/router.go:277`; `features/home/data/home_provider.dart:97-118`; pre-fix `internal/service/ride.go:234`; `features/home/presentation/home_screen.dart:474-499` | low | api_plans `[fare]` |
+| 14 | **Android release build has no network:** `android.permission.INTERNET` is declared only in the debug/profile manifests, so a release APK has no tiles, API or WS at all (stock Flutter template behaviour, but a shipping bug here). Fix locked (2026-10-06): add `INTERNET` to the main manifest | `rider_app/android/app/src/main/AndroidManifest.xml:1-45` (absent); `src/debug/AndroidManifest.xml:6`; `src/profile/AndroidManifest.xml:6` | high | [map] |
+| 15 | **Android maps show OSM "Access Blocked":** both maps send a hardcoded spoofed desktop Chrome `User-Agent`; because `NetworkTileProvider(headers:)` already carries that key, flutter_map's `tile_layer.dart:299-300` `putIfAbsent` never injects `userAgentPackageName`, so OSM blocks the browser-spoofed app traffic. `userAgentPackageName: 'com.rider.app'` also mismatches the real `applicationId` `com.example.rider_app`. Fix locked (2026-10-06): OSM-compliance now — drop the spoofed UA, send a truthful contact-bearing UA, use the real package id, and de-dup both maps through the **fully shared** tile factory + shared attribution widget | `features/home/presentation/home_screen.dart:196-205`; `features/home/presentation/active_ride_screen.dart:476-484`; `rider_app/android/app/build.gradle.kts:18`; flutter_map 7.0.2 `tile_layer.dart:299-300` | high | [map] |
+| 16 | **Android `geolocator` throws "No location permissions are defined in the manifest":** the main manifest declares neither `ACCESS_FINE_LOCATION` nor `ACCESS_COARSE_LOCATION`, so Home's `_initLocation`, the rider-location ping and the live-trip position stream all fail on Android. Fix locked (2026-10-06): add FINE+COARSE + `uses-feature gps required="true"`; no background location; no minSdk change; the `deniedForever` deep-link is handed to the `[location]` fallback (since landed — see Landed `[location]`) | `rider_app/android/app/src/main/AndroidManifest.xml:1-45`; `shared/lib/src/utils/location_helper.dart:4-23`; `features/home/presentation/home_screen.dart:147-172` | high | [location] |
+| 17 | **Test gap (tracked, not a code defect):** `rider_app/test/features/home/presentation/ride_estimate_sheet_test.dart` has no case for the Landed `[fare]` `is_estimate` caption (`Estimated fare — not fully road-routed`) or the informational per-leg breakdown; both sheet/model paths are implemented but untested there | `features/home/presentation/ride_estimate_sheet.dart:106-111,154-180`; `features/home/model/ride_estimate.dart:7,46,50,81-91` | low | [fare] |
+| 18 | Comment/condition drift (not a runtime defect): `_showLocationNotice`'s doc claimed the persistent notice required the rider "has not chosen a pickup", but the condition omits `_pickupLocation == null` — **FIXED** by `[design]`: the doc now states the notice persists after a manual pickup and clears only when a device fix arrives, matching the condition | `features/home/presentation/home_screen.dart:567-569` (comment) vs `:570-573` (condition) | low | [location] |
+| 19 | **Test gap (tracked, not a code defect):** `[location]`/`[trip]` widget-coverage holes — the settings-action dispatch (`openAppSettings`/`openLocationSettings`) was never invoked from the widget, the restored pickup's route/estimate coordinates were not asserted, and the `remember(_pickupLocation)` call-site was untested — **FIXED** by `[design]`: three new cases add the settings-action dispatch, the restored-pickup route/estimate coordinates, and the `remember` call-site | `features/home/presentation/home_screen.dart:423,441,570-634,764`; tests `test/features/home/presentation/home_screen_test.dart:815-849,851-927,929-991` | low | [location]/[trip] |
+| 20 | Destination/stop search still degraded when there is neither a device fix nor a manual pickup: the destination field's `origin == null` guard showed `Could not determine your location` and `_addStop` omitted `lat`/`lng`, so `LocationSearchScreen` short-circuited — **FIXED**: the destination field `onTap` unconditionally pushes with `_searchBias()` (`:465-485`); `_addStop` always supplies `lat`/`lng` (`:173-180`); the biased search never hits the `'Enable location to search nearby'` guard (`location_search_screen.dart:48-52,66-67`); and no location is fabricated — `_routePlan` still requires pickup/fix+destination (`:155-167`) and `canRequest` still requires pickup/fix (`:690-692`) | post-fix `features/home/presentation/home_screen.dart:465-485,173-180,155-167,690-692`; `features/home/presentation/location_search_screen.dart:48-52,66-67`; pre-fix `home_screen.dart:479-488,169-180`; tests `test/features/home/presentation/home_screen_test.dart:1022-1060,1062-1099,1101-1156` | low | [location] |
+| 21 | Residual same-class gap (not covered by #20): **mid-trip change-destination** still omits `lat`/`lng` when `_searchOrigin()` is null, so the generic `/location-search` can still show the blocking `'Enable location to search nearby'` branch from that surface | `features/home/presentation/active_ride_screen.dart:206-213` (`if (origin != null)` guards on `lat`/`lng`) | low | [location]/[trip] |
+| 22 | **Test gap (tracked, not a code defect):** `home_screen_test.dart:1097` `findsNothing('Enable location to search nearby')` is tautological — the test route is a `SizedBox` stub (`:190`), so the string could never render there anyway; the real-screen guarantee rests on `location_search_screen_test.dart:61`, so this assertion should be strengthened later | `test/features/home/presentation/home_screen_test.dart:1097` vs the stub route `:185-193`; real-screen coverage `test/features/home/presentation/location_search_screen_test.dart:61` | low | [location] |
 
 ## Open plans
 
-**None.** `rider_app_plans/` has no open plan files (checked 2026-10-06). The last open plan,
-`[multi]_rider_stop_list_ui.md`, landed and was condensed into Landed `[multi]` above and deleted.
+| File | Tag | Depends on | What remains |
+| --- | --- | --- | --- |
+| `[auth]_enter_to_login_desktop.md` | auth | `[]` | Web/desktop Enter-to-submit on the rider login password field via a pure `shouldSubmitOnEnter` predicate; mobile unchanged; additive `AuthTextField` keyboard params; no double-submit during an in-flight request. No API/shared change. |
+| `[auth]_web_session_persistence.md` | auth | `[]` | Web cold-start session survival: `checkAuth` recovers via the refresh token and clears only on a definitive 401/400 (transient network/timeout/5xx keeps tokens); `refreshToken` is single-flight and never server-revokes on a transient failure; storage errors never escape `login`/`checkAuth`/`refreshToken`; web `AuthStorage` uses a conditional-import `localStorage` backend. Shared change consumed by both apps (driver counterpart references it). Flutter-only, no API change. |
+| `[rating]_unify_rating_ui.md` | rating | `[]` | Unify the rider `RatingPromptDialog` and driver `RateSheet` into one shared, presentation-only `AppRatingSheet` in `ride_hailing_shared`; preserve the per-app endpoints and `RatingStatus` gates. Corrects the premise: the rider app has one rating form, the driver has one; not two in the rider. Driver adoption needs `driver-planner` coordination. |
+| `[home]_bottom_panel_resize.md` | home | `[]` | Make the Home booking `DraggableScrollableSheet` resizable by drag/scroll with min (handle-only) / initial / max snap points, animated snapping, a real handle, true map resizing, keyboard handling, session-size memory, and accessibility; preserve the `[map]` route-honesty invariants. No API change. |
+| `[nav]_home_destination.md` | nav | `[]` | Home as a first-class shared destination: add `AppNavDestination.home` (`home`/`Home`/`Icons.home_outlined`) and a leading `AppNavSection.home('HOME')` (or first under `account`), prepend it to `buildRiderNavItems()` so the drawer **and** the profile `AppNavLinkCard` can reach `/home`; update the shared/rider parity suites. **CROSS-DOMAIN** — the driver plan adopts the same two shared symbols. No API change. |
+| `[nav]_back_navigation.md` | nav | `[]` | A back affordance on every screen: a shared router-free `AppBackButton` (`onPressed`/`onFallback`, `Icons.arrow_back`; reconciled with the parallel driver plan), a shell-level back on the five non-home sections (recommended `leading → /home`, hamburger to `actions`), explicit backs on `/register`+`/forgot-password` → `/login`, `/location-search` standardization, and arrow/guard decisions for `/driver-matching` + `/active-ride`; `/home`, `/login`, `/splash` stay roots. **CROSS-DOMAIN** — the driver plan adopts `AppBackButton`. No API change. |
+| `[map]_android_tile_access.md` | map | `[]` | **Android-only; LOCKED 2026-10-06.** Add `INTERNET` to the main manifest; OSM-compliance now — drop the spoofed desktop `User-Agent`, send a truthful UA in the exact form `<app>/<version> (+contact: <email>)` (rider `rider_app/…`, driver `driver_app/…`), use `userAgentPackageName` `com.example.rider_app` (finalized by `[release]`); **fully shared** tile factory (`shared/lib/src/map/map_tile_config.dart` + `map_tile_layer.dart` + `map_tile_attribution.dart`; `shared/` gains `flutter_map`) with a nullable provider test seam; render the **shared attribution widget** now; leave the optional `MAP_TILE_API_KEY` seam. UA contact ships as the placeholder `MapTileConfig.defaultContact = 'tiles@example.invalid'` — **must not ship** (Pre-release checklist). Defines the canonical shared contract the driver adopts (co-owned); records the shared-background-service handoff. |
+| `[map]_self_hosted_tile_host.md` | map | `[]` — **deferred; gated on `[map]_android_tile_access.md`** | **DEFERRED.** Stand up a self-hosted tile server and replace the OSM public host (values-only change to the shared `MapTileConfig`); removes third-party policy risk; infra + migration decisions recorded. Authored once in the rider domain; driver consumes. |
+| `[map]_runtime_remote_tile_config.md` | map | `[]` — **deferred; gated on `[map]_android_tile_access.md`** | **DEFERRED.** Fetch tile URL/key/attribution at runtime instead of compile-time `String.fromEnvironment`; shared factory unchanged; **compile-time default + last-good-cache fallback** so a config outage never blanks the map. The remote-config endpoint owner/shape is **UNSPECIFIED** (an open question to resolve only when scheduled, **not** an `api_plans` prerequisite). Authored once in the rider domain; driver consumes. |
+| `[release]_app_id_and_store_readiness.md` | release | `[]` | **DEFERRED.** Finalize the real reverse-DNS `applicationId` for **BOTH** apps; update Android/iOS build files; align `MapTileConfig.userAgentPackageName` (must match the chosen id) in the same commit; signing/build config; store metadata/data-safety. Canonical file — the driver domain references it, does not duplicate. Until it lands `userAgentPackageName` tracks the stock `com.example.rider_app`/`com.example.driver_app`. |
+| `[location]_android_location_permission.md` | location | `[]` | **Android-only; LOCKED 2026-10-06.** Add `ACCESS_FINE_LOCATION` + `ACCESS_COARSE_LOCATION` + `uses-feature android.hardware.location.gps required="true"` (accept that Play may hide the app from non-GPS devices) to the main manifest; **no** `ACCESS_BACKGROUND_LOCATION`; **no** minSdk change; manifests-only — the `deniedForever` settings deep-link is handed to the landed `[location]` fallback (see Landed `[location]`). Cross-domain: driver main manifest has the same gap plus a driver-specific background question. |
+
+The two `[map]` deferred plans are **siblings, not a chain**: both are alternatives/composables over
+the same shared `MapTileConfig`, gated behind the open `[map]_android_tile_access.md`. They stay
+unnumbered with `depends_on: []` and carry `status: deferred` (numbering is reserved for sequential
+stages; two same-tag branch heads cannot both be `01_`). Flip a plan's `status` to `open` and revisit
+its `depends_on` when the active map plan lands.
 
 Earlier wave plans — `[tracking]_ride_detail_receipt_rating.md` (LC-3 + LC-4) and
 `01_[ontrip]_live_route_and_eta.md` — landed, were condensed into Landed above, and were deleted
-(2026-10-03).
+(2026-10-03). The most recent open plan, `[multi]_rider_stop_list_ui.md`, landed, was condensed into
+Landed `[multi]` above, and was deleted (2026-10-06).
 
 ## Invariants
 
@@ -290,6 +362,27 @@ Earlier wave plans — `[tracking]_ride_detail_receipt_rating.md` (LC-3 + LC-4) 
   New shared symbols are imported from the barrel directly — do **not** add shims for them.
 - `shared/` holds no route table and no `go_router` dependency: route strings and navigation
   callbacks are owned by the app (see the `[nav]` Landed entry above).
+- **`shared/` deliberately depends on `flutter_map` (owner decision, 2026-10-06).** The single tile
+  code path — `MapTileConfig` (`shared/lib/src/map/map_tile_config.dart`), `buildMapTileLayer` +
+  `mapTileLayerProvider` (`shared/lib/src/map/map_tile_layer.dart`) and `MapTileAttribution`
+  (`shared/lib/src/map/map_tile_attribution.dart`) — lives in shared so the rider and driver apps
+  cannot drift. This is an explicit exception to the "shared is dependency-light" spirit; it does
+  **not** relax the re-export rule (no shims for these symbols).
+- **One tile source of truth.** No app screen may name a tile host, `userAgentPackageName`, a browser
+  `User-Agent`, or a tile API key. Apps build a `MapTileConfig` from `MAP_TILE_URL`/`MAP_TILE_API_KEY`
+  and render through the shared factory. The UA must be truthful and contact-bearing (never a desktop
+  browser string), in the exact form `<app>/<version> (+contact: <email>)`, and
+  `userAgentPackageName` must be the real `com.example.*` application id (finalized by
+  `[release]_app_id_and_store_readiness.md`; the UA contact placeholder `tiles@example.invalid` must be
+  replaced before release). OSM (or the chosen provider) attribution must be visible via
+  `MapTileAttribution`.
+- **Shared background tracking is a shared artifact, not an app one.** A future Android background
+  tracking service — and the additive, opt-in `LocationHelper` extension it needs — belongs in
+  `shared/lib/src/location/` and is barrel-exported for both apps, so the rider and driver cannot
+  diverge. It is owned/designed by `driver_app_plans/[location]_background_tracking.md`; this domain
+  only records the ownership/shared boundary and keeps rider behavior foreground-only (no
+  `ACCESS_BACKGROUND_LOCATION`). Not designed in `[map]_android_tile_access.md`, which only notes the
+  handoff.
 - **The shell owns the only `Scaffold` on the six section routes.** Section screens are body-only.
   In particular the rider settings screen composes the shared `AppSettingsSection`/`AppSettingsRow`
   rows directly rather than reusing the shared `AppSettingsScreen`, because `AppSettingsScreen`
@@ -357,3 +450,70 @@ five touched sources is clean, and `flutter test` on the six relevant files
 The implementing agent reports the full suite rider 347 / driver 337 / shared 151 green; the full
 `melos run test` was **not** re-run here. A concurrent `antagonistic-reviewer` verdict was still in
 flight at condense time; this entry records only what the code shows and does not pre-empt it.
+
+Map/location plan grooming (2026-10-06, product-owner locked decisions): `[map]_android_tile_access.md`
+and `[location]_android_location_permission.md` were rewritten to replace their open questions with the
+locked decisions, and two deferred `[map]` plan files were authored
+(`[map]_self_hosted_tile_host.md`, `[map]_runtime_remote_tile_config.md`). **Plan-only change — no
+source, manifest or test was edited, and `melos run analyze`/`melos run test` were not run.** All rider
+`depends_on` targets resolve (checked; all `[]`) — no dangling `depends_on`.
+
+Remaining product-owner decisions applied (2026-10-06): the locked UA format
+(`<app>/<version> (+contact: <email>)`) plus the `tiles@example.invalid` placeholder and a pre-release
+checklist landed in `[map]_android_tile_access.md`; `[map]_runtime_remote_tile_config.md` no longer
+requires an `api_plans` endpoint (owner/shape UNSPECIFIED, deferred); a new deferred
+`[release]_app_id_and_store_readiness.md` was authored (final `applicationId` + `userAgentPackageName`
+alignment + signing/store, canonical, driver references it); and the shared background-tracking service
+handoff was recorded (invariant above + the map plan's forward note/Cross-domain). **Plan-only — no
+source edited; checks re-run below.**
+
+`[fare]` waypoint-fare condensation (2026-10-08): static `file:line` evidence verified against the
+post-landing tree (rider + API). Gates (independently run, 2026-10-08): `melos run analyze` clean;
+`melos run test` green — rider **350 passed** (was 347), driver 337, shared 151 (Linux FVM SDK +
+native Melos 8). The API half landed (`api_plans/STATUS.md` → Landed `[fare]`; waypoint-aware booking
+quote + `POST /estimates/price` with a `stops` body). Dangling-`depends_on` check re-run: every
+rider plan's `depends_on` is `[]` — no dangling reference.
+
+Product-owner decision lock + link hygiene (2026-10-08): the six open plans (`[location]`,
+`[auth]`, `[trip]`, `[rating]`, `[design]`, `[home]`) replaced their "Open product decisions surfaced"
+sections with `## Locked product decisions (2026-10-08 — product owner)`, and their bodies were
+reconciled where they contradicted a lock (rating `allowComment: true` + one bottom sheet; design driver
+counterpart filename; home max / no-second-recognizer / FAB). Dead links to the deleted fare
+waypoint plan were re-pointed to `api_plans/STATUS.md` → Landed `[fare]` (Landed
+`[fare]`, bug #13, condensation note); the `[location]` plan's stale `STATUS.md:318` citation now names
+the Skip list row. Known bug #17 tracks the `ride_estimate_sheet_test.dart` gap for the `is_estimate`
+caption / per-leg breakdown. **Plan-only — no source, test or manifest edited; `melos` not run here.**
+
+`[location]` + `[trip]` pickup condensation (2026-10-08): static `file:line` evidence verified
+against the post-landing tree; the runtime behavior was adversarially reviewed and **CONFIRMED** (no
+fabricated location, pickup precedence / clearing / memory lifecycle / no-clobber / all four exit
+intents correct). Gates independently run: `melos run analyze` clean; `melos run test` green — rider
+**371 passed** (was 350), driver 337, shared 151 (Linux FVM SDK + native Melos 8). Both landed plan
+files were deleted and their Open-plans rows removed. Dangling-`depends_on` check re-run: every
+remaining rider plan's `depends_on` is `[]` — no dangling reference.
+
+`[design]` shared-style-system condensation (2026-10-08): static `file:line` evidence verified
+against the post-landing tree; the four landing claims were adversarially reviewed and
+**CONFIRMED-LANDED**. Gates re-run independently by the reviewer: `melos run analyze` clean;
+`melos run test` green — rider **363**, driver **302**, shared **165** (Linux FVM SDK + native
+Melos 8; `melos` was not re-run by this condensation). The landed plan file was deleted and its
+Open-plans row removed; the deliberate `AppMotion`/`AppBadge` zero-consumer deferral is recorded in
+Landed `[design]`. Known bugs #18/#19 were fixed by this batch and are marked FIXED.
+**Driver test count note:** the driver suite is **302**, down from the previously recorded **337** —
+this is **NOT** a regression from `[design]` (the driver half is a separate plan,
+`driver_app_plans/[design]_shared_style_adoption.md`, and `driver_app/lib` was not touched here).
+The drop is a concurrent, documented test-audit deduplication process in progress
+(`tests/AUDIT_REPORT.md`); it is unrelated to this batch. Dangling-`depends_on` check re-run: every
+remaining rider plan's `depends_on` is `[]` — no dangling reference.
+
+`[location]` bug #20 fix (2026-10-08): the destination/stop search no longer degrades with neither a
+device fix nor a manual pickup — the destination field pushes unconditionally with a `_searchBias()`
+center and `_addStop` always supplies one, so the biased search never hits the blocking guard, while
+`_routePlan`/`canRequest` still refuse to fabricate a location. Adversarially reviewed and
+**FIXED**. Gates (rider + shared + driver suites re-run live): `melos run analyze` clean;
+`melos run test` green — rider **366** (up from 363), driver **302**, shared **165**
+(Linux FVM SDK + native Melos 8). Bug #20 marked FIXED; the residual mid-trip change-destination
+omission is tracked as the new bug #21, and the tautological `home_screen_test.dart:1097`
+`findsNothing` assertion (the test route is a `SizedBox` stub, so the real-screen guarantee rests on
+`location_search_screen_test.dart:61`) is tracked as the new bug #22. Plan-only / docs change — no
+source or test edited here.

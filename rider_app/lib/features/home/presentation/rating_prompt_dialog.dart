@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:ride_hailing_shared/ride_hailing_shared.dart';
 import '../data/ride_provider.dart';
 
 /// The post-completion 1–5★ prompt (LC-3).
@@ -57,7 +58,7 @@ class _RatingPromptDialogState extends ConsumerState<RatingPromptDialog> {
                 icon: Icon(
                   value <= _score ? Icons.star : Icons.star_border,
                   size: 36,
-                  color: value <= _score ? Colors.amber : Colors.grey,
+                  color: value <= _score ? AppColors.warning : AppColors.muted,
                 ),
               );
             }),
@@ -65,13 +66,16 @@ class _RatingPromptDialogState extends ConsumerState<RatingPromptDialog> {
           const SizedBox(height: 8),
           Text(
             busy ? 'Sending your rating...' : 'Tap a star to rate your driver',
-            style: TextStyle(color: Colors.grey[600], fontSize: 13),
+            style: AppTextStyles.label.copyWith(
+              color: AppColors.muted,
+              fontWeight: FontWeight.w400,
+            ),
           ),
           if (state.error != null) ...[
             const SizedBox(height: 8),
             Text(
               state.error!,
-              style: const TextStyle(color: Colors.red, fontSize: 13),
+              style: AppTextStyles.label.copyWith(color: AppColors.danger),
             ),
           ],
         ],

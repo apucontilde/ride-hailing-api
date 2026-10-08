@@ -145,8 +145,8 @@ void main() {
 
     test('null ride stays searching until the 30s threshold', () async {
       payload = {'ride': null};
-      notifier.startPolling();
-      notifier.stopPolling();
+      // The first poll seeds the search window; no explicit `startPolling`
+      // seed is needed because `pollNow` arms `_startedAt` on its own.
       await notifier.pollNow();
 
       expect(notifier.state.stillSearching, isFalse);

@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:latlong2/latlong.dart';
+import 'package:ride_hailing_shared/ride_hailing_shared.dart';
 import '../data/home_provider.dart';
 
 class NearbyDriversChip extends ConsumerWidget {
@@ -13,10 +14,9 @@ class NearbyDriversChip extends ConsumerWidget {
     final drivers = ref.watch(nearbyDriversProvider(center));
     final count = drivers.valueOrNull?.length ?? 0;
     if (count == 0) return const SizedBox.shrink();
-    return Chip(
-      avatar: const Icon(Icons.local_taxi, size: 16),
-      label: Text('$count ${count == 1 ? 'driver' : 'drivers'} nearby'),
-      visualDensity: VisualDensity.compact,
+    return AppStatusChip(
+      icon: Icons.local_taxi,
+      label: '$count ${count == 1 ? 'driver' : 'drivers'} nearby',
     );
   }
 }

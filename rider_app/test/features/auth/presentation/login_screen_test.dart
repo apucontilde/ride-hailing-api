@@ -112,8 +112,8 @@ void main() {
     await tester.pumpWidget(createApp());
     await tester.pump();
 
-    await tester.enterText(find.byType(TextFormField).at(0), 'test@test.com');
-    await tester.enterText(find.byType(TextFormField).at(1), 'Password1');
+    await tester.enterText(find.widgetWithText(TextFormField, 'Email'), 'test@test.com');
+    await tester.enterText(find.widgetWithText(TextFormField, 'Password'), 'Password1');
     await tester.tap(find.widgetWithText(ElevatedButton, 'Log In'));
     await tester.pumpAndSettle();
 
@@ -131,8 +131,8 @@ void main() {
     await tester.pumpWidget(createApp());
     await tester.pump();
 
-    await tester.enterText(find.byType(TextFormField).at(0), 'test@test.com');
-    await tester.enterText(find.byType(TextFormField).at(1), 'Password1');
+    await tester.enterText(find.widgetWithText(TextFormField, 'Email'), 'test@test.com');
+    await tester.enterText(find.widgetWithText(TextFormField, 'Password'), 'Password1');
     await tester.tap(find.widgetWithText(ElevatedButton, 'Log In'));
     await tester.pump();
 
@@ -152,6 +152,9 @@ void main() {
       },
     ));
     await tester.pumpAndSettle();
+
+    // A successful login lands on the authenticated home route.
+    expect(find.text('Home'), findsOneWidget);
   });
 
   testWidgets('navigates to register screen', (WidgetTester tester) async {
@@ -212,8 +215,8 @@ void main() {
     await container.read(authProvider.notifier).login('current@test.com', 'pw');
     await tester.pumpAndSettle();
 
-    await tester.enterText(find.byType(TextFormField).at(0), 'other@test.com');
-    await tester.enterText(find.byType(TextFormField).at(1), 'Password1');
+    await tester.enterText(find.widgetWithText(TextFormField, 'Email'), 'other@test.com');
+    await tester.enterText(find.widgetWithText(TextFormField, 'Password'), 'Password1');
     await tester.tap(find.widgetWithText(ElevatedButton, 'Log In'));
     await tester.pumpAndSettle();
 
@@ -266,8 +269,8 @@ void main() {
     await container.read(authProvider.notifier).login('current@test.com', 'pw');
     await tester.pumpAndSettle();
 
-    await tester.enterText(find.byType(TextFormField).at(0), 'other@test.com');
-    await tester.enterText(find.byType(TextFormField).at(1), 'Password1');
+    await tester.enterText(find.widgetWithText(TextFormField, 'Email'), 'other@test.com');
+    await tester.enterText(find.widgetWithText(TextFormField, 'Password'), 'Password1');
     await tester.tap(find.widgetWithText(ElevatedButton, 'Log In'));
     await tester.pumpAndSettle();
 

@@ -375,6 +375,7 @@ void main() {
     late ApiClient apiClient;
     late DioAdapter dioAdapter;
     late ProviderContainer container;
+    late List<Map<String, dynamic>> requests;
 
     setUp(() {
       apiClient = ApiClient(baseUrl: 'http://localhost:8080');
@@ -382,16 +383,14 @@ void main() {
         dio: apiClient.dio,
         matcher: const UrlRequestMatcher(matchMethod: true),
       );
+      requests = <Map<String, dynamic>>[];
       container = ProviderContainer(
         overrides: [apiClientProvider.overrideWithValue(apiClient)],
       );
       addTearDown(container.dispose);
     });
 
-    test('parses the API total and breakdown fields', () async {
-      dioAdapter.onGet(
-        '/api/v1/estimates/price',
-        (server) => server.reply(200, {
+    Map<String, dynamic> estimateBody({double total = 6.5}) => {
           'estimates': [
             {
               'vehicle_type': 'sedan',
@@ -401,23 +400,42 @@ void main() {
               'distance_fare': 3.1,
               'time_fare': 0.9,
               'surge_multiplier': 1.2,
-              'total': 6.5,
+              'total': total,
               'region_id': 'cr-sj',
               'currency': 'USD',
               'demand_multiplier': 1.2,
               'supply_multiplier': 1.0,
               'grade_uplift_pct': 0.05,
+              'is_estimate': false,
+              'legs': [
+                {
+                  'distance_m': 1650,
+                  'duration_s': 150,
+                  'distance_fare': 2.47,
+                  'time_fare': 0.60,
+                },
+              ],
             }
           ],
+        };
+
+    test('POSTs the pickup/dropoff pair and parses the estimate', () async {
+      dioAdapter.onPost(
+        '/api/v1/estimates/price',
+        (server) => server.replyCallback(200, (options) {
+          requests.add(Map<String, dynamic>.from(options.data as Map));
+          return estimateBody();
         }),
       );
 
-      final estimates = await container.read(priceEstimatesProvider({
-        'pickup_lat': 9.93,
-        'pickup_lng': -84.08,
-        'dropoff_lat': 9.94,
-        'dropoff_lng': -84.10,
-      }).future);
+      final estimates = await container.read(
+        priceEstimatesProvider(const PriceEstimateArgs(
+          pickupLat: 9.93,
+          pickupLng: -84.08,
+          dropoffLat: 9.94,
+          dropoffLng: -84.10,
+        )).future,
+      );
 
       expect(estimates, hasLength(1));
       final estimate = estimates.single;
@@ -431,6 +449,45 @@ void main() {
       expect(estimate.currency, 'USD');
       expect(estimate.gradeUpliftPct, 0.05);
       expect(estimate.formattedTotal, 'USD6.50');
+
+      // The body is a JSON POST, not query params, and a no-stop request omits
+      // `stops` exactly as the pre-waypoint payload did.
+      expect(requests, hasLength(1));
+      expect(requests.single, {
+        'pickup_lat': 9.93,
+        'pickup_lng': -84.08,
+        'dropoff_lat': 9.94,
+        'dropoff_lng': -84.10,
+      });
+    });
+
+    test('POSTs the ordered stops and returns the larger waypoint total',
+        () async {
+      dioAdapter.onPost(
+        '/api/v1/estimates/price',
+        (server) => server.replyCallback(200, (options) {
+          requests.add(Map<String, dynamic>.from(options.data as Map));
+          return estimateBody(total: 9.99);
+        }),
+      );
+
+      final estimates = await container.read(
+        priceEstimatesProvider(const PriceEstimateArgs(
+          pickupLat: 9.93,
+          pickupLng: -84.08,
+          dropoffLat: 9.94,
+          dropoffLng: -84.10,
+          stops: [
+            EstimateStop(lat: 9.935, lng: -84.09, address: 'Cafe St'),
+          ],
+        )).future,
+      );
+
+      expect(requests, hasLength(1));
+      expect(requests.single['stops'], [
+        {'lat': 9.935, 'lng': -84.09, 'address': 'Cafe St'},
+      ]);
+      expect(estimates.single.total, 9.99);
     });
   });
 }

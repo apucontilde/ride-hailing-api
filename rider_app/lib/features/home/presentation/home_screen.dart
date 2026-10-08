@@ -7,7 +7,10 @@ import 'package:ride_hailing_shared/ride_hailing_shared.dart';
 import '../data/home_provider.dart';
 import '../data/home_route_preview.dart';
 import '../data/location_ping_service.dart';
+import '../data/location_service.dart';
 import '../data/multi_leg_route_provider.dart';
+import '../data/pickup_memory_provider.dart';
+import '../data/trip_return.dart';
 import '../model/place.dart';
 import 'nearby_drivers_chip.dart';
 import 'ride_estimate_sheet.dart';
@@ -18,6 +21,7 @@ class HomeScreen extends ConsumerStatefulWidget {
     super.key,
     this.initialPickup,
     this.initialDestination,
+    this.pickupMemory,
   });
 
   /// Seeds the pickup pin instead of resolving it from the platform location
@@ -29,16 +33,29 @@ class HomeScreen extends ConsumerStatefulWidget {
   /// without driving the `/location-search` flow.
   final Place? initialDestination;
 
+  /// Seeds the pickup-return intent instead of consuming the global
+  /// [pickupMemoryProvider]. Production leaves this `null`; the widget tests use
+  /// it to drive a restore/reload without a live geolocator.
+  final PickupMemory? pickupMemory;
+
   @override
   ConsumerState<HomeScreen> createState() => _HomeScreenState();
 }
 
 class _HomeScreenState extends ConsumerState<HomeScreen>
     with WidgetsBindingObserver {
+  /// Fallback map/search-bias center when neither a pickup nor a device fix
+  /// exists. It biases the place search only — it is never written into
+  /// `_pickupLocation` or sent to the API.
+  static const LatLng _defaultMapCenter = LatLng(9.9281, -84.0907);
+
   final MapController _mapController = MapController();
   LatLng? _currentPosition;
   Place? _pickupLocation;
   Place? _destination;
+
+  /// The last resolved device-location state, driving the persistent notice.
+  LocationAvailability? _locationStatus;
 
   /// Ordered intermediate stops. Order in this list **is** the itinerary; the
   /// final destination stays [_destination] (the API appends `dropoff_*` last).
@@ -53,6 +70,35 @@ class _HomeScreenState extends ConsumerState<HomeScreen>
     _destination = widget.initialDestination;
     _pingService = ref.read(locationPingServiceProvider);
     _pingService!.start();
+
+    // The pickup memory outlives this screen, so read the pending return intent
+    // here and restore only the pickup (never destination/stops). Provider
+    // state cannot be mutated during `initState`, so the consume/reset is
+    // deferred to the first post-frame callback.
+    final PickupMemory returnIntent =
+        widget.pickupMemory ?? ref.read<PickupMemory>(pickupMemoryProvider);
+    final restore = returnIntent.restoreOnHome;
+    if (restore == true && returnIntent.manualPickup != null) {
+      _pickupLocation = returnIntent.manualPickup;
+    }
+    if (restore != null) {
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (!mounted) return;
+        if (widget.pickupMemory == null) {
+          final memory = ref.read(pickupMemoryProvider.notifier);
+          // A completed trip starts a fresh booking: drop the old pickup
+          // instead of leaving it to resurface.
+          if (restore) {
+            memory.consumeReturn();
+          } else {
+            memory.clear();
+          }
+        }
+        resetRideState(ref);
+        if (restore && _pickupLocation != null) _fitItinerary();
+      });
+    }
+
     _initLocation();
   }
 
@@ -86,17 +132,22 @@ class _HomeScreenState extends ConsumerState<HomeScreen>
       if (_destination != null) LatLng(_destination!.lat, _destination!.lng),
     ];
     if (points.isEmpty) return;
-    if (points.length == 1) {
-      _mapController.move(points.first, 15.0);
-      return;
+    try {
+      if (points.length == 1) {
+        _mapController.move(points.first, 15.0);
+        return;
+      }
+      _mapController.fitCamera(
+        CameraFit.bounds(
+          bounds: LatLngBounds.fromPoints(points),
+          padding: const EdgeInsets.all(60),
+          maxZoom: 16.0,
+        ),
+      );
+    } catch (_) {
+      // The map camera is not attached yet (e.g. the first location fix lands
+      // before the first frame); a later frame frames the itinerary.
     }
-    _mapController.fitCamera(
-      CameraFit.bounds(
-        bounds: LatLngBounds.fromPoints(points),
-        padding: const EdgeInsets.all(60),
-        maxZoom: 16.0,
-      ),
-    );
   }
 
   /// The route-preview plan for the current pickup/stops/destination, or null
@@ -116,15 +167,16 @@ class _HomeScreenState extends ConsumerState<HomeScreen>
   }
 
   Future<void> _addStop() async {
-    final origin = _pickupLocation != null
-        ? LatLng(_pickupLocation!.lat, _pickupLocation!.lng)
-        : _currentPosition;
+    // The bias is the search request center only (pickup → device fix → map
+    // center → default region). It is never written into `_pickupLocation`, so
+    // a stop can be searched even with no device fix and no manual pickup.
+    final bias = _searchBias();
     final place = await context.push<Place>(
       '/location-search',
       extra: {
         'hint': 'Add a stop',
-        if (origin != null) 'lat': origin.latitude,
-        if (origin != null) 'lng': origin.longitude,
+        'lat': bias.latitude,
+        'lng': bias.longitude,
       },
     );
     if (place != null && mounted) {
@@ -145,30 +197,73 @@ class _HomeScreenState extends ConsumerState<HomeScreen>
   }
 
   Future<void> _initLocation() async {
-    final hasPermission = await LocationHelper.requestPermission();
-    if (!hasPermission) {
-      if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(
-            content: Text('Location permission is required to request rides'),
-            duration: Duration(seconds: 5),
-          ),
-        );
+    final service = ref.read(locationServiceProvider);
+    final availability = await service.requestAvailability();
+    if (!mounted) return;
+    setState(() => _locationStatus = availability);
+
+    if (availability == LocationAvailability.granted) {
+      final position = await service.getCurrentPosition();
+      if (!mounted) return;
+      if (position != null) {
+        setState(() {
+          _currentPosition = LatLng(position.latitude, position.longitude);
+        });
+        // Never yank the camera off a restored/chosen pickup. With a pickup
+        // present the itinerary is framed on the restore/selection path
+        // instead; only the pickup-less device-fix path recenters.
+        if (_pickupLocation == null) {
+          try {
+            _mapController.move(_currentPosition!, 15.0);
+          } catch (_) {
+            // Camera not attached yet; the default center still applies.
+          }
+        }
+      } else {
+        _showSnackBar('Unable to get current location');
       }
       return;
     }
 
-    final position = await LocationHelper.getCurrentPosition();
-    if (position != null && mounted) {
-      setState(() {
-        _currentPosition = LatLng(position.latitude, position.longitude);
-      });
-      _mapController.move(_currentPosition!, 15.0);
-    } else if (mounted) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('Unable to get current location')),
-      );
+    _showSnackBar(
+      'Location permission is required to request rides',
+      duration: const Duration(seconds: 5),
+    );
+  }
+
+  /// `showSnackBar` requires a registered `Scaffold`; production's shell owns
+  /// the only one. A bare mount (widget test, or a future shell-less context)
+  /// degrades to the persistent notice instead of asserting.
+  void _showSnackBar(String message, {Duration? duration}) {
+    if (Scaffold.maybeOf(context) == null) return;
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        content: Text(message),
+        duration: duration ?? const Duration(seconds: 4),
+      ),
+    );
+  }
+
+  /// The center used to bias `/places/autocomplete`: the chosen pickup, else the
+  /// device fix, else the visible map center, else the default region constant.
+  /// It is a search bias only — it is never written into `_pickupLocation`.
+  LatLng _searchBias() {
+    if (_pickupLocation != null) {
+      return LatLng(_pickupLocation!.lat, _pickupLocation!.lng);
     }
+    if (_currentPosition != null) return _currentPosition!;
+    try {
+      return _mapController.camera.center;
+    } catch (_) {
+      return _defaultMapCenter;
+    }
+  }
+
+  /// Clears a manual pickup so the device fix (`_currentPosition`) takes over
+  /// again. When there is no fix this simply removes the pickup.
+  void _clearManualPickup() {
+    setState(() => _pickupLocation = null);
+    _fitItinerary();
   }
 
   @override
@@ -189,7 +284,7 @@ class _HomeScreenState extends ConsumerState<HomeScreen>
         FlutterMap(
           mapController: _mapController,
           options: MapOptions(
-            initialCenter: _currentPosition ?? const LatLng(9.9281, -84.0907),
+            initialCenter: _currentPosition ?? _defaultMapCenter,
             initialZoom: 15.0,
           ),
           children: [
@@ -212,7 +307,9 @@ class _HomeScreenState extends ConsumerState<HomeScreen>
                 polylines: [
                   Polyline(
                     points: preview.polyline,
-                    color: preview.hasRoadRoute ? Colors.blue : Colors.grey,
+                    color: preview.hasRoadRoute
+                        ? AppColors.routeReady
+                        : AppColors.routeEstimate,
                     strokeWidth: 4.0,
                     pattern: preview.hasRoadRoute
                         ? const StrokePattern.solid()
@@ -233,7 +330,7 @@ class _HomeScreenState extends ConsumerState<HomeScreen>
                       height: 40,
                       child: const Icon(
                         Icons.my_location,
-                        color: Colors.blue,
+                        color: AppColors.info,
                         size: 40,
                       ),
                     ),
@@ -244,7 +341,7 @@ class _HomeScreenState extends ConsumerState<HomeScreen>
                       height: 40,
                       child: const Icon(
                         Icons.location_on,
-                        color: Colors.green,
+                        color: AppColors.success,
                         size: 40,
                       ),
                     ),
@@ -255,7 +352,7 @@ class _HomeScreenState extends ConsumerState<HomeScreen>
                       height: 40,
                       child: const Icon(
                         Icons.trip_origin,
-                        color: Colors.orange,
+                        color: AppColors.warning,
                         size: 32,
                       ),
                     ),
@@ -266,7 +363,7 @@ class _HomeScreenState extends ConsumerState<HomeScreen>
                       height: 40,
                       child: const Icon(
                         Icons.location_on,
-                        color: Colors.red,
+                        color: AppColors.danger,
                         size: 40,
                       ),
                     ),
@@ -283,7 +380,7 @@ class _HomeScreenState extends ConsumerState<HomeScreen>
           child: SafeArea(
             child: AppSidebarToggleButton(
               style: IconButton.styleFrom(
-                backgroundColor: Colors.white,
+                backgroundColor: AppColors.surface,
                 elevation: 2,
               ),
             ),
@@ -297,8 +394,8 @@ class _HomeScreenState extends ConsumerState<HomeScreen>
           bottom: 16,
           child: FloatingActionButton(
             onPressed: _initLocation,
-            backgroundColor: Colors.white,
-            child: const Icon(Icons.my_location, color: Colors.blue),
+            backgroundColor: AppColors.surface,
+            child: const Icon(Icons.my_location, color: AppColors.info),
           ),
         ),
       ],
@@ -311,59 +408,46 @@ class _HomeScreenState extends ConsumerState<HomeScreen>
       minChildSize: 0.1,
       maxChildSize: 0.4,
       builder: (context, scrollController) {
-        return Container(
-          decoration: const BoxDecoration(
-            color: Colors.white,
-            borderRadius: BorderRadius.vertical(top: Radius.circular(16)),
-            boxShadow: [
-              BoxShadow(
-                color: Colors.black26,
-                blurRadius: 10,
-                offset: Offset(0, -2),
-              ),
-            ],
+        return AppBottomSheet(
+          borderRadius: const BorderRadius.vertical(
+            top: Radius.circular(AppRadii.lg),
           ),
           child: ListView(
             controller: scrollController,
-            padding: const EdgeInsets.all(16),
+            padding: const EdgeInsets.all(AppSpacing.lg),
             children: [
-              Center(
-                child: Container(
-                  width: 40,
-                  height: 4,
-                  margin: const EdgeInsets.only(bottom: 16),
-                  decoration: BoxDecoration(
-                    color: Colors.grey[300],
-                    borderRadius: BorderRadius.circular(2),
-                  ),
-                ),
+              const AppSheetHandle(
+                margin: EdgeInsets.only(bottom: AppSpacing.lg),
               ),
               _buildNearbyDriversChip(),
+              if (_showLocationNotice) ...[
+                _buildLocationNotice(),
+                const SizedBox(height: 12),
+              ],
               _buildLocationField(
                 icon: Icons.circle,
-                iconColor: Colors.green,
+                iconColor: AppColors.success,
                 hint: 'Pickup location',
                 value:
                     _pickupLocation?.name ??
                     (_currentPosition != null ? 'Current location' : null),
+                semanticsLabel: 'Pickup location',
+                trailing: (_pickupLocation != null && _currentPosition != null)
+                    ? TextButton(
+                        onPressed: _clearManualPickup,
+                        child: const Text('Use current location'),
+                      )
+                    : null,
                 onTap: () async {
-                  final origin = _pickupLocation != null
-                      ? LatLng(_pickupLocation!.lat, _pickupLocation!.lng)
-                      : _currentPosition;
-                  if (origin == null) {
-                    ScaffoldMessenger.of(context).showSnackBar(
-                      const SnackBar(
-                        content: Text('Could not determine your location'),
-                      ),
-                    );
-                    return;
-                  }
+                  final bias = _searchBias();
                   final place = await context.push<Place>(
                     '/location-search',
                     extra: {
-                      'hint': 'Pickup location',
-                      'lat': origin.latitude,
-                      'lng': origin.longitude,
+                      'hint': _currentPosition != null
+                          ? 'Pickup location'
+                          : 'Enter pickup location',
+                      'lat': bias.latitude,
+                      'lng': bias.longitude,
                     },
                   );
                   if (place != null && mounted) {
@@ -375,27 +459,23 @@ class _HomeScreenState extends ConsumerState<HomeScreen>
               const SizedBox(height: 12),
               _buildLocationField(
                 icon: Icons.square,
-                iconColor: Colors.red,
+                iconColor: AppColors.danger,
                 hint: 'Where to?',
                 value: _destination?.name,
                 onTap: () async {
-                  final origin = _pickupLocation != null
-                      ? LatLng(_pickupLocation!.lat, _pickupLocation!.lng)
-                      : _currentPosition;
-                  if (origin == null) {
-                    ScaffoldMessenger.of(context).showSnackBar(
-                      const SnackBar(
-                        content: Text('Could not determine your location'),
-                      ),
-                    );
-                    return;
-                  }
+                  // The destination field always opens the search. With no
+                  // pickup and no device fix the `_searchBias()` center only
+                  // biases the request — it is never written into
+                  // `_pickupLocation` or the booking.
+                  final hasOrigin =
+                      _pickupLocation != null || _currentPosition != null;
+                  final bias = _searchBias();
                   final place = await context.push<Place>(
                     '/location-search',
                     extra: {
-                      'hint': 'Where to?',
-                      'lat': origin.latitude,
-                      'lng': origin.longitude,
+                      'hint': hasOrigin ? 'Where to?' : 'Enter destination',
+                      'lat': bias.latitude,
+                      'lng': bias.longitude,
                     },
                   );
                   if (place != null && mounted) {
@@ -404,8 +484,10 @@ class _HomeScreenState extends ConsumerState<HomeScreen>
                   }
                 },
               ),
-              if ((_pickupLocation != null || _currentPosition != null) &&
-                  _destination != null) ...[
+              // A destination is enough to start an itinerary: stops can be
+              // searched with a bias even before an origin exists (the booking
+              // action still requires a pickup/fix).
+              if (_destination != null) ...[
                 const SizedBox(height: 8),
                 StopList(
                   stops: _stops,
@@ -413,7 +495,6 @@ class _HomeScreenState extends ConsumerState<HomeScreen>
                   onRemove: _removeStop,
                   onReorder: _reorderStops,
                 ),
-                if (_stops.isNotEmpty) _buildStopsFareNote(),
               ],
               const SizedBox(height: 16),
               _buildRouteInfo(preview),
@@ -443,57 +524,110 @@ class _HomeScreenState extends ConsumerState<HomeScreen>
     required String hint,
     String? value,
     VoidCallback? onTap,
+    Widget? trailing,
+    String? semanticsLabel,
   }) {
-    return InkWell(
-      onTap: onTap,
-      child: Container(
-        padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 14),
-        decoration: BoxDecoration(
-          color: Colors.grey[100],
-          borderRadius: BorderRadius.circular(12),
-        ),
-        child: Row(
-          children: [
-            Icon(icon, color: iconColor, size: 16),
-            const SizedBox(width: 12),
-            Expanded(
-              child: Text(
-                value ?? hint,
-                style: TextStyle(
-                  color: value != null ? Colors.black : Colors.grey,
-                  fontSize: 16,
+    return Semantics(
+      container: true,
+      button: onTap != null,
+      label: semanticsLabel,
+      child: InkWell(
+        onTap: onTap,
+        child: Container(
+          padding: const EdgeInsets.symmetric(
+            horizontal: AppSpacing.md,
+            vertical: 14,
+          ),
+          decoration: BoxDecoration(
+            color: AppColors.surfaceMuted,
+            borderRadius: BorderRadius.circular(AppRadii.md),
+          ),
+          child: Row(
+            children: [
+              Icon(icon, color: iconColor, size: 16),
+              const SizedBox(width: AppSpacing.md),
+              Expanded(
+                child: Text(
+                  value ?? hint,
+                  style: AppTextStyles.subtitle.copyWith(
+                    fontWeight: FontWeight.w400,
+                    color: value != null ? null : AppColors.muted,
+                  ),
                 ),
               ),
-            ),
-          ],
+              ?trailing,
+            ],
+          ),
         ),
       ),
     );
   }
 
-  /// The fare-estimate honesty caveat.
-  ///
-  /// Waypoint-aware pricing is an API gap: `POST /rides` quotes
-  /// `pickup → dropoff` only and `GET /estimates/price` takes no stops. The
-  /// rider keeps seeing the API's single-leg number, never a fabricated
-  /// stop-inclusive one, and this note names the limitation.
-  Widget _buildStopsFareNote() {
-    return Padding(
-      key: const ValueKey<String>('stops-fare-note'),
-      padding: const EdgeInsets.only(top: 8),
-      child: Row(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          Icon(Icons.info_outline, size: 16, color: Colors.grey[600]),
-          const SizedBox(width: 8),
-          Expanded(
-            child: Text(
-              'Stops are not included in the price estimate. The fare is based '
-              'on pickup to the final destination.',
-              style: TextStyle(fontSize: 12, color: Colors.grey[700]),
+  /// True when there is no device fix and the last location check did not grant
+  /// access. The manual-entry notice keeps showing even after a manual pickup is
+  /// chosen; it clears only once a device fix arrives.
+  bool get _showLocationNotice =>
+      _currentPosition == null &&
+      _locationStatus != null &&
+      _locationStatus != LocationAvailability.granted;
+
+  /// The persistent explanation of a missing device fix, with the recovery
+  /// affordance so the rider is never silently blocked. The search bias / map
+  /// center is never offered here as a pickup.
+  Widget _buildLocationNotice() {
+    const message =
+        'Location is off. Enter a pickup location, or enable location.';
+    final status = _locationStatus;
+    return Semantics(
+      container: true,
+      label: message,
+      child: Container(
+        width: double.infinity,
+        padding: const EdgeInsets.all(AppSpacing.md),
+        decoration: BoxDecoration(
+          color: AppColors.warningTint,
+          borderRadius: BorderRadius.circular(AppRadii.md),
+          border: Border.all(color: AppColors.warningBorder),
+        ),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Row(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                const Icon(
+                  Icons.location_off,
+                  size: 18,
+                  color: AppColors.warning,
+                ),
+                const SizedBox(width: AppSpacing.sm),
+                const Expanded(
+                  child: Text(message, style: AppTextStyles.label),
+                ),
+              ],
             ),
-          ),
-        ],
+            Row(
+              children: [
+                if (status == LocationAvailability.deniedPermanently)
+                  TextButton(
+                    onPressed: () =>
+                        ref.read(locationServiceProvider).openAppSettings(),
+                    child: const Text('Open settings'),
+                  )
+                else if (status == LocationAvailability.servicesDisabled)
+                  TextButton(
+                    onPressed: () =>
+                        ref.read(locationServiceProvider).openLocationSettings(),
+                    child: const Text('Open location settings'),
+                  ),
+                TextButton(
+                  onPressed: _initLocation,
+                  child: const Text('Try again'),
+                ),
+              ],
+            ),
+          ],
+        ),
       ),
     );
   }
@@ -503,21 +637,9 @@ class _HomeScreenState extends ConsumerState<HomeScreen>
     // refresh failed (`isStale`): the map keeps the road geometry, the row tells
     // the truth about the refresh.
     if (preview.hasError) {
-      return Row(
-        children: [
-          const Icon(Icons.error_outline, size: 16, color: Colors.red),
-          const SizedBox(width: 8),
-          Expanded(
-            child: Text(
-              preview.message ?? HomeRoutePreview.unavailableReason,
-              style: const TextStyle(color: Colors.red, fontSize: 14),
-            ),
-          ),
-          TextButton(
-            onPressed: _retryRoute,
-            child: const Text('Retry'),
-          ),
-        ],
+      return AppErrorRow(
+        message: preview.message ?? HomeRoutePreview.unavailableReason,
+        onRetry: _retryRoute,
       );
     }
 
@@ -526,11 +648,11 @@ class _HomeScreenState extends ConsumerState<HomeScreen>
     if (preview.isLoading) {
       return Row(
         children: [
-          Icon(Icons.route, size: 16, color: Colors.grey[600]),
-          const SizedBox(width: 8),
+          Icon(Icons.route, size: 16, color: AppColors.muted),
+          const SizedBox(width: AppSpacing.sm),
           Text(
             'Finding route…',
-            style: TextStyle(color: Colors.grey[700], fontSize: 14),
+            style: AppTextStyles.body.copyWith(color: AppColors.mutedStrong),
           ),
         ],
       );
@@ -544,13 +666,12 @@ class _HomeScreenState extends ConsumerState<HomeScreen>
 
     return Row(
       children: [
-        Icon(Icons.route, size: 16, color: Colors.grey[600]),
-        const SizedBox(width: 8),
+        Icon(Icons.route, size: 16, color: AppColors.muted),
+        const SizedBox(width: AppSpacing.sm),
         Text(
           '$prefix${distanceKm.toStringAsFixed(1)} km  •  ~$minutes min',
-          style: TextStyle(
-            color: Colors.grey[700],
-            fontSize: 14,
+          style: AppTextStyles.body.copyWith(
+            color: AppColors.mutedStrong,
             fontWeight: FontWeight.w500,
           ),
         ),
@@ -571,29 +692,11 @@ class _HomeScreenState extends ConsumerState<HomeScreen>
         (_pickupLocation != null || _currentPosition != null);
     final isLoading = rideState.isLoading;
 
-    return SizedBox(
-      width: double.infinity,
-      child: ElevatedButton(
-        onPressed: canRequest && !isLoading
-            ? () => _showRideEstimates(_destination!)
-            : null,
-        style: ElevatedButton.styleFrom(
-          padding: const EdgeInsets.symmetric(vertical: 14),
-          shape: RoundedRectangleBorder(
-            borderRadius: BorderRadius.circular(12),
-          ),
-        ),
-        child: isLoading
-            ? const SizedBox(
-                width: 20,
-                height: 20,
-                child: CircularProgressIndicator(
-                  strokeWidth: 2,
-                  color: Colors.white,
-                ),
-              )
-            : const Text('Request Trip', style: TextStyle(fontSize: 16)),
-      ),
+    return AppButton(
+      label: 'Request Trip',
+      expand: true,
+      isLoading: isLoading,
+      onPressed: canRequest ? () => _showRideEstimates(_destination!) : null,
     );
   }
 
@@ -609,15 +712,19 @@ class _HomeScreenState extends ConsumerState<HomeScreen>
       return;
     }
 
-    final coords = {
-      'pickup_lat': pickupPos.latitude,
-      'pickup_lng': pickupPos.longitude,
-      'dropoff_lat': destination.lat,
-      'dropoff_lng': destination.lng,
-    };
+    final args = PriceEstimateArgs(
+      pickupLat: pickupPos.latitude,
+      pickupLng: pickupPos.longitude,
+      dropoffLat: destination.lat,
+      dropoffLng: destination.lng,
+      stops: [
+        for (final stop in _stops)
+          EstimateStop(lat: stop.lat, lng: stop.lng, address: stop.address),
+      ],
+    );
 
     try {
-      final estimates = await ref.read(priceEstimatesProvider(coords).future);
+      final estimates = await ref.read(priceEstimatesProvider(args).future);
       if (!mounted) return;
 
       final selectedType = await showModalBottomSheet<String>(
@@ -650,6 +757,10 @@ class _HomeScreenState extends ConsumerState<HomeScreen>
         : _currentPosition;
 
     if (pickupPos == null) return;
+
+    // Persist the pickup the booking actually used so it survives Home's
+    // disposal during the trip; `null` records "started from the device fix".
+    ref.read(pickupMemoryProvider.notifier).remember(_pickupLocation);
 
     await ref
         .read(rideCreationProvider.notifier)
