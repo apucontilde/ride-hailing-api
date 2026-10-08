@@ -28,6 +28,11 @@ class ActiveRideScreen extends ConsumerStatefulWidget {
 
 class _ActiveRideScreenState extends ConsumerState<ActiveRideScreen>
     with WidgetsBindingObserver {
+  /// Fallback search-bias center when the trip has no pickup and there is no
+  /// device fix. It biases the destination search only — it is never written
+  /// into any booking/pickup/destination state.
+  static const LatLng _defaultMapCenter = LatLng(9.9281, -84.0907);
+
   final MapController _mapController = MapController();
   LatLng? _riderPosition;
   StreamSubscription<dynamic>? _positionSubscription;
@@ -203,13 +208,13 @@ class _ActiveRideScreenState extends ConsumerState<ActiveRideScreen>
     final rideId = ref.read(rideStatusProvider).rideId;
     if (rideId == null) return;
 
-    final origin = _searchOrigin();
+    final bias = _searchBias();
     final place = await context.push<Place>(
       '/location-search',
       extra: {
         'hint': 'Where to?',
-        if (origin != null) 'lat': origin.latitude,
-        if (origin != null) 'lng': origin.longitude,
+        'lat': bias.latitude,
+        'lng': bias.longitude,
       },
     );
     if (place == null || !mounted) return;
@@ -233,9 +238,13 @@ class _ActiveRideScreenState extends ConsumerState<ActiveRideScreen>
     ).showSnackBar(SnackBar(content: Text(message)));
   }
 
-  /// A sensible search center for a new destination: the trip's pickup when the
-  /// accept payload carried one, else the rider's own live position.
-  LatLng? _searchOrigin() {
+  /// The search center for a new destination: the trip's pickup, else the
+  /// rider's last-known position, else the visible map center, else the default
+  /// region constant. It biases `/places/autocomplete` only — it is never
+  /// written into the booking or the destination, so a change-destination search
+  /// always opens with a real bias and can never hit the blocking
+  /// `'Enable location to search nearby'` branch (bug #21).
+  LatLng _searchBias() {
     final pickup = ref.read(rideStatusProvider).rideData?['pickup'];
     if (pickup is Map) {
       final lat = pickup['lat'];
@@ -244,7 +253,12 @@ class _ActiveRideScreenState extends ConsumerState<ActiveRideScreen>
         return LatLng(lat.toDouble(), lng.toDouble());
       }
     }
-    return _riderPosition;
+    if (_riderPosition != null) return _riderPosition!;
+    try {
+      return _mapController.camera.center;
+    } catch (_) {
+      return _defaultMapCenter;
+    }
   }
 
   void _centerOnDriver(DriverLocation location) {

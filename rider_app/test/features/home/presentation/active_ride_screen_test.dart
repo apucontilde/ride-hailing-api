@@ -48,6 +48,7 @@ Map<String, dynamic> acceptedEvent({
   String driverId = 'driver-1',
   double rating = 4.9,
   int etaSeconds = 300,
+  bool includePickup = true,
 }) => {
       'type': 'ride.updated',
       'data': {
@@ -67,7 +68,8 @@ Map<String, dynamic> acceptedEvent({
           },
           'location': {'lat': 9.93, 'lng': -84.09, 'heading': 90},
         },
-        'pickup': {'lat': 9.9281, 'lng': -84.0907, 'address': 'Main St'},
+        if (includePickup)
+          'pickup': {'lat': 9.9281, 'lng': -84.0907, 'address': 'Main St'},
         'dropoff': {'lat': 9.94, 'lng': -84.10, 'address': 'Airport Rd'},
       },
     };
@@ -238,6 +240,7 @@ void main() {
     FakeLocationPingService? ping,
     Duration routeRefreshInterval = const Duration(seconds: 30),
     Place? changeDestinationResult,
+    List<Map<String, dynamic>>? searchExtras,
   }) {
     final router = GoRouter(
       initialLocation: '/active-ride',
@@ -266,20 +269,27 @@ void main() {
           ),
         ),
         // The destination-change round trip: production routes this to the real
-        // search screen; the test pops a fixed `Place`.
-        if (changeDestinationResult != null)
+        // search screen; the test records the pushed bias `extra` and pops a
+        // fixed `Place`, so the push contract (a non-null center) is what is
+        // under test, not the search UI.
+        if (changeDestinationResult != null || searchExtras != null)
           GoRoute(
             path: '/location-search',
-            builder: (_, _) => Builder(
-              builder: (context) {
-                WidgetsBinding.instance.addPostFrameCallback((_) {
-                  if (context.mounted) {
-                    context.pop<Place>(changeDestinationResult);
-                  }
-                });
-                return const Scaffold(body: SizedBox.shrink());
-              },
-            ),
+            builder: (_, state) {
+              searchExtras?.add(
+                (state.extra as Map?)?.cast<String, dynamic>() ?? {},
+              );
+              return Builder(
+                builder: (context) {
+                  WidgetsBinding.instance.addPostFrameCallback((_) {
+                    if (context.mounted && changeDestinationResult != null) {
+                      context.pop<Place>(changeDestinationResult);
+                    }
+                  });
+                  return const Scaffold(body: SizedBox.shrink());
+                },
+              );
+            },
           ),
       ],
     );
@@ -1094,6 +1104,90 @@ void main() {
       'address': 'New Rd',
     });
     expect(find.text('Destination updated'), findsOneWidget);
+
+    await settleAndDispose(tester);
+  });
+
+  // ---------------------------------------------------------------------------
+  // Bug #21 — change-destination search with no origin. The `_searchBias()`
+  // center biases the request only; it is never written into the booking or the
+  // destination, so the search can never hit the real screen's blocking
+  // `'Enable location to search nearby'` branch (`location_search_screen.dart:67`).
+  // ---------------------------------------------------------------------------
+
+  testWidgets(
+      'no pickup: change-destination search opens with a bias and routes the picked place',
+      (WidgetTester tester) async {
+    fixture();
+    const newDestination = Place(
+      id: 'new-dest',
+      name: 'New Destination',
+      address: 'New Rd',
+      lat: 9.97,
+      lng: -84.14,
+    );
+    final searchExtras = <Map<String, dynamic>>[];
+    final putBodies = <Map<String, dynamic>>[];
+    dioAdapter.onPut(
+      '/api/v1/rides/ride-1/destination',
+      (server) => server.replyCallback(200, (options) {
+        putBodies.add(Map<String, dynamic>.from(options.data as Map));
+        return {'ride': rideJson(status: 'in_progress')};
+      }),
+      data: Matchers.any,
+    );
+    // No pickup on the accept payload and no device fix on the active trip.
+    emit(acceptedEvent(includePickup: false));
+
+    await tester.pumpWidget(
+      buildRouter(
+        changeDestinationResult: newDestination,
+        searchExtras: searchExtras,
+      ),
+    );
+    await tester.pump();
+
+    await tester.tap(
+      find.byKey(const ValueKey<String>('change-destination-button')),
+    );
+    await tester.pump();
+    await tester.pump();
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 10));
+
+    // The search opened with a non-null bias (the fallback center), so the real
+    // screen's blocking branch is unreachable, and the picked place was PUT.
+    expect(searchExtras, hasLength(1));
+    expect(searchExtras.single['hint'], 'Where to?');
+    expect(searchExtras.single['lat'], isNotNull);
+    expect(searchExtras.single['lng'], isNotNull);
+    expect(find.text('Enable location to search nearby'), findsNothing);
+    expect(putBodies, hasLength(1));
+    expect(putBodies.single, {'lat': 9.97, 'lng': -84.14, 'address': 'New Rd'});
+
+    // The server now reports the picked destination; the screen re-reads the
+    // itinerary and re-routes the new leg with the picked coordinates.
+    rideResponse = {
+      'ride': rideJson(
+        status: 'in_progress',
+        dropoffLat: 9.97,
+        dropoffLng: -84.14,
+      ),
+      'stops': <dynamic>[],
+    };
+    await emitAndSettle(tester, {
+      'type': 'ride.updated',
+      'data': {
+        'ride_id': 'ride-1',
+        'status': 'in_progress',
+        'dropoff': {'lat': 9.97, 'lng': -84.14},
+      },
+    });
+    await pumpRoute(tester);
+
+    expect(routeRequests, isNotEmpty);
+    expect(routeRequests.last['to_lat'], 9.97);
+    expect(routeRequests.last['to_lng'], -84.14);
 
     await settleAndDispose(tester);
   });
