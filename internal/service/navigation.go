@@ -42,6 +42,22 @@ type RouteInfo struct {
 	AscentM        float64
 	DescentM       float64
 	ElevationAware bool
+	// Legs is the per-leg breakdown of a multi-waypoint itinerary, in visit
+	// order (api_plans/[fare]_waypoint_fare.md §3.2). It is additive and is
+	// populated only by GetItineraryRoute for a multi-leg request; GetRoute
+	// leaves it nil, and the fare layer then synthesizes a single leg from the
+	// aggregate. Its length is len(waypoints)-1, or 0 on the two-point path.
+	Legs []RouteLeg
+}
+
+// RouteLeg is one consecutive-waypoint slice of an itinerary route: the summed
+// geometry is the aggregate, the per-leg distances/durations are the additive
+// breakdown the fare layer exposes (api_plans/[fare]_waypoint_fare.md §3.2).
+type RouteLeg struct {
+	DistanceMeters int
+	DurationSecs   int
+	AscentM        float64
+	DescentM       float64
 }
 
 // RegionSource is the OPTIONAL region-resolution capability of a
@@ -185,6 +201,148 @@ func (s *NavigationService) GetRoute(fromLat, fromLng, toLat, toLng float64) (*R
 	// disagree). estimateRoute and legacyRoute deliberately leave it empty.
 	info.RegionID = fromRegion.RegionID
 	return info, nil
+}
+
+// GetItineraryRoute composes an ordered waypoint itinerary
+// [pickup, stop1, …, stopN, dropoff] (len >= 2) from consecutive two-point
+// GetRoute calls (api_plans/[fare]_waypoint_fare.md §3.2). Routing exposes no
+// via-point API, so the itinerary route is a sum of its legs.
+//
+// The region rule is chosen once for the WHOLE itinerary, never per leg:
+//
+//   - every leg resolved to the SAME region (including the all-empty legacy
+//     unscoped path) → the aggregate keeps that RegionID (possibly "") and
+//     IsEstimate=false. ElevationAware is true only when EVERY leg is
+//     elevation-aware; otherwise the aggregate fails flat
+//     (AscentM=DescentM=0, ElevationAware=false), because mixing real ascent
+//     with a flat leg would fabricate a climb.
+//   - any leg is itself an estimate, or the legs resolved to different regions
+//     → the whole itinerary is a straight-line estimate: distance is the sum
+//     of the consecutive haversines, duration is distance/avgSpeedMps, the
+//     elevation totals are 0/false, RegionID is empty (so the fare layer uses
+//     the default card), and IsEstimate is true. A real region-A leg is NEVER
+//     summed with another region's data and priced against region A's card.
+//
+// A genuine routing failure on any leg propagates unchanged (HTTP 500), as a
+// single GetRoute would. A zero-length leg (a repeated waypoint) is harmless.
+//
+// len == 2 delegates straight to GetRoute, so the single-leg path stays
+// byte-for-byte identical; Legs is left nil and the fare layer synthesizes the
+// one leg from the aggregate.
+func (s *NavigationService) GetItineraryRoute(waypoints []model.LatLng) (*RouteInfo, error) {
+	if len(waypoints) < 2 {
+		return nil, fmt.Errorf("itinerary needs at least two waypoints")
+	}
+	if len(waypoints) == 2 {
+		return s.GetRoute(waypoints[0].Lat, waypoints[0].Lng, waypoints[1].Lat, waypoints[1].Lng)
+	}
+
+	legs := make([]RouteLeg, 0, len(waypoints)-1)
+	legRegions := make([]string, 0, len(waypoints)-1)
+	totalDistance, totalDuration := 0, 0
+	var totalAscent, totalDescent float64
+	allElevationAware := true
+	anyEstimate := false
+	var polyline []model.LatLng
+
+	for i := 0; i+1 < len(waypoints); i++ {
+		from, to := waypoints[i], waypoints[i+1]
+		leg, err := s.GetRoute(from.Lat, from.Lng, to.Lat, to.Lng)
+		if err != nil {
+			return nil, err
+		}
+		legs = append(legs, RouteLeg{
+			DistanceMeters: leg.DistanceMeters,
+			DurationSecs:   leg.DurationSecs,
+			AscentM:        leg.AscentM,
+			DescentM:       leg.DescentM,
+		})
+		legRegions = append(legRegions, leg.RegionID)
+		totalDistance += leg.DistanceMeters
+		totalDuration += leg.DurationSecs
+		totalAscent += leg.AscentM
+		totalDescent += leg.DescentM
+		if !leg.ElevationAware {
+			allElevationAware = false
+		}
+		if leg.IsEstimate {
+			anyEstimate = true
+		}
+		for _, p := range leg.Polyline {
+			polyline = appendPoint(polyline, p)
+		}
+	}
+
+	regionID := legRegions[0]
+	mixedRegions := false
+	for _, r := range legRegions[1:] {
+		if r != regionID {
+			mixedRegions = true
+			break
+		}
+	}
+	// An estimate if any leg was uncovered, or the legs disagree on their
+	// owning region. All-empty legs (the legacy unscoped path, which carries no
+	// region) are NOT mixed: they sum as a real route and fall back to the
+	// default card, exactly as the single-leg path does.
+	if anyEstimate || mixedRegions {
+		return itineraryEstimate(waypoints), nil
+	}
+
+	if !allElevationAware {
+		// Fail flat: a partial-coverage itinerary reports no climb rather than a
+		// real ascent summed with a flat leg.
+		totalAscent, totalDescent = 0, 0
+		for i := range legs {
+			legs[i].AscentM, legs[i].DescentM = 0, 0
+		}
+	}
+
+	return &RouteInfo{
+		DistanceMeters: totalDistance,
+		DurationSecs:   totalDuration,
+		Polyline:       polyline,
+		IsEstimate:     false,
+		RegionID:       regionID,
+		AscentM:        totalAscent,
+		DescentM:       totalDescent,
+		ElevationAware: allElevationAware,
+		Legs:           legs,
+	}, nil
+}
+
+// itineraryEstimate is the whole-itinerary straight-line answer for a
+// mixed/partly-uncovered itinerary: one RouteLeg per consecutive waypoint pair
+// (the sum of the haversines, the estimateRoute rule), duration distance /
+// avgSpeedMps per leg, and a straight polyline through every waypoint. The
+// aggregate distance/duration are the SUM of the produced legs, so the §3.3
+// identity Σ legs[].distance_fare == estimate.distance_fare (and the time
+// analog) holds and len(Legs) == len(waypoints)-1 == stops+1. The estimate
+// deliberately invents no region and claims no elevation.
+func itineraryEstimate(waypoints []model.LatLng) *RouteInfo {
+	var polyline []model.LatLng
+	legs := make([]RouteLeg, 0, len(waypoints)-1)
+	totalDistance, totalDuration := 0, 0
+	for i := 0; i+1 < len(waypoints); i++ {
+		from, to := waypoints[i], waypoints[i+1]
+		legDistance := int(math.Round(routing.HaversineMeters(from.Lat, from.Lng, to.Lat, to.Lng)))
+		legDuration := legDistance / avgSpeedMps
+		legs = append(legs, RouteLeg{
+			DistanceMeters: legDistance,
+			DurationSecs:   legDuration,
+		})
+		totalDistance += legDistance
+		totalDuration += legDuration
+		polyline = appendPoint(polyline, from)
+		polyline = appendPoint(polyline, to)
+	}
+	return &RouteInfo{
+		DistanceMeters: totalDistance,
+		DurationSecs:   totalDuration,
+		Polyline:       polyline,
+		IsEstimate:     true,
+		Legs:           legs,
+	}
 }
 
 // routingDataGap reports whether a routing error is a DATA gap — the pins or

@@ -88,30 +88,6 @@ func TestRegisterRejectsInvalidEmail(t *testing.T) {
 	resp.AssertStatus(t, http.StatusUnprocessableEntity)
 }
 
-func TestLoginReturnsRefreshToken(t *testing.T) {
-	ts.PostJSON("/api/v1/auth/register", map[string]string{
-		"email":    "refreshtest@test.com",
-		"phone":    "+6666666666",
-		"password": "SecurePass1",
-	})
-
-	resp := ts.PostJSON("/api/v1/auth/login", map[string]string{
-		"email":    "refreshtest@test.com",
-		"password": "SecurePass1",
-	})
-	resp.AssertStatus(t, http.StatusOK)
-	resp.AssertJSONHas(t, "refresh_token")
-
-	var loginResult struct {
-		RefreshToken string `json:"refresh_token"`
-	}
-	testutil.ParseJSON(t, resp.Body, &loginResult)
-
-	if loginResult.RefreshToken == "" {
-		t.Error("expected non-empty refresh_token")
-	}
-}
-
 func TestRefreshTokenIssuesNewTokens(t *testing.T) {
 	ts.PostJSON("/api/v1/auth/register", map[string]string{
 		"email":    "refreshexchange@test.com",

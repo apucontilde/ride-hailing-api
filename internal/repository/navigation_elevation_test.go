@@ -42,44 +42,48 @@ func TestToRoutingNodesNULLvsZero(t *testing.T) {
 	}
 }
 
-func TestFillUnknownElevationPropagatesKnownNeighbour(t *testing.T) {
-	nodes := []routing.Node{
-		{ID: 1, EleM: 100}, // known
-		{ID: 2, EleM: 0},   // unknown
-		{ID: 3, EleM: 50},  // known
+func TestFillUnknownElevation(t *testing.T) {
+	cases := []struct {
+		name  string
+		nodes []routing.Node
+		edges []routing.Edge
+		known map[int64]bool
+		want  []float64
+	}{
+		{
+			name: "propagates_known_neighbour_average_and_leaves_known_untouched",
+			nodes: []routing.Node{
+				{ID: 1, EleM: 100}, // known
+				{ID: 2, EleM: 0},   // unknown -> average of 100 and 50
+				{ID: 3, EleM: 50},  // known
+			},
+			edges: []routing.Edge{
+				{Source: 1, Target: 2, Cost: 10},
+				{Source: 2, Target: 3, Cost: 10},
+			},
+			known: map[int64]bool{1: true, 3: true},
+			want:  []float64{100, 75, 50},
+		},
+		{
+			name: "no_known_neighbour_keeps_zero",
+			nodes: []routing.Node{
+				{ID: 1, EleM: 0}, // unknown
+				{ID: 2, EleM: 0}, // unknown
+			},
+			edges: []routing.Edge{{Source: 1, Target: 2, Cost: 10}},
+			known: map[int64]bool{},
+			want:  []float64{0, 0},
+		},
 	}
-	edges := []routing.Edge{
-		{Source: 1, Target: 2, Cost: 10},
-		{Source: 2, Target: 3, Cost: 10},
-	}
-	known := map[int64]bool{1: true, 3: true}
-
-	fillUnknownElevation(nodes, edges, known)
-
-	// Node 2's two known neighbours average to 75.
-	if nodes[1].EleM != 75 {
-		t.Errorf("node 2 EleM = %v, want 75", nodes[1].EleM)
-	}
-	// Known nodes are untouched.
-	if nodes[0].EleM != 100 || nodes[2].EleM != 50 {
-		t.Errorf("known nodes mutated: %v", nodes)
-	}
-}
-
-func TestFillUnknownElevationNoKnownNeighbourKeepsZero(t *testing.T) {
-	nodes := []routing.Node{
-		{ID: 1, EleM: 0}, // unknown
-		{ID: 2, EleM: 0}, // unknown
-	}
-	edges := []routing.Edge{{Source: 1, Target: 2, Cost: 10}}
-	known := map[int64]bool{}
-
-	fillUnknownElevation(nodes, edges, known)
-
-	for i, n := range nodes {
-		if n.EleM != 0 {
-			t.Errorf("node %d EleM = %v, want 0 (no known neighbour)", i, n.EleM)
-		}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			fillUnknownElevation(tc.nodes, tc.edges, tc.known)
+			for i, want := range tc.want {
+				if tc.nodes[i].EleM != want {
+					t.Errorf("node %d EleM = %v, want %v", tc.nodes[i].ID, tc.nodes[i].EleM, want)
+				}
+			}
+		})
 	}
 }
 
@@ -112,29 +116,47 @@ func TestRoutingElevationDefaultOnAtWiringBoundary(t *testing.T) {
 }
 
 func TestResolveElevationGate(t *testing.T) {
-	// A repo with elevation configured but inactive config must resolve to flat.
-	r := &NativeNavigationRepo{
-		elevOn:   false,
-		elev:     routing.CostWeights{AscentW: 1.5, DescentW: 0.3, MaxGrade: 0.15, DeadbandM: 3},
-		minCover: 0.99,
-	}
-	nodes := []routing.Node{{ID: 1, EleM: 100}, {ID: 2, EleM: 110}}
+	weights := routing.CostWeights{AscentW: 1.5, DescentW: 0.3, MaxGrade: 0.15, DeadbandM: 3}
+	flat := routing.CostWeights{}
 	edges := []routing.Edge{{Source: 1, Target: 2, Cost: 10}}
-	known := map[int64]bool{1: true, 2: true}
 
-	if w := r.resolveElevation(nodes, edges, known); w != (routing.CostWeights{}) {
+	// Construct through the same wiring path the engine factory uses
+	// (configureElevation), never by poking the repo's private fields: that
+	// boundary is what production actually goes through.
+	repo := func(enabled bool, minCover float64) *NativeNavigationRepo {
+		return newNativeRepo(nil, nil, 0).configureElevation(weights, enabled, minCover)
+	}
+	fullNodes := func() []routing.Node {
+		return []routing.Node{{ID: 1, EleM: 100}, {ID: 2, EleM: 110}}
+	}
+	fullKnown := map[int64]bool{1: true, 2: true}
+	partialNodes := func() []routing.Node {
+		return []routing.Node{{ID: 1, EleM: 100}, {ID: 2, EleM: 110}, {ID: 3, EleM: 0}}
+	}
+	partialKnown := map[int64]bool{1: true, 2: true} // 2 of 3 = 0.667
+
+	// Disabled config -> flat, whatever the coverage.
+	if w := repo(false, 0.99).resolveElevation(fullNodes(), edges, fullKnown); w != flat {
 		t.Errorf("disabled config resolved to non-flat weights %+v", w)
 	}
 
 	// Enabled + full coverage -> the configured weights.
-	r.elevOn = true
-	if w := r.resolveElevation(nodes, edges, known); w != r.elev {
-		t.Errorf("enabled full coverage resolved to %+v, want %+v", w, r.elev)
+	if w := repo(true, 0.99).resolveElevation(fullNodes(), edges, fullKnown); w != weights {
+		t.Errorf("enabled full coverage resolved to %+v, want %+v", w, weights)
 	}
 
 	// Enabled but zero coverage -> flat.
-	if w := r.resolveElevation(nodes, edges, map[int64]bool{}); w != (routing.CostWeights{}) {
+	if w := repo(true, 0.99).resolveElevation(fullNodes(), edges, map[int64]bool{}); w != flat {
 		t.Errorf("zero coverage resolved to non-flat weights %+v", w)
+	}
+
+	// The minCover threshold branch: 2/3 = 0.667 is ABOVE a 0.5 gate and BELOW
+	// a 0.75 gate, so the same coverage flips the router on and off.
+	if w := repo(true, 0.5).resolveElevation(partialNodes(), edges, partialKnown); w != weights {
+		t.Errorf("coverage above minCover resolved to %+v, want live %+v", w, weights)
+	}
+	if w := repo(true, 0.75).resolveElevation(partialNodes(), edges, partialKnown); w != flat {
+		t.Errorf("coverage below minCover resolved to %+v, want flat", w)
 	}
 }
 

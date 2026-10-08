@@ -4,9 +4,11 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"strings"
 	"testing"
 
 	"ride-hailing-api/internal/model"
+	"ride-hailing-api/tests/testutil"
 )
 
 // rideWithStops mirrors the additive envelope of POST /api/v1/rides,
@@ -187,7 +189,7 @@ func TestCreateRideStopsValidation(t *testing.T) {
 		},
 	}
 
-	for i, tt := range tests {
+	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			body := map[string]interface{}{
 				"pickup_lat": 40.7128, "pickup_lng": -74.0060,
@@ -205,8 +207,6 @@ func TestCreateRideStopsValidation(t *testing.T) {
 				t.Errorf("message = %q, want %q (public text: it is rendered verbatim)",
 					gotErr.Error.Message, tt.wantMsg)
 			}
-			// A rejected itinerary must not have booked anything.
-			_ = i
 		})
 	}
 }
@@ -381,7 +381,7 @@ func TestUpdateDestinationWriteFailureIs500Not4xx(t *testing.T) {
 	booked := requestMultiStopRide(t, riderToken, nil)
 
 	// Make the destination write fail the way a dead database would.
-	ts.RideRepo.FailNext = fmt.Errorf("dial tcp 127.0.0.1:5432: connection refused")
+	ts.RideRepo.SetFailNext(fmt.Errorf("dial tcp 127.0.0.1:5432: connection refused"))
 	defer func() { ts.RideRepo.FailNext = nil }()
 
 	resp := ts.DoRequest("PUT", "/api/v1/rides/"+booked.Ride.ID+"/destination", riderToken,
@@ -397,7 +397,7 @@ func TestUpdateDestinationWriteFailureIs500Not4xx(t *testing.T) {
 	if gotErr.Error.Message != "failed to update ride destination" {
 		t.Errorf("message = %q, want the operational sentence", gotErr.Error.Message)
 	}
-	if body := string(resp.Body); contains(body, "connection refused") {
+	if body := string(resp.Body); strings.Contains(body, "connection refused") {
 		t.Errorf("response leaked the internal cause: %s", body)
 	}
 }
@@ -410,7 +410,7 @@ func TestRideStopsEnvelopeIsAdditive(t *testing.T) {
 	booked := requestMultiStopRide(t, riderToken, nil)
 
 	var raw map[string]json.RawMessage
-	parseJSON(t, ts.DoRequest("GET", "/api/v1/rides/"+booked.Ride.ID, riderToken, nil).Body, &raw)
+	testutil.ParseJSON(t, ts.DoRequest("GET", "/api/v1/rides/"+booked.Ride.ID, riderToken, nil).Body, &raw)
 	for _, key := range []string{"ride", "stops"} {
 		if _, ok := raw[key]; !ok {
 			t.Errorf("response is missing the %q key: %v", key, raw)
@@ -422,23 +422,10 @@ func TestRideStopsEnvelopeIsAdditive(t *testing.T) {
 	var withStops struct {
 		Stops []model.RideStop `json:"stops"`
 	}
-	parseJSON(t, ts.DoRequest("GET", "/api/v1/rides/"+booked.Ride.ID, riderToken, nil).Body, &withStops)
+	testutil.ParseJSON(t, ts.DoRequest("GET", "/api/v1/rides/"+booked.Ride.ID, riderToken, nil).Body, &withStops)
 	if withStops.Stops == nil {
 		t.Error("stops encoded as null, want []")
 	}
-}
-
-// contains is a tiny helper so the leak assertion reads as prose.
-func contains(haystack, needle string) bool {
-	return len(needle) > 0 && len(haystack) >= len(needle) &&
-		(func() bool {
-			for i := 0; i+len(needle) <= len(haystack); i++ {
-				if haystack[i:i+len(needle)] == needle {
-					return true
-				}
-			}
-			return false
-		})()
 }
 
 // TestCurrentRideCarriesTheItinerary closes the consistency gap: the app polls
@@ -451,7 +438,7 @@ func TestCurrentRideCarriesTheItinerary(t *testing.T) {
 		resp := ts.DoRequest("GET", "/api/v1/rides/current", riderToken, nil)
 		resp.AssertStatus(t, http.StatusOK)
 		var body map[string]json.RawMessage
-		parseJSON(t, resp.Body, &body)
+		testutil.ParseJSON(t, resp.Body, &body)
 		if string(body["ride"]) != "null" {
 			t.Errorf("ride = %s, want null when there is no current ride", body["ride"])
 		}
@@ -472,7 +459,7 @@ func TestCurrentRideCarriesTheItinerary(t *testing.T) {
 			Ride  *model.Ride      `json:"ride"`
 			Stops []model.RideStop `json:"stops"`
 		}
-		parseJSON(t, resp.Body, &body)
+		testutil.ParseJSON(t, resp.Body, &body)
 		if body.Ride == nil || body.Ride.ID != booked.Ride.ID {
 			t.Fatalf("current ride = %+v, want %s", body.Ride, booked.Ride.ID)
 		}
@@ -500,7 +487,7 @@ func TestRideHistoryCarriesEveryItinerary(t *testing.T) {
 		Rides []model.Ride                `json:"rides"`
 		Stops map[string][]model.RideStop `json:"stops"`
 	}
-	parseJSON(t, resp.Body, &body)
+	testutil.ParseJSON(t, resp.Body, &body)
 
 	if len(body.Rides) != 2 {
 		t.Fatalf("got %d rides, want 2", len(body.Rides))
@@ -587,7 +574,7 @@ func TestGetCurrentRideDistinguishesNotFoundFromOutage(t *testing.T) {
 			Ride  *model.Ride      `json:"ride"`
 			Stops []model.RideStop `json:"stops"`
 		}
-		parseJSON(t, resp.Body, &body)
+		testutil.ParseJSON(t, resp.Body, &body)
 		if body.Ride != nil {
 			t.Errorf("ride = %+v, want null", body.Ride)
 		}
@@ -604,15 +591,15 @@ func TestGetCurrentRideDistinguishesNotFoundFromOutage(t *testing.T) {
 		var body struct {
 			Ride *model.Ride `json:"ride"`
 		}
-		parseJSON(t, resp.Body, &body)
+		testutil.ParseJSON(t, resp.Body, &body)
 		if body.Ride == nil || body.Ride.ID != booked.Ride.ID {
 			t.Fatalf("current ride = %+v, want %s", body.Ride, booked.Ride.ID)
 		}
 	})
 
 	t.Run("a load outage is a 500, never a null ride", func(t *testing.T) {
-		ts.RideRepo.FailNext = fmt.Errorf("dial tcp 127.0.0.1:5432: connection refused")
-		defer func() { ts.RideRepo.FailNext = nil }()
+		ts.RideRepo.SetFailNext(fmt.Errorf("dial tcp 127.0.0.1:5432: connection refused"))
+		defer func() { ts.RideRepo.SetFailNext(nil) }()
 
 		resp := ts.DoRequest("GET", "/api/v1/rides/current", riderToken, nil)
 		if resp.StatusCode == http.StatusOK {
@@ -626,7 +613,7 @@ func TestGetCurrentRideDistinguishesNotFoundFromOutage(t *testing.T) {
 		if gotErr.Error.Message != "failed to load current ride" {
 			t.Errorf("message = %q, want the operational sentence", gotErr.Error.Message)
 		}
-		if body := string(resp.Body); contains(body, "connection refused") {
+		if body := string(resp.Body); strings.Contains(body, "connection refused") {
 			t.Errorf("response leaked the internal cause: %s", body)
 		}
 	})
@@ -709,7 +696,7 @@ func TestCreateRideCoordinateRangeValidation(t *testing.T) {
 					gotErr.Error.Message, tt.wantMsg)
 			}
 			// `message` is public; the internal cause must never leak.
-			if contains(string(resp.Body), "out of range (lat=") {
+			if strings.Contains(string(resp.Body), "out of range (lat=") {
 				t.Errorf("response leaked the internal cause: %s", resp.Body)
 			}
 		})

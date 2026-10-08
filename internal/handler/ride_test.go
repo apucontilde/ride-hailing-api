@@ -28,10 +28,12 @@ func TestValidateCreateCoordinates(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			req := &rideRequest{
-				PickupLat:  f64ptr(tt.pickupLat),
-				PickupLng:  f64ptr(tt.pickupLng),
-				DropoffLat: f64ptr(tt.dropoffLat),
-				DropoffLng: f64ptr(tt.dropoffLng),
+				coordinateStopsRequest: coordinateStopsRequest{
+					PickupLat:  f64ptr(tt.pickupLat),
+					PickupLng:  f64ptr(tt.pickupLng),
+					DropoffLat: f64ptr(tt.dropoffLat),
+					DropoffLng: f64ptr(tt.dropoffLng),
+				},
 			}
 
 			msg, cause := validateCreateCoordinates(req)

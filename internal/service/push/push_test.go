@@ -154,7 +154,12 @@ func TestNotifyUserSwallowsProviderErrorAndKeepsGoing(t *testing.T) {
 func TestNotifyUserLookupFailureIsSwallowed(t *testing.T) {
 	lister := newRoutingProvider()
 	lister.err = errors.New("database unavailable")
-	NewService(lister, &recordingProvider{}).NotifyUser("user-a", Message{Title: "hi"})
+	provider := &recordingProvider{}
+	NewService(lister, provider).NotifyUser("user-a", Message{Title: "hi"})
+
+	if got := provider.messages(); len(got) != 0 {
+		t.Fatalf("a failed token lookup delivered %d messages, want 0: the failure must be swallowed, not treated as an empty token set", len(got))
+	}
 }
 
 func TestNotifyUserIsNilSafe(t *testing.T) {

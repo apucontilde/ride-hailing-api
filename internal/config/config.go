@@ -89,6 +89,15 @@ type Config struct {
 	// supply), which is also floored at 1.0 so pricing never discounts below
 	// the authored tariff. Default and rationale: DefaultFareMaxMultiplier.
 	FareMaxMultiplier float64
+
+	// RideMaxStops is the shared cap on the number of INTERMEDIATE stops a
+	// trip may have, enforced by BuildItinerary on both the create path and
+	// the price-estimate path (api_plans/[fare]_waypoint_fare.md §5). It bounds
+	// the worst-case fan-out to RideMaxStops+1 two-point route calls per
+	// request. Loaded from RIDE_MAX_STOPS; a non-positive value falls back to
+	// DefaultRideMaxStops at the consumer (BuildItinerary), the same pattern as
+	// FareMaxMultiplier.
+	RideMaxStops int
 }
 
 // Fare defaults (api_plans/STATUS.md [fare]). USD is the
@@ -97,6 +106,12 @@ type Config struct {
 const (
 	DefaultFareCurrency      = "USD"
 	DefaultFareMaxMultiplier = 3.0
+	// DefaultRideMaxStops is RIDE_MAX_STOPS's shipped default: a practical
+	// per-car waypoint count that bounds the worst-case fan-out to 9 two-point
+	// route calls per request (× up to 3 vehicle classes = 27), where the
+	// create path was previously unbounded (api_plans/[fare]_waypoint_fare.md
+	// §5). Configurable for regions with larger vehicles.
+	DefaultRideMaxStops = 8
 )
 
 // defaultRoutingSnapRadiusM is ROUTING_SNAP_RADIUS_M's shipped default: 50 km
@@ -229,6 +244,7 @@ func Load() *Config {
 
 		FareCurrency:      getEnv("FARE_CURRENCY", DefaultFareCurrency),
 		FareMaxMultiplier: getFloat("FARE_MAX_MULTIPLIER", DefaultFareMaxMultiplier),
+		RideMaxStops:      getInt("RIDE_MAX_STOPS", DefaultRideMaxStops),
 	}
 }
 

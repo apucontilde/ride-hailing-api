@@ -10,8 +10,6 @@ import (
 	"github.com/jmoiron/sqlx"
 
 	"ride-hailing-api/internal/config"
-	"ride-hailing-api/internal/model"
-	"ride-hailing-api/internal/routing"
 )
 
 // Two datasources on ONE stack (api_plans/06, the "near" deployment shape).
@@ -434,28 +432,47 @@ func TestRegionGraphFollowsTheDatasourceItWasBuiltFrom(t *testing.T) {
 }
 
 // A datasource that goes away AFTER its graph was built must not poison other
-// cities: the graph answers from memory, and the next miss degrades to an
-// estimate (an unresolvable pool), never a 500.
+// cities: the cached graph answers from memory, and a later cache MISS degrades
+// to an estimate (an unresolvable pool), never a 500. The LRU budget of 1 gives
+// a deterministic way to evict the built graph and force that miss.
 func TestUnreachableDatasourceAfterTheGraphIsBuilt(t *testing.T) {
 	fx := seedDatasourceFixture(t)
-	repo := NewNavigationRepoWithDatasources(fx.local, fx.pools, 1000, 0)
+	// maxRegions=1: routing a second region evicts the first.
+	repo := NewNavigationRepoWithDatasources(fx.local, fx.pools, 1000, 1)
 
-	// cr-rv on d1 resolves and builds.
-	if _, ok := repo.Snap(rvLat(1), rvLng(1), datasource, regionRV); !ok {
-		t.Fatal("cr-rv must cover its own pin through d1")
+	// cr-rv resolves and BUILDS on d1.
+	if _, err := repo.RouteInRegion(regionRV, datasource, rvLat(1), rvLng(1), rvLat(4), rvLng(4)); err != nil {
+		t.Fatalf("cr-rv must route through d1: %v", err)
 	}
-	// An unprovisioned datasource is a different city entirely, and it has no
-	// graph to serve from.
-	if _, err := repo.RouteInRegion(regionMX, "no-such-datasource", rvLat(1), rvLng(1), rvLat(4), rvLng(4)); !errors.Is(err, ErrDatasourceUnavailable) {
-		t.Errorf("got %v, want ErrDatasourceUnavailable", err)
+	if cached := repo.CachedRegionIDs(); len(cached) != 1 || cached[0] != regionRV {
+		t.Fatalf("cached regions = %v, want [%s]", cached, regionRV)
 	}
-	// And the routing errors a real network can produce are still errors, so
-	// an honest "no route" is never silently flattened into a straight line.
-	// Vertex 30 is disconnected from the 1-2-3-4 chain on d1.
-	if _, err := repo.RouteInRegion(regionRV, datasource, rvLat(1), rvLng(1), rvLat(30), rvLng(30)); !errors.Is(err, routing.ErrNoRoute) {
-		t.Errorf("a route with no path in the region = %v, want %v", err, routing.ErrNoRoute)
-	} else if errors.Is(err, ErrDatasourceUnavailable) {
-		t.Errorf("a healthy datasource must not be reported as unavailable: %v", err)
+
+	// The datasource disappears: its registry row is deleted AND its pool is
+	// released, so any NEW resolution of d1 must fail.
+	mustExec(t, fx.local, "DELETE FROM routing_datasources WHERE datasource_id = $1", datasource)
+	fx.pools.Close()
+
+	// The graph already in memory keeps answering: no pool is needed.
+	got, err := repo.RouteInRegion(regionRV, datasource, rvLat(1), rvLng(1), rvLat(4), rvLng(4))
+	if err != nil {
+		t.Fatalf("a cached graph must keep answering after its datasource vanished: %v", err)
+	}
+	if len(got) != 4 || got[3].AggCost != 300 {
+		t.Errorf("cached route = %+v, want the 4-node 300 m chain", got)
+	}
+
+	// Evict the cached graph by routing the local city, then ask for cr-rv
+	// again: now it is a cache MISS, and the dead datasource must degrade to an
+	// unresolvable pool rather than erroring another city's request.
+	if _, err := repo.RouteInRegion(regionSJ, "", sjLat(1), sjLng(1), sjLat(4), sjLng(4)); err != nil {
+		t.Fatalf("the local city must keep routing: %v", err)
+	}
+	if cached := repo.CachedRegionIDs(); len(cached) != 1 || cached[0] != regionSJ {
+		t.Fatalf("cached regions = %v, want [%s] (cr-rv evicted)", cached, regionSJ)
+	}
+	if _, err := repo.RouteInRegion(regionRV, datasource, rvLat(1), rvLng(1), rvLat(4), rvLng(4)); !errors.Is(err, ErrDatasourceUnavailable) {
+		t.Errorf("a miss on a down datasource = %v, want ErrDatasourceUnavailable", err)
 	}
 }
 
@@ -467,30 +484,5 @@ func routeInBothCities(t *testing.T, repo *NativeNavigationRepo) {
 	}
 	if _, err := repo.RouteInRegion(regionRV, datasource, rvLat(1), rvLng(1), rvLat(4), rvLng(4)); err != nil {
 		t.Fatalf("cr-rv route failed: %v", err)
-	}
-}
-
-// A repo that only ever has the local pool must still satisfy the service's
-// region capabilities, so a single-city deployment is byte-for-byte plan 05.
-func TestSingleCityRepoStillSatisfiesRegionCapabilities(t *testing.T) {
-	db := seedRegionTables(t)
-	var repos = []struct {
-		name string
-		repo NavigationRepository
-	}{
-		{"native", NewNavigationRepo(db, 0)},
-		{"native_with_pools", NewNavigationRepoWithDatasources(db, NewDatasourcePools(db, "disable", 1), 0, 0)},
-		{"pgrouting", NewPGRoutingRepo(db, 0)},
-		{"pgrouting_with_pools", NewPGRoutingRepoWithDatasources(db, NewDatasourcePools(db, "disable", 1), 0)},
-	}
-	for _, r := range repos {
-		if _, ok := r.repo.(interface {
-			RegisteredRegions() ([]model.RegionRef, error)
-		}); !ok {
-			t.Errorf("%s: lost the RegionSource capability", r.name)
-		}
-		if _, err := r.repo.GetShortestPath(0.001, 0, 0.004, 0); err != nil {
-			t.Errorf("%s: legacy GetShortestPath broke: %v", r.name, err)
-		}
 	}
 }

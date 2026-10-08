@@ -63,7 +63,7 @@ func TestFeedbackValidationError(t *testing.T) {
 func TestFeedbackWriteFailureIs500(t *testing.T) {
 	token := registerAndLogin(t, "push.feedback.outage@test.com", "+5100000012")
 
-	ts.FeedbackRepo.FailNext = errors.New("pq: connection reset by peer")
+	ts.FeedbackRepo.SetFailNext(errors.New("pq: connection reset by peer"))
 
 	resp := ts.DoRequest("POST", "/api/v1/feedback", token, map[string]string{
 		"type": "app_issue", "message": "x",

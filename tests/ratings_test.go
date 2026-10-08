@@ -212,7 +212,7 @@ func TestRatingsRepoFailureIs500(t *testing.T) {
 		t.Fatalf("load user: %v", err)
 	}
 
-	ts.RideRepo.FailNext = errors.New("pq: connection reset by peer")
+	ts.RideRepo.SetFailNext(errors.New("pq: connection reset by peer"))
 
 	resp := ts.DoRequest("GET", "/api/v1/rider/ratings", token, nil)
 	resp.AssertStatus(t, http.StatusInternalServerError)

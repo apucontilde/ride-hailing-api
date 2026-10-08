@@ -5,6 +5,8 @@ import (
 	"net/http"
 	"strings"
 	"testing"
+
+	"ride-hailing-api/tests/testutil"
 )
 
 // loginUserID logs in and returns both the access token and the user id, so a
@@ -22,7 +24,7 @@ func loginUserID(t *testing.T, email string) (token, userID string) {
 			ID string `json:"id"`
 		} `json:"user"`
 	}
-	parseJSON(t, loginResp.Body, &login)
+	testutil.ParseJSON(t, loginResp.Body, &login)
 	return login.AccessToken, login.User.ID
 }
 
@@ -188,7 +190,7 @@ func TestDeviceRegisterWriteFailureIs500(t *testing.T) {
 	registerAndLogin(t, email, "+5100000008")
 	token, _ := loginUserID(t, email)
 
-	ts.DeviceRepo.FailNextRegister = errors.New("pq: connection reset by peer")
+	ts.DeviceRepo.SetFailNextRegister(errors.New("pq: connection reset by peer"))
 
 	resp := ts.DoRequest("POST", "/api/v1/devices", token, map[string]string{
 		"token": "tok-outage", "platform": "android",

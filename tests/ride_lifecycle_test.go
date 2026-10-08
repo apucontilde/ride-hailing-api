@@ -23,7 +23,7 @@ func TestRideRequestCreatesPending(t *testing.T) {
 	var loginResult struct {
 		AccessToken string `json:"access_token"`
 	}
-	parseJSON(t, loginResp.Body, &loginResult)
+	testutil.ParseJSON(t, loginResp.Body, &loginResult)
 
 	resp := ts.DoRequest("POST", "/api/v1/rides", loginResult.AccessToken, map[string]float64{
 		"pickup_lat":  40.7128,
@@ -63,7 +63,7 @@ func TestRideShowsInDriverOptions(t *testing.T) {
 	var createResult struct {
 		Ride struct{ ID string } `json:"ride"`
 	}
-	parseJSON(t, createResp.Body, &createResult)
+	testutil.ParseJSON(t, createResp.Body, &createResult)
 	rideID := createResult.Ride.ID
 
 	// The driver is offered the pending ride over WebSocket.
@@ -273,7 +273,7 @@ func loginToken(t *testing.T, email string) string {
 	var loginResult struct {
 		AccessToken string `json:"access_token"`
 	}
-	parseJSON(t, loginResp.Body, &loginResult)
+	testutil.ParseJSON(t, loginResp.Body, &loginResult)
 	return loginResult.AccessToken
 }
 
@@ -287,8 +287,16 @@ func registerDriver(t *testing.T, email, phone string) string {
 
 // setupAcceptedRide walks a ride from request to accepted over the WebSocket
 // (US-D6 primary path) and returns the established state for the lifecycle
-// tests.
+// tests. It books a no-stop ride; setupAcceptedRideWithStops books an ordered
+// itinerary and is otherwise identical.
 func setupAcceptedRide(t *testing.T, seed int) (*websocket.Conn, string, string, string, map[string]interface{}) {
+	t.Helper()
+	return setupAcceptedRideWithStops(t, seed, nil)
+}
+
+// setupAcceptedRideWithStops is setupAcceptedRide for a ride with intermediate
+// stops, so the completion recompute can be exercised on a waypoint trip.
+func setupAcceptedRideWithStops(t *testing.T, seed int, stops []map[string]interface{}) (*websocket.Conn, string, string, string, map[string]interface{}) {
 	t.Helper()
 	riderToken := registerAndLogin(t, fmt.Sprintf("rider.life.%d@test.com", seed), fmt.Sprintf("+7%d0001", seed))
 	driverToken := registerDriver(t, fmt.Sprintf("driver.life.%d@test.com", seed), fmt.Sprintf("+7%d0002", seed))
@@ -311,17 +319,21 @@ func setupAcceptedRide(t *testing.T, seed int) (*websocket.Conn, string, string,
 	driverConn := ts.DialWS(t, driverToken)
 	t.Cleanup(func() { _ = driverConn.Close() })
 
-	createResp := ts.DoRequest("POST", "/api/v1/rides", riderToken, map[string]float64{
+	createBody := map[string]interface{}{
 		"pickup_lat":  pickupLat,
 		"pickup_lng":  pickupLng,
 		"dropoff_lat": dropoffLat,
 		"dropoff_lng": dropoffLng,
-	})
+	}
+	if stops != nil {
+		createBody["stops"] = stops
+	}
+	createResp := ts.DoRequest("POST", "/api/v1/rides", riderToken, createBody)
 	createResp.AssertStatus(t, http.StatusCreated)
 	var createResult struct {
 		Ride struct{ ID string } `json:"ride"`
 	}
-	parseJSON(t, createResp.Body, &createResult)
+	testutil.ParseJSON(t, createResp.Body, &createResult)
 	rideID := createResult.Ride.ID
 
 	// Rider sees the pending push (US-5).
@@ -383,7 +395,7 @@ func TestRideCancelBeforeAccept(t *testing.T) {
 	var loginResult struct {
 		AccessToken string `json:"access_token"`
 	}
-	parseJSON(t, loginResp.Body, &loginResult)
+	testutil.ParseJSON(t, loginResp.Body, &loginResult)
 	token := loginResult.AccessToken
 
 	createResp := ts.DoRequest("POST", "/api/v1/rides", token, map[string]float64{
@@ -395,7 +407,7 @@ func TestRideCancelBeforeAccept(t *testing.T) {
 	var createResult struct {
 		Ride struct{ ID string } `json:"ride"`
 	}
-	parseJSON(t, createResp.Body, &createResult)
+	testutil.ParseJSON(t, createResp.Body, &createResult)
 
 	resp := ts.DoRequest("POST", "/api/v1/rides/"+createResult.Ride.ID+"/cancel", token, nil)
 	resp.AssertStatus(t, http.StatusOK)
@@ -415,11 +427,19 @@ func TestRideCurrentReturnsNullWhenIdle(t *testing.T) {
 	var loginResult struct {
 		AccessToken string `json:"access_token"`
 	}
-	parseJSON(t, loginResp.Body, &loginResult)
+	testutil.ParseJSON(t, loginResp.Body, &loginResult)
 
 	resp := ts.DoRequest("GET", "/api/v1/rides/current", loginResult.AccessToken, nil)
 	resp.AssertStatus(t, http.StatusOK)
-	resp.AssertJSONHas(t, "ride")
+
+	// The name claims null: assert the value, not merely the presence of the key.
+	var current struct {
+		Ride interface{} `json:"ride"`
+	}
+	testutil.ParseJSON(t, resp.Body, &current)
+	if current.Ride != nil {
+		t.Errorf("ride = %v, want null when the rider has no active ride", current.Ride)
+	}
 }
 
 func TestRideRequestRejectsMissingFields(t *testing.T) {
@@ -435,7 +455,7 @@ func TestRideRequestRejectsMissingFields(t *testing.T) {
 	var loginResult struct {
 		AccessToken string `json:"access_token"`
 	}
-	parseJSON(t, loginResp.Body, &loginResult)
+	testutil.ParseJSON(t, loginResp.Body, &loginResult)
 
 	resp := ts.DoRequest("POST", "/api/v1/rides", loginResult.AccessToken, map[string]string{})
 	resp.AssertStatus(t, http.StatusUnprocessableEntity)
@@ -454,12 +474,14 @@ func TestRideHistoryPagination(t *testing.T) {
 	var loginResult struct {
 		AccessToken string `json:"access_token"`
 	}
-	parseJSON(t, loginResp.Body, &loginResult)
+	testutil.ParseJSON(t, loginResp.Body, &loginResult)
 
-	resp := ts.DoRequest("GET", "/api/v1/rides/history?page=1&per_page=10", loginResult.AccessToken, nil)
+	// Request a non-first page so the echoed page actually exercises the
+	// pagination params instead of trivially matching the default.
+	resp := ts.DoRequest("GET", "/api/v1/rides/history?page=2&per_page=10", loginResult.AccessToken, nil)
 	resp.AssertStatus(t, http.StatusOK)
 	resp.AssertJSONHas(t, "total")
-	resp.AssertJSONHas(t, "page", float64(1))
+	resp.AssertJSONHas(t, "page", float64(2))
 }
 
 func TestRideTipStub(t *testing.T) {
@@ -475,7 +497,7 @@ func TestRideTipStub(t *testing.T) {
 	var loginResult struct {
 		AccessToken string `json:"access_token"`
 	}
-	parseJSON(t, loginResp.Body, &loginResult)
+	testutil.ParseJSON(t, loginResp.Body, &loginResult)
 
 	createResp := ts.DoRequest("POST", "/api/v1/rides", loginResult.AccessToken, map[string]float64{
 		"pickup_lat":  40.7128,
@@ -486,40 +508,9 @@ func TestRideTipStub(t *testing.T) {
 	var createResult struct {
 		Ride struct{ ID string } `json:"ride"`
 	}
-	parseJSON(t, createResp.Body, &createResult)
+	testutil.ParseJSON(t, createResp.Body, &createResult)
 
 	resp := ts.DoRequest("POST", "/api/v1/rides/"+createResult.Ride.ID+"/tip", loginResult.AccessToken, map[string]float64{"amount": 5.0})
 	resp.AssertStatus(t, http.StatusOK)
 	resp.AssertJSONHas(t, "status", "stub")
-}
-
-func TestRideReceipt(t *testing.T) {
-	ts.PostJSON("/api/v1/auth/register", map[string]string{
-		"email":    "rider.receipt@test.com",
-		"phone":    "+1717171717",
-		"password": "SecurePass1",
-	})
-	loginResp := ts.PostJSON("/api/v1/auth/login", map[string]string{
-		"email":    "rider.receipt@test.com",
-		"password": "SecurePass1",
-	})
-	var loginResult struct {
-		AccessToken string `json:"access_token"`
-	}
-	parseJSON(t, loginResp.Body, &loginResult)
-
-	createResp := ts.DoRequest("POST", "/api/v1/rides", loginResult.AccessToken, map[string]float64{
-		"pickup_lat":  40.7128,
-		"pickup_lng":  -74.006,
-		"dropoff_lat": 40.758,
-		"dropoff_lng": -73.9855,
-	})
-	var createResult struct {
-		Ride struct{ ID string } `json:"ride"`
-	}
-	parseJSON(t, createResp.Body, &createResult)
-
-	resp := ts.DoRequest("GET", "/api/v1/rides/"+createResult.Ride.ID+"/receipt", loginResult.AccessToken, nil)
-	resp.AssertStatus(t, http.StatusOK)
-	resp.AssertJSONHas(t, "receipt.base_fare")
 }

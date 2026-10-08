@@ -8,6 +8,7 @@ import (
 
 	"github.com/jmoiron/sqlx"
 
+	"ride-hailing-api/internal/model"
 	"ride-hailing-api/internal/routing"
 )
 
@@ -408,18 +409,32 @@ func TestValidRegionID(t *testing.T) {
 	}
 }
 
-// The two optional capabilities are what the service keys its region behavior
-// on; assert both repos still satisfy the plain repository contract too.
-func TestReposStillSatisfyNavigationRepository(t *testing.T) {
+// The shipped repos must satisfy the frozen NavigationRepository contract AND
+// the two optional region capabilities the service keys its behavior on, for
+// both the single-city and the multi-city constructors. This is the one
+// interface smoke test; per-capability behavior is proven by the suites above.
+// (Consolidated from TestReposStillSatisfyNavigationRepository and
+// datasources_integration_test.go's TestSingleCityRepoStillSatisfiesRegionCapabilities.)
+func TestReposSatisfyNavigationAndRegionCapabilities(t *testing.T) {
 	db := seedRegionTables(t)
+	pools := NewDatasourcePools(db, "disable", 1)
+	t.Cleanup(pools.Close)
+
 	var repos = []struct {
 		name string
 		repo NavigationRepository
 	}{
 		{"native", NewNavigationRepo(db, 0)},
+		{"native_with_pools", NewNavigationRepoWithDatasources(db, pools, 0, 0)},
 		{"pgrouting", NewPGRoutingRepo(db, 0)},
+		{"pgrouting_with_pools", NewPGRoutingRepoWithDatasources(db, pools, 0)},
 	}
 	for _, r := range repos {
+		if _, ok := r.repo.(interface {
+			RegisteredRegions() ([]model.RegionRef, error)
+		}); !ok {
+			t.Errorf("%s: lost the RegionSource capability", r.name)
+		}
 		if _, err := r.repo.GetShortestPath(0.001, 0, 0.004, 0); err != nil {
 			t.Errorf("%s: legacy GetShortestPath broke: %v", r.name, err)
 		}

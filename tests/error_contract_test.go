@@ -30,7 +30,7 @@ func TestRefreshRevokeFailureIs500(t *testing.T) {
 	testutil.ParseJSON(t, loginResp.Body, &login)
 
 	// The fail-closed revocation must surface as a 500, not a 401.
-	ts.UserRepo.FailNext = errors.New("pq: connection reset by peer")
+	ts.UserRepo.SetFailNext(errors.New("pq: connection reset by peer"))
 
 	resp := ts.DoRequest("POST", "/api/v1/auth/refresh", "", map[string]string{
 		"refresh_token": login.RefreshToken,
@@ -58,7 +58,7 @@ func TestResetPasswordRevokeFailureIs500(t *testing.T) {
 	}
 	testutil.ParseJSON(t, forgotResp.Body, &forgot)
 
-	ts.UserRepo.FailNext = errors.New("pq: connection reset by peer")
+	ts.UserRepo.SetFailNext(errors.New("pq: connection reset by peer"))
 
 	resp := ts.DoRequest("POST", "/api/v1/auth/reset-password", "", map[string]string{
 		"token":        forgot.ResetToken,
@@ -88,7 +88,7 @@ func TestGeoWriteFailureIs500(t *testing.T) {
 	}
 	testutil.ParseJSON(t, loginResp.Body, &login)
 
-	ts.GeoRepo.FailNext = errors.New("pq: connection reset by peer")
+	ts.GeoRepo.SetFailNext(errors.New("pq: connection reset by peer"))
 
 	resp := ts.DoRequest("PUT", "/api/v1/geo/rider/location", login.AccessToken, map[string]float64{
 		"lat": 40.71, "lng": -74.00,
@@ -111,7 +111,7 @@ func TestLoginDBOutageIs500Not401(t *testing.T) {
 
 	// A read-path driver failure must answer 500 with the operation sentence,
 	// not masquerade as a 401 "invalid credentials".
-	ts.UserRepo.FailNext = errors.New("pq: connection reset by peer")
+	ts.UserRepo.SetFailNext(errors.New("pq: connection reset by peer"))
 
 	resp := ts.PostJSON("/api/v1/auth/login", map[string]string{
 		"email":    "login.outage@test.com",

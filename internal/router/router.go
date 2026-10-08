@@ -156,9 +156,10 @@ func SetupWithRepos(cfg *config.Config, userRepo repository.UserRepository, ride
 	riderHandler := handler.NewRiderHandler(riderService, userRepo)
 	driverHandler := handler.NewDriverHandlerWithGeo(userRepo, geoRepo)
 	geoHandler := handler.NewGeoHandler(geoRepo, rideRepo, wsHub)
-	rideHandler := handler.NewRideHandler(rideService, dispatchService, rideRepo)
+	rideHandler := handler.NewRideHandler(rideService, dispatchService, rideRepo, cfg.RideMaxStops)
 	platformHandler := handler.NewPlatformHandler(navService, fareService, placesRepo,
-		deviceRepo, feedbackRepo, rideRepo, wsHub, pushService, cfg.PlacesMaxRadiusM, cfg.PlacesDefaultLimit)
+		deviceRepo, feedbackRepo, rideRepo, wsHub, pushService, cfg.PlacesMaxRadiusM, cfg.PlacesDefaultLimit,
+		cfg.RideMaxStops)
 
 	// Middleware
 	authMw := middleware.AuthRequired(authService)
@@ -270,7 +271,10 @@ func SetupWithRepos(cfg *config.Config, userRepo repository.UserRepository, ride
 	// Estimates
 	estimates := r.Group("/api/v1/estimates")
 	estimates.Use(authMw)
-	estimates.GET("/price", platformHandler.EstimatesPrice)
+	// Hard cutover (api_plans/[fare]_waypoint_fare.md §4): POST is the only
+	// estimate endpoint; the GET route is removed with no alias and no
+	// Deprecation header, so a stale GET answers Gin's 404.
+	estimates.POST("/price", platformHandler.EstimatesPrice)
 	estimates.GET("/eta", platformHandler.EstimatesETA)
 
 	// Promotions

@@ -62,6 +62,14 @@ func TestNativeRepoElevationLoaded(t *testing.T) {
 	if got[len(got)-1].AggCost != 200 {
 		t.Errorf("flat AggCost = %v, want 200", got[len(got)-1].AggCost)
 	}
+	// Explicit-off contract (folded in from TestNativeRepoFlatWhenElevationOff):
+	// a populated elevation column changes nothing when Enabled=false, and the
+	// additive fields must not claim elevation awareness.
+	last := got[len(got)-1]
+	if last.ElevationAware || last.AscentM != 0 || last.DescentM != 0 {
+		t.Errorf("explicit-off elevation totals = aware=%v ascent=%v descent=%v, want false/0/0",
+			last.ElevationAware, last.AscentM, last.DescentM)
+	}
 
 	// Enabled but 2-of-3 = 0.67 < 0.99: still flat (degrade, never garbage).
 	gated := newNativeRepo(db, nil, 0).configureElevation(
@@ -107,26 +115,5 @@ func TestNativeRepoAggCostIsMeters(t *testing.T) {
 	}
 	if last.AscentM != 0 || last.DescentM != 100 {
 		t.Errorf("ascent/descent = %v/%v, want 0/100", last.AscentM, last.DescentM)
-	}
-}
-
-// TestNativeRepoFlatWhenElevationOff pins the explicit-off contract: a fully
-// populated elevation column changes nothing when Enabled=false.
-func TestNativeRepoFlatWhenElevationOff(t *testing.T) {
-	db := seedElevationTestGraph(t)
-
-	off := newNativeRepo(db, nil, 0) // no configureElevation -> elevOn false
-	got, err := off.GetShortestPath(0.001, 0, 0.003, 0)
-	if err != nil {
-		t.Fatalf("route: %v", err)
-	}
-	if got[len(got)-1].AggCost != 200 {
-		t.Errorf("explicit-off AggCost = %v, want 200", got[len(got)-1].AggCost)
-	}
-	// Explicit off: the additive fields must not claim elevation awareness.
-	last := got[len(got)-1]
-	if last.ElevationAware || last.AscentM != 0 || last.DescentM != 0 {
-		t.Errorf("explicit-off elevation totals = aware=%v ascent=%v descent=%v, want false/0/0",
-			last.ElevationAware, last.AscentM, last.DescentM)
 	}
 }

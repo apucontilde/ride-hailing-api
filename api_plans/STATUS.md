@@ -1,8 +1,10 @@
 # api_plans — Status
 
-> Evolve the API routing layer into a region-indexed, multi-city platform that keeps the
-> `/api/v1/navigation/route` and `/estimates/*` contracts stable, plus the orthogonal
-> elevation and error-contract series. Owner: `api-planner`.
+> Evolve the API routing layer into a region-indexed, multi-city platform. The
+> `/api/v1/navigation/route` contract stays stable; `/estimates/price` is now a `POST` with an
+> ordered `stops` body and additive `legs`/`is_estimate` (hard cutover from `GET`, so
+> `/estimates/*` is no longer a stable contract). Plus the orthogonal elevation and
+> error-contract series. Owner: `api-planner`.
 > Verify: `make test` / `make lint` / `make test-integration` / `gofmt -w <files> && go vet ./...`.
 
 ## Landed
@@ -153,8 +155,8 @@
   `UpdateRider`+`UpdateUser`, `UpdateStatus`, `DeleteAccount`), `internal/handler/geo.go:104`
   (the batch loop), `:132` (`UpdateRiderLocation`). Body is the house envelope
   `{"error":{"code":"INTERNAL","message":"<operation>"}}`. No *successful* write changed status.
-- Revocation fails closed — `internal/service/auth.go:111` (`RefreshAccessToken` mints no new
-  pair), `:222` (`ForgotPassword`), `:257` (`ResetPassword`, before the password is written).
+- Revocation fails closed — `internal/service/auth.go:120` (`RefreshAccessToken` mints no new
+  pair), `:240` (`ForgotPassword`), `:268` (`ResetPassword`, before the password is written).
 - Audit/ancillary rows are best-effort and logged, never fatal — `internal/service/ride.go:63,112,156`
   (`CreateEvent`, after the authoritative `UpdateRideStatus` already committed), `:71,118,162`
   (the log lines), `internal/service/dispatch.go:166,172`, `internal/handler/ride.go:90`
@@ -249,6 +251,34 @@
   behaviour is that a completed ride reports the uplift actually applied to its final distance leg
   (the Go agent is adding that as migration `023`). Grade metadata is display/audit only — the charge
   on the wire is already final.
+- **`POST /estimates/price` hard cutover** (landed 2026-10-08, condensed from the deleted
+  `[fare]_waypoint_fare.md`; working tree, commit pending) — `estimates.POST("/price", …)` is the
+  only route (`internal/router/router.go:277`); the `GET` registration is removed with no alias and
+  no `Deprecation` header, so a stale GET answers **404**, never 200/405
+  (`TestEstimatesPriceGetIsGone`, `tests/estimates_price_post_test.go:97-104`). The POST body mirrors
+  `POST /rides` (`pickup_*`/`dropoff_*` + ordered `stops`), and `docs/swagger.{json,yaml}` +
+  `RIDER_API_GUIDE.md:442,503-510` document POST only.
+- **One shared stop cap `RIDE_MAX_STOPS`** on create and estimate — `DefaultRideMaxStops = 8`
+  (`internal/config/config.go:114`), loaded `:247`; enforced once in
+  `BuildItinerary(..., maxStops int)` (`internal/service/ride.go:192,196-201`) and passed by both
+  handlers (`internal/router/router.go:159,162`; `internal/handler/ride.go:189`;
+  `internal/handler/platform.go:436`); over-cap → 422 `VALIDATION_ERROR` "a trip can have at most
+  8 stops" with the cause attached; boundary pinned by `TestStopCapSharedByCreateAndEstimate`
+  (`tests/estimates_price_post_test.go:157`).
+- **Waypoint-aware booking quote (summed once)** — `RequestRide` passes the intermediate waypoints
+  to `CalculateItineraryEstimate` (`internal/service/ride.go:256-265`); zero stops delegates
+  structurally to `CalculateEstimate` (`internal/service/fare.go:159-161`), so the no-stop price is
+  bit-identical (pinned totals 16.28/23.30/34.57 in `internal/service/fare_itinerary_test.go`);
+  one base, one conditions multiplier, one capped uplift and one half-up round over the summed
+  route (`internal/service/fare.go:181-249`). The snapshot fields and
+  `RecomputeActualFare`/`FinalizeRideFare` are untouched.
+- **Additive `is_estimate` + per-leg `legs` on the estimate response only** —
+  `internal/handler/responses.go:205,210,216`; built from the fare agent
+  (`internal/service/fare.go:246-247,257-275`); create/receipt payloads stay aggregate.
+- **Cross-region / uncovered itinerary → whole-itinerary straight-line estimate on the default
+  card** — `internal/service/navigation.go:288-290,319-346`; `itineraryEstimate` emits one leg per
+  consecutive pair (`stops+1`), so the aggregate is their sum and no region-A card ever prices
+  another region's geometry.
 
 ### [tracking]
 - **Actual trip distance + duration** (migration `021_ride_actuals`, landed 2026-10-06) — additive
@@ -392,6 +422,13 @@
 | `[elevation]_pgrouting_parity.md` | elevation | pgrouting engine + elevation columns (landed) | **deferred**; add `reverse_cost`/`cost_ascent` migration + elevation-aware edges SQL, backfilled by a script referenced from `import-osm` |
 | `[routing]_intercity.md` | routing | routing region resolution (STATUS.md) | **deferred**; holds the archived overlay-ports/planner design |
 | `[payout]_driver_earnings_and_withdraw.md` | payout | — | **deferred**: server half of driver-app bug #6 — `driver_earnings` ledger + credit-on-completion + real `GET /driver/me/earnings` and idempotent `POST /driver/earnings/withdraw` (pending debit, no external payout); design settled, no scheduling |
+| `[auth]_web_session_token_contract.md` | auth | — | **contract record, no API change**: the rider-web session bug is fixed Flutter-only. Documents the Bearer refresh contract (15m access / 720h refresh, rotate-and-revoke, 401-vs-5xx, `AllowAllOrigins` rules out cookies) + the client obligations (cold-start exchange, atomic rotated-token persist, single-flight refresh) and contract guardrails |
+
+**Deferred follow-up (no plan file yet) — receipt-level per-leg breakdown:** the completed-ride
+receipt/history would need the per-leg split stored on the ride (a new row/columns → a migration)
+so it can be rendered after the fact. Only the estimate response carries `legs` today (Landed →
+`[fare]`, above); design this as its own additive plan (response + migration) when the product
+asks, preserving the single-summed-price semantics and the estimate `legs` contract.
 
 ## Decisions already taken — [errors] (do not re-litigate)
 

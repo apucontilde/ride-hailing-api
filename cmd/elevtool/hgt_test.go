@@ -10,13 +10,13 @@ import (
 
 func makeGzipped(t *testing.T, rows int, vals []int16) []byte {
 	t.Helper()
-	raw := make([]byte, len(vals)*2)
-	if err := binary.Write(bytes.NewBuffer(raw[:0]), binary.BigEndian, vals); err != nil {
+	var raw bytes.Buffer
+	if err := binary.Write(&raw, binary.BigEndian, vals); err != nil {
 		t.Fatalf("binary.Write: %v", err)
 	}
 	var buf bytes.Buffer
 	zw := gzip.NewWriter(&buf)
-	if _, err := zw.Write(raw); err != nil {
+	if _, err := zw.Write(raw.Bytes()); err != nil {
 		t.Fatalf("gzip write: %v", err)
 	}
 	if err := zw.Close(); err != nil {

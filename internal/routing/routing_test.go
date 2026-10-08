@@ -132,6 +132,11 @@ func grid3x3() *Graph {
 	return NewGraph(nodes, nil)
 }
 
+// TestNearestNodeGridEquivalent is the property test that the grid index finds
+// the same node as a brute-force scan. It covers both the hand-picked boundary
+// points and a deterministic 500-point sweep across (and beyond) the bbox,
+// including points that hash to clamped border cells or far outside the grid.
+// (Consolidated from the former fixed-point and random-sweep tests.)
 func TestNearestNodeGridEquivalent(t *testing.T) {
 	grids := map[string]*Graph{
 		"testGraph": testGraph(),
@@ -146,6 +151,12 @@ func TestNearestNodeGridEquivalent(t *testing.T) {
 		{10.19, 10.01},   // near the bbox edge
 		{10.2, 10.2},     // on bbox max corner
 	}
+	for i := 0; i < 500; i++ {
+		points = append(points, struct{ lat, lng float64 }{
+			lat: 8.0 + float64(i%37)*0.4,
+			lng: 9.5 + float64(i%29)*0.5,
+		})
+	}
 	for name, g := range grids {
 		for _, p := range points {
 			want, wantOK := g.scanNearest(p.lat, p.lng)
@@ -155,29 +166,6 @@ func TestNearestNodeGridEquivalent(t *testing.T) {
 			}
 			if wantOK && (got.ID != want.ID) {
 				t.Fatalf("%s: point (%.4f,%.4f): scan=%d grid=%d", name, p.lat, p.lng, want.ID, got.ID)
-			}
-		}
-	}
-}
-
-func TestNearestNodeGridEquivalentRandom(t *testing.T) {
-	grids := map[string]*Graph{
-		"testGraph": testGraph(),
-		"grid3x3":   grid3x3(),
-	}
-	// Deterministic sweep across the bbox and beyond, including points that
-	// hash to clamped border cells or far outside the grid.
-	for name, g := range grids {
-		for i := 0; i < 500; i++ {
-			lat := 8.0 + float64(i%37)*0.4
-			lng := 9.5 + float64(i%29)*0.5
-			want, wantOK := g.scanNearest(lat, lng)
-			got, gotOK := g.gridNearest(lat, lng)
-			if wantOK != gotOK {
-				t.Fatalf("%s: point (%.4f,%.4f): scan ok=%v grid ok=%v", name, lat, lng, wantOK, gotOK)
-			}
-			if wantOK && (got.ID != want.ID) {
-				t.Fatalf("%s: point (%.4f,%.4f): scan=%d grid=%d", name, lat, lng, want.ID, got.ID)
 			}
 		}
 	}
@@ -219,9 +207,13 @@ func TestNearestNodeGridDegenerate(t *testing.T) {
 // path is unchanged. Everything below appends without touching them.
 
 // TestRouteZeroWeightsEqualsDistance proves the "default is off" invariant:
-// with the zero weight set and all elevations 0, RouteWithWeights returns the
-// exact same Nodes and Meters as the pure-distance Route (and the existing
-// integer-cost assertions).
+// with the zero weight set and all elevations 0, both Route and
+// RouteWithWeights agree with an INDEPENDENT oracle — the O(V²) reference
+// Dijkstra (bruteForceWeighted) — and the reported Meters equal the pure edge
+// length. Comparing Route against RouteWithWeights alone would be a function
+// compared against itself (Route delegates straight to RouteWithWeights(...,
+// CostWeights{}) at internal/routing/routing.go:248); the brute-force oracle is
+// what makes the zero-weight cost model falsifiable.
 func TestRouteZeroWeightsEqualsDistance(t *testing.T) {
 	g := testGraph()
 
@@ -233,6 +225,19 @@ func TestRouteZeroWeightsEqualsDistance(t *testing.T) {
 	if err != nil {
 		t.Fatalf("RouteWithWeights: %v", err)
 	}
+	wantCost, wantMeters, reachable := bruteForceWeighted(g, 1, 3, CostWeights{})
+	if !reachable {
+		t.Fatal("fixture: node 1 -> node 3 must be reachable")
+	}
+	if meters != wantMeters || meters != 22264 {
+		t.Fatalf("Route meters=%v want the brute-force %v (fixture 22264)", meters, wantMeters)
+	}
+	if p.Meters != wantMeters {
+		t.Fatalf("RouteWithWeights meters=%v want the brute-force %v", p.Meters, wantMeters)
+	}
+	if p.Cost != wantCost {
+		t.Fatalf("RouteWithWeights cost=%v want the brute-force %v", p.Cost, wantCost)
+	}
 	if len(p.Nodes) != len(path) {
 		t.Fatalf("Nodes length %d != %d", len(p.Nodes), len(path))
 	}
@@ -240,12 +245,6 @@ func TestRouteZeroWeightsEqualsDistance(t *testing.T) {
 		if p.Nodes[i] != path[i] {
 			t.Fatalf("Nodes[%d]=%d want %d", i, p.Nodes[i], path[i])
 		}
-	}
-	if p.Meters != meters || meters != 22264 {
-		t.Fatalf("Meters=%v want %v", p.Meters, meters)
-	}
-	if p.Cost != meters {
-		t.Fatalf("Cost=%v want meters %v", p.Cost, meters)
 	}
 }
 

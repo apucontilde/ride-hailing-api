@@ -197,9 +197,30 @@ type Estimate struct {
 	SupplyMultiplier float64 `json:"supply_multiplier"`
 	// GradeUpliftPct is the climb uplift applied to the estimate's distance leg.
 	GradeUpliftPct float64 `json:"grade_uplift_pct"`
+
+	// IsEstimate is true when the itinerary was priced from a straight-line
+	// estimate rather than a road-following route (a pin outside every region,
+	// or a mixed/cross-region itinerary). It is additive and false for a
+	// covered trip (api_plans/[fare]_waypoint_fare.md §3.5).
+	IsEstimate bool `json:"is_estimate"`
+	// Legs is the additive per-leg breakdown, one entry per itinerary leg
+	// (stops+1), always at least one. Per-leg distance_fare/time_fare EXCLUDE
+	// the base and the conditions multiplier; the summed legs plus the
+	// once-applied base × multiplier reproduce `total`. Informational only.
+	Legs []EstimateLeg `json:"legs"`
 }
 
-// EstimatesPriceResponse is returned by GET /api/v1/estimates/price.
+// EstimateLeg is one informational slice of a summed itinerary estimate
+// (api_plans/[fare]_waypoint_fare.md §3.3, §3.5). Money is major units and is
+// pre-base, pre-conditions-multiplier.
+type EstimateLeg struct {
+	DistanceMeters int     `json:"distance_m"`
+	DurationSecs   int     `json:"duration_s"`
+	DistanceFare   float64 `json:"distance_fare"`
+	TimeFare       float64 `json:"time_fare"`
+}
+
+// EstimatesPriceResponse is returned by POST /api/v1/estimates/price.
 type EstimatesPriceResponse struct {
 	Estimates []Estimate `json:"estimates"`
 }

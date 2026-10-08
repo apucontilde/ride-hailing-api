@@ -3,7 +3,6 @@ package service
 import (
 	"errors"
 	"fmt"
-	"math"
 	"testing"
 
 	"ride-hailing-api/internal/config"
@@ -33,7 +32,7 @@ func TestGetRouteUncoveredPinFromTheRegionRouterIsAnEstimate(t *testing.T) {
 	if err != nil {
 		t.Fatalf("an uncovered pin must not be an error (it answered 500 before): %v", err)
 	}
-	assertStraightLineEstimate(t, got, sjPin, sjDropPin)
+	assertStraightLineEstimate(t, got, sjPin, sjDropPin, 1651)
 	if len(repo.routeIDs) != 1 || repo.routeIDs[0].RegionID != "cr-sj" {
 		t.Errorf("RouteInRegion calls = %+v, want exactly one in cr-sj", repo.routeIDs)
 	}
@@ -82,7 +81,7 @@ func TestGetRouteRadiusBoundaryBandIsAnEstimateNotAnError(t *testing.T) {
 			if err != nil {
 				t.Fatalf("a pin in the boundary band answered %v, not an estimate", err)
 			}
-			assertStraightLineEstimate(t, got, sjPin, sjDropPin)
+			assertStraightLineEstimate(t, got, sjPin, sjDropPin, 1651)
 		})
 	}
 }
@@ -99,7 +98,7 @@ func TestLegacyRouteUncoveredPinIsAnEstimate(t *testing.T) {
 	if err != nil {
 		t.Fatalf("an uncovered pin on the unscoped path must be an estimate, not an error: %v", err)
 	}
-	assertStraightLineEstimate(t, got, sjPin, sjDropPin)
+	assertStraightLineEstimate(t, got, sjPin, sjDropPin, 1651)
 	if len(repo.pathIDs) != 1 {
 		t.Errorf("expected one GetShortestPath call, got %v", repo.pathIDs)
 	}
@@ -202,7 +201,11 @@ func TestRoutingDataGapClassification(t *testing.T) {
 
 // assertStraightLineEstimate is the 200-with-is_estimate contract: a straight
 // line between the pins, the haversine distance, and duration = distance / 11.
-func assertStraightLineEstimate(t *testing.T, got *RouteInfo, from, to [2]float64) {
+// wantDistM is an INDEPENDENT pinned oracle (law-of-cosines, R = 6371000), not
+// recomputed through routing.HaversineMeters: the production estimate path uses
+// that very function (navigation.go:501), so recomputing here would make a wrong
+// great-circle formula undetectable.
+func assertStraightLineEstimate(t *testing.T, got *RouteInfo, from, to [2]float64, wantDistM int) {
 	t.Helper()
 	if got == nil {
 		t.Fatal("no RouteInfo returned")
@@ -210,11 +213,10 @@ func assertStraightLineEstimate(t *testing.T, got *RouteInfo, from, to [2]float6
 	if !got.IsEstimate {
 		t.Error("IsEstimate must be true: a straight line drawn as a road route is the failure mode")
 	}
-	wantDist := int(math.Round(routing.HaversineMeters(from[0], from[1], to[0], to[1])))
-	if got.DistanceMeters != wantDist {
-		t.Errorf("distance = %d m, want the straight line %d m", got.DistanceMeters, wantDist)
+	if got.DistanceMeters != wantDistM {
+		t.Errorf("distance = %d m, want the straight line %d m", got.DistanceMeters, wantDistM)
 	}
-	if wantDur := wantDist / avgSpeedMps; got.DurationSecs != wantDur {
+	if wantDur := wantDistM / avgSpeedMps; got.DurationSecs != wantDur {
 		t.Errorf("duration = %d s, want %d s (distance / %d)", got.DurationSecs, wantDur, avgSpeedMps)
 	}
 	if len(got.Polyline) != 2 {

@@ -65,3 +65,29 @@ func TestAuthServiceRejectsExpiredRefreshToken(t *testing.T) {
 		t.Fatalf("RefreshAccessToken expired token error = %v, want ErrInvalidRefreshToken", err)
 	}
 }
+
+// TestOfferIsNotFabricatedForUnknownDrivers guards the mock itself: with
+// FabricateNearbyDriver off, an empty service area must yield an empty result
+// set. If this regresses, every dispatch/offer test silently stops exercising
+// the real candidate path and starts testing the fabricated driver instead.
+func TestOfferIsNotFabricatedForUnknownDrivers(t *testing.T) {
+	repo := NewStrictMockGeoRepo()
+	drivers, err := repo.FindNearbyDrivers(40.7128, -74.0060, 10000, 5)
+	if err != nil {
+		t.Fatalf("FindNearbyDrivers: %v", err)
+	}
+	if len(drivers) != 0 {
+		t.Fatalf("strict geo repo fabricated %d driver(s) with an empty service area", len(drivers))
+	}
+
+	// Sanity check that the lenient repo still fabricates, so the two modes
+	// cannot be silently conflated.
+	lenient := NewMockGeoRepo()
+	drivers, err = lenient.FindNearbyDrivers(40.7128, -74.0060, 10000, 5)
+	if err != nil {
+		t.Fatalf("FindNearbyDrivers: %v", err)
+	}
+	if len(drivers) != 1 {
+		t.Fatalf("expected the lenient repo to fabricate 1 driver, got %d", len(drivers))
+	}
+}

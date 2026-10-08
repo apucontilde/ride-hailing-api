@@ -6,6 +6,7 @@ import (
 	"log"
 	"time"
 
+	"ride-hailing-api/internal/config"
 	"ride-hailing-api/internal/model"
 	"ride-hailing-api/internal/repository"
 	"ride-hailing-api/internal/service/push"
@@ -180,9 +181,25 @@ func CoordinateOutOfRange(lat, lng float64) string {
 // The final destination is always present: the ride's own dropoff is appended
 // last, so an empty array means "no intermediate stops", never "no destination".
 //
+// maxStops is the shared cap (config RIDE_MAX_STOPS) on the number of
+// INTERMEDIATE stops. It is enforced here, in the one place both the create and
+// the estimate paths build an itinerary (api_plans/[fare]_waypoint_fare.md §5).
+// A non-positive maxStops falls back to config.DefaultRideMaxStops, the same
+// consumer-side fallback FareMaxMultiplier uses.
+//
 // Every rejection is a *ValidationError; callers should answer 422 and may use
 // its Message as the public text.
-func BuildItinerary(reqStops []StopInput, dropoffLat, dropoffLng float64, dropoffAddr string) ([]model.RideStop, error) {
+func BuildItinerary(reqStops []StopInput, dropoffLat, dropoffLng float64, dropoffAddr string, maxStops int) ([]model.RideStop, error) {
+	if maxStops <= 0 {
+		maxStops = config.DefaultRideMaxStops
+	}
+	if len(reqStops) > maxStops {
+		return nil, &ValidationError{
+			Message: fmt.Sprintf("a trip can have at most %d stops", maxStops),
+			cause:   fmt.Errorf("itinerary has %d intermediate stops, cap is %d", len(reqStops), maxStops),
+		}
+	}
+
 	stops := make([]model.RideStop, 0, len(reqStops)+1)
 
 	for i, in := range reqStops {
@@ -231,7 +248,21 @@ type StopInput struct {
 func (s *RideService) RequestRide(riderID string, pickupLat, pickupLng, dropoffLat, dropoffLng float64,
 	pickupAddr, dropoffAddr, vehicleType, idempotencyKey string, stops []model.RideStop) (*model.Ride, error) {
 
-	estimate, err := s.fareService.CalculateEstimate(pickupLat, pickupLng, dropoffLat, dropoffLng, vehicleType)
+	// Price the ordered itinerary pickup → intermediate stops… → dropoff, so a
+	// rider who adds waypoints is quoted the trip the driver actually drives
+	// (api_plans/[fare]_waypoint_fare.md §3.4). The final kind='destination' row
+	// is excluded: it IS the top-level dropoff. With no intermediate stops this
+	// reduces to the exact pre-existing CalculateEstimate call.
+	waypoints := make([]model.LatLng, 0, len(stops))
+	for _, stop := range stops {
+		if stop.Kind == model.DestinationKind {
+			continue
+		}
+		waypoints = append(waypoints, model.LatLng{Lat: stop.Lat, Lng: stop.Lng})
+	}
+
+	estimate, err := s.fareService.CalculateItineraryEstimate(
+		pickupLat, pickupLng, waypoints, dropoffLat, dropoffLng, vehicleType)
 	if err != nil {
 		return nil, fmt.Errorf("failed to calculate fare estimate: %w", err)
 	}

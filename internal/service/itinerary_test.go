@@ -1,9 +1,11 @@
 package service
 
 import (
+	"errors"
 	"strings"
 	"testing"
 
+	"ride-hailing-api/internal/config"
 	"ride-hailing-api/internal/model"
 )
 
@@ -98,7 +100,7 @@ func TestBuildItinerary(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got, err := BuildItinerary(tt.stops, destLat, destLng, destAdr)
+			got, err := BuildItinerary(tt.stops, destLat, destLng, destAdr, 8)
 			if tt.wantErr != "" {
 				if err == nil {
 					t.Fatalf("expected error containing %q, got itinerary %+v", tt.wantErr, got)
@@ -151,7 +153,7 @@ func TestBuildItinerary(t *testing.T) {
 // carries the top-level dropoff, including when a client sends coordinates that
 // differ from it.
 func TestBuildItineraryDestinationNeverDivergesFromDropoff(t *testing.T) {
-	got, err := BuildItinerary([]StopInput{{Lat: 1, Lng: 2, Address: "Bakery"}}, 40.7580, -73.9855, "Top-level dropoff")
+	got, err := BuildItinerary([]StopInput{{Lat: 1, Lng: 2, Address: "Bakery"}}, 40.7580, -73.9855, "Top-level dropoff", 8)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -164,11 +166,65 @@ func TestBuildItineraryDestinationNeverDivergesFromDropoff(t *testing.T) {
 // TestBuildItineraryErrorNamesTheOffendingStop proves the public message can
 // be acted on: "stop 3" is useless if the client sent four.
 func TestBuildItineraryErrorNamesTheOffendingStop(t *testing.T) {
-	_, err := BuildItinerary([]StopInput{{Lat: 1, Lng: 1}, {Lat: 2, Lng: 2}, {Lat: 99, Lng: 2}}, 0, 0, "")
+	_, err := BuildItinerary([]StopInput{{Lat: 1, Lng: 1}, {Lat: 2, Lng: 2}, {Lat: 99, Lng: 2}}, 0, 0, "", 8)
 	if err == nil {
 		t.Fatal("expected an error for the out-of-range third stop")
 	}
 	if !strings.Contains(err.Error(), "stop 3") {
 		t.Errorf("error = %q, want it to name stop 3", err.Error())
 	}
+}
+
+// TestBuildItineraryStopCap pins the shared stop cap (api_plans
+// [fare]_waypoint_fare.md §5): above maxStops the itinerary is rejected with the
+// public sentence naming the cap, at maxStops it is accepted, and a
+// non-positive maxStops falls back to the shipped default.
+func TestBuildItineraryStopCap(t *testing.T) {
+	nStops := func(n int) []StopInput {
+		out := make([]StopInput, n)
+		for i := range out {
+			out[i] = StopInput{Lat: 1, Lng: 2}
+		}
+		return out
+	}
+
+	t.Run("over cap is rejected with the human sentence", func(t *testing.T) {
+		_, err := BuildItinerary(nStops(3), 40.0, -74.0, "", 2)
+		if err == nil {
+			t.Fatal("3 stops under a cap of 2 must be rejected")
+		}
+		var verr *ValidationError
+		if !errors.As(err, &verr) {
+			t.Fatalf("error type = %T, want *ValidationError", err)
+		}
+		if verr.Message != "a trip can have at most 2 stops" {
+			t.Errorf("message = %q, want %q", verr.Message, "a trip can have at most 2 stops")
+		}
+		if verr.Unwrap() == nil {
+			t.Error("the cap rejection must attach a cause")
+		}
+	})
+
+	t.Run("at the cap is accepted", func(t *testing.T) {
+		got, err := BuildItinerary(nStops(2), 40.0, -74.0, "", 2)
+		if err != nil {
+			t.Fatalf("2 stops at a cap of 2 must be accepted: %v", err)
+		}
+		if len(got) != 3 { // 2 intermediate + 1 destination
+			t.Errorf("itinerary length = %d, want 3", len(got))
+		}
+	})
+
+	t.Run("non-positive cap falls back to the default", func(t *testing.T) {
+		if _, err := BuildItinerary(nStops(config.DefaultRideMaxStops), 40.0, -74.0, "", 0); err != nil {
+			t.Fatalf("default-cap itinerary rejected: %v", err)
+		}
+		_, err := BuildItinerary(nStops(config.DefaultRideMaxStops+1), 40.0, -74.0, "", 0)
+		if err == nil {
+			t.Fatal("one over the default cap must be rejected even with maxStops=0")
+		}
+		if !strings.Contains(err.Error(), "at most 8 stops") {
+			t.Errorf("error = %q, want the default 8 in the sentence", err.Error())
+		}
+	})
 }

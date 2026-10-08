@@ -3,6 +3,8 @@ package router
 import (
 	"net/http"
 	"net/http/httptest"
+	"net/textproto"
+	"strings"
 	"testing"
 
 	"github.com/jmoiron/sqlx"
@@ -29,41 +31,14 @@ func TestCorsAllowsIdempotencyKey(t *testing.T) {
 	if allow == "" {
 		t.Fatalf("expected Access-Control-Allow-Headers header")
 	}
-	if !containsHeader(allow, "Idempotency-Key") {
+	found := false
+	for _, part := range strings.Split(allow, ",") {
+		if strings.EqualFold(textproto.TrimString(part), "Idempotency-Key") {
+			found = true
+			break
+		}
+	}
+	if !found {
 		t.Fatalf("Access-Control-Allow-Headers %q missing Idempotency-Key", allow)
 	}
-}
-
-func containsHeader(value, wanted string) bool {
-	for _, part := range splitHeaders(value) {
-		if part == wanted {
-			return true
-		}
-	}
-	return false
-}
-
-func splitHeaders(value string) []string {
-	var parts []string
-	start := 0
-	for i := 0; i <= len(value); i++ {
-		if i == len(value) || value[i] == ',' {
-			part := trimSpace(value[start:i])
-			if part != "" {
-				parts = append(parts, part)
-			}
-			start = i + 1
-		}
-	}
-	return parts
-}
-
-func trimSpace(s string) string {
-	for len(s) > 0 && (s[0] == ' ' || s[0] == '\t') {
-		s = s[1:]
-	}
-	for len(s) > 0 && (s[len(s)-1] == ' ' || s[len(s)-1] == '\t') {
-		s = s[:len(s)-1]
-	}
-	return s
 }

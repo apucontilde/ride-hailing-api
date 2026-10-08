@@ -5,6 +5,7 @@ import (
 	"testing"
 
 	"ride-hailing-api/internal/model"
+	"ride-hailing-api/tests/testutil"
 )
 
 func TestNavigationRouteReturnsEdgeSequence(t *testing.T) {
@@ -20,7 +21,7 @@ func TestNavigationRouteReturnsEdgeSequence(t *testing.T) {
 	var loginResult struct {
 		AccessToken string `json:"access_token"`
 	}
-	parseJSON(t, loginResp.Body, &loginResult)
+	testutil.ParseJSON(t, loginResp.Body, &loginResult)
 
 	resp := ts.DoRequest("GET", "/api/v1/navigation/route?from_lat=40.7128&from_lng=-74.0060&to_lat=40.7580&to_lng=-73.9855",
 		loginResult.AccessToken, nil)
@@ -35,6 +36,10 @@ func TestNavigationRouteReturnsEdgeSequence(t *testing.T) {
 	bad.AssertStatus(t, http.StatusUnprocessableEntity)
 }
 
+// TestGeoETA asserts against the navigation MOCK's fixture, not a road
+// network: MockNavigationRepo returns a two-node path with an aggregated edge
+// cost of 5000 m, and the handler derives duration = distance / 11 m/s = 454 s.
+// Those constants live in tests/testutil/mock_navigation_repo.go:16.
 func TestGeoETA(t *testing.T) {
 	ts.PostJSON("/api/v1/auth/register", map[string]string{
 		"email":    "rider.eta@test.com",
@@ -48,7 +53,7 @@ func TestGeoETA(t *testing.T) {
 	var loginResult struct {
 		AccessToken string `json:"access_token"`
 	}
-	parseJSON(t, loginResp.Body, &loginResult)
+	testutil.ParseJSON(t, loginResp.Body, &loginResult)
 
 	// Route-based ETA from the live engine (mock route: 5000 m / 454 s).
 	resp := ts.DoRequest("GET", "/api/v1/geo/eta?from_lat=40.7128&from_lng=-74.0060&to_lat=40.7580&to_lng=-73.9855",
@@ -63,6 +68,10 @@ func TestGeoETA(t *testing.T) {
 	bad.AssertStatus(t, http.StatusUnprocessableEntity)
 }
 
+// TestEstimates' 5000 m / 454 s expectations come from the same
+// MockNavigationRepo fixture (tests/testutil/mock_navigation_repo.go:16). They
+// pin that the fare/estimate layer consumes the routed distance, not that real
+// road data is present.
 func TestEstimates(t *testing.T) {
 	ts.PostJSON("/api/v1/auth/register", map[string]string{
 		"email":    "rider.est@test.com",
@@ -76,19 +85,30 @@ func TestEstimates(t *testing.T) {
 	var loginResult struct {
 		AccessToken string `json:"access_token"`
 	}
-	parseJSON(t, loginResp.Body, &loginResult)
+	testutil.ParseJSON(t, loginResp.Body, &loginResult)
 
-	// Price quotes for all vehicle types, computed from the fare engine.
-	price := ts.DoRequest("GET", "/api/v1/estimates/price?pickup_lat=40.7128&pickup_lng=-74.0060&dropoff_lat=40.7580&dropoff_lng=-73.9855",
-		loginResult.AccessToken, nil)
+	// Price quotes for all vehicle types, computed from the fare engine. The
+	// endpoint is POST with a JSON body (api_plans/[fare]_waypoint_fare.md §4).
+	priceBody := map[string]interface{}{
+		"pickup_lat": 40.7128, "pickup_lng": -74.0060,
+		"dropoff_lat": 40.7580, "dropoff_lng": -73.9855,
+	}
+	price := ts.DoRequest("POST", "/api/v1/estimates/price", loginResult.AccessToken, priceBody)
 	price.AssertStatus(t, http.StatusOK)
 	var priceResult struct {
 		Estimates []struct {
 			VehicleType string  `json:"vehicle_type"`
 			Total       float64 `json:"total"`
+			IsEstimate  bool    `json:"is_estimate"`
+			Legs        []struct {
+				DistanceM   int     `json:"distance_m"`
+				DurationS   int     `json:"duration_s"`
+				DistanceFee float64 `json:"distance_fare"`
+				TimeFee     float64 `json:"time_fare"`
+			} `json:"legs"`
 		} `json:"estimates"`
 	}
-	parseJSON(t, price.Body, &priceResult)
+	testutil.ParseJSON(t, price.Body, &priceResult)
 	if len(priceResult.Estimates) != 3 {
 		t.Errorf("expected 3 estimates, got %d", len(priceResult.Estimates))
 	}
@@ -98,28 +118,49 @@ func TestEstimates(t *testing.T) {
 	if priceResult.Estimates[0].Total <= 0 {
 		t.Errorf("expected a positive total, got %f", priceResult.Estimates[0].Total)
 	}
+	// A zero-stop request still carries the additive fields: is_estimate false
+	// and exactly one leg equal to the whole trip.
+	if priceResult.Estimates[0].IsEstimate {
+		t.Error("a covered mock route must not be flagged is_estimate")
+	}
+	if len(priceResult.Estimates[0].Legs) != 1 || priceResult.Estimates[0].Legs[0].DistanceM != 5000 {
+		t.Errorf("zero-stop legs = %+v, want one leg of 5000 m", priceResult.Estimates[0].Legs)
+	}
 
 	// A single vehicle_type limits the quote to one entry.
-	single := ts.DoRequest("GET", "/api/v1/estimates/price?pickup_lat=40.7128&pickup_lng=-74.0060&dropoff_lat=40.7580&dropoff_lng=-73.9855&vehicle_type=suv",
-		loginResult.AccessToken, nil)
+	singleBody := map[string]interface{}{
+		"pickup_lat": 40.7128, "pickup_lng": -74.0060,
+		"dropoff_lat": 40.7580, "dropoff_lng": -73.9855,
+		"vehicle_type": "suv",
+	}
+	single := ts.DoRequest("POST", "/api/v1/estimates/price", loginResult.AccessToken, singleBody)
 	single.AssertStatus(t, http.StatusOK)
 	var singleResult struct {
 		Estimates []struct {
 			VehicleType string `json:"vehicle_type"`
 		} `json:"estimates"`
 	}
-	parseJSON(t, single.Body, &singleResult)
+	testutil.ParseJSON(t, single.Body, &singleResult)
 	if len(singleResult.Estimates) != 1 || singleResult.Estimates[0].VehicleType != "suv" {
 		t.Errorf("expected single suv estimate, got %+v", singleResult.Estimates)
 	}
 
 	// Unknown vehicle type and missing coords are validation errors.
-	badVT := ts.DoRequest("GET", "/api/v1/estimates/price?pickup_lat=40.7128&pickup_lng=-74.0060&dropoff_lat=40.7580&dropoff_lng=-73.9855&vehicle_type=helicopter",
-		loginResult.AccessToken, nil)
+	badVT := ts.DoRequest("POST", "/api/v1/estimates/price", loginResult.AccessToken,
+		map[string]interface{}{
+			"pickup_lat": 40.7128, "pickup_lng": -74.0060,
+			"dropoff_lat": 40.7580, "dropoff_lng": -73.9855,
+			"vehicle_type": "helicopter",
+		})
 	badVT.AssertStatus(t, http.StatusUnprocessableEntity)
-	badCoords := ts.DoRequest("GET", "/api/v1/estimates/price?pickup_lat=40.7128",
-		loginResult.AccessToken, nil)
+	badCoords := ts.DoRequest("POST", "/api/v1/estimates/price", loginResult.AccessToken,
+		map[string]interface{}{"pickup_lat": 40.7128})
 	badCoords.AssertStatus(t, http.StatusUnprocessableEntity)
+
+	// The GET route is gone (hard cutover, no alias): a stale GET is a 404.
+	getGone := ts.DoRequest("GET", "/api/v1/estimates/price?pickup_lat=40.7128&pickup_lng=-74.0060&dropoff_lat=40.7580&dropoff_lng=-73.9855",
+		loginResult.AccessToken, nil)
+	getGone.AssertStatus(t, http.StatusNotFound)
 
 	// Trip ETA before booking, from the same routing engine (US-4).
 	eta := ts.DoRequest("GET", "/api/v1/estimates/eta?from_lat=40.7128&from_lng=-74.0060&to_lat=40.7580&to_lng=-73.9855",
@@ -142,7 +183,7 @@ func TestGeoIsochrone(t *testing.T) {
 	var loginResult struct {
 		AccessToken string `json:"access_token"`
 	}
-	parseJSON(t, loginResp.Body, &loginResult)
+	testutil.ParseJSON(t, loginResp.Body, &loginResult)
 
 	resp := ts.DoRequest("GET", "/api/v1/geo/isochrone?lat=40.7128&lng=-74.0060&duration_s=600",
 		loginResult.AccessToken, nil)
@@ -162,7 +203,7 @@ func TestPlacesAutocomplete(t *testing.T) {
 	var loginResult struct {
 		AccessToken string `json:"access_token"`
 	}
-	parseJSON(t, loginResp.Body, &loginResult)
+	testutil.ParseJSON(t, loginResp.Body, &loginResult)
 
 	ts.PlacesRepo.Seed(model.PlaceSeed{
 		OSMType:  "node",
@@ -199,7 +240,7 @@ func TestPlacesGeocode(t *testing.T) {
 	var loginResult struct {
 		AccessToken string `json:"access_token"`
 	}
-	parseJSON(t, loginResp.Body, &loginResult)
+	testutil.ParseJSON(t, loginResp.Body, &loginResult)
 
 	addr := "Av. Central, San José"
 	ts.PlacesRepo.Seed(model.PlaceSeed{

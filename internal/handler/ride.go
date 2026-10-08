@@ -19,37 +19,46 @@ type RideHandler struct {
 	rideService     *service.RideService
 	dispatchService *service.DispatchService
 	rideRepo        repository.RideRepository
+	// maxStops is config RIDE_MAX_STOPS, the shared itinerary cap.
+	maxStops int
 }
 
 func NewRideHandler(rideService *service.RideService, dispatchService *service.DispatchService,
-	rideRepo repository.RideRepository) *RideHandler {
+	rideRepo repository.RideRepository, maxStops int) *RideHandler {
 	return &RideHandler{
 		rideService:     rideService,
 		dispatchService: dispatchService,
 		rideRepo:        rideRepo,
+		maxStops:        maxStops,
 	}
 }
 
-type rideRequest struct {
+// coordinateStopsRequest is the shared coordinate + ordered-stops shape of the
+// create-ride and price-estimate bodies, so the two endpoints cannot drift on a
+// JSON tag (api_plans/[fare]_waypoint_fare.md §3.5).
+type coordinateStopsRequest struct {
 	// The four coordinates are pointers so an ABSENT value is distinguishable
 	// from a legitimate 0 (the equator / prime meridian, and the value a Go
 	// zero carries). `required` on a *float64 means "non-nil", not "non-zero",
 	// so 0 is accepted while an omitted coordinate stays a 422 naming the
-	// field. CreateRide range-checks the dereferenced values itself.
-	PickupLat      *float64 `json:"pickup_lat" binding:"required"`
-	PickupLng      *float64 `json:"pickup_lng" binding:"required"`
-	DropoffLat     *float64 `json:"dropoff_lat" binding:"required"`
-	DropoffLng     *float64 `json:"dropoff_lng" binding:"required"`
-	PickupAddress  string   `json:"pickup_address"`
-	DropoffAddress string   `json:"dropoff_address"`
-	VehicleType    string   `json:"vehicle_type"`
-
+	// field. The callers range-check the dereferenced values themselves.
+	PickupLat  *float64 `json:"pickup_lat" binding:"required"`
+	PickupLng  *float64 `json:"pickup_lng" binding:"required"`
+	DropoffLat *float64 `json:"dropoff_lat" binding:"required"`
+	DropoffLng *float64 `json:"dropoff_lng" binding:"required"`
 	// Stops is the ordered list of INTERMEDIATE waypoints, pickup excluded.
 	// Optional, so a body without it is byte-identical to the pre-016 request.
 	// Order in the array IS the visit order; no sequence is accepted. The final
 	// destination is never sent here — it is dropoff_lat/dropoff_lng/
 	// dropoff_address. See service.BuildItinerary for the rules.
 	Stops []stopRequest `json:"stops"`
+}
+
+type rideRequest struct {
+	coordinateStopsRequest
+	PickupAddress  string `json:"pickup_address"`
+	DropoffAddress string `json:"dropoff_address"`
+	VehicleType    string `json:"vehicle_type"`
 }
 
 // stopRequest is one waypoint of a ride request.
@@ -113,6 +122,31 @@ func validateCreateCoordinates(req *rideRequest) (string, error) {
 	return "", nil
 }
 
+// stopInputs converts bound stopRequests into service.StopInputs, catching the
+// absent coordinates that slice-element binding ignores (see stopRequest). It
+// returns the public 422 message naming the offending stop, or "" when every
+// stop is well-formed. Shared by CreateRide and EstimatesPrice so both
+// endpoints reject a malformed stop identically.
+func stopInputs(stops []stopRequest) ([]service.StopInput, string) {
+	inputs := make([]service.StopInput, 0, len(stops))
+	for i, s := range stops {
+		if s.Lat == nil || s.Lng == nil {
+			missing := "Latitude"
+			if s.Lat != nil {
+				missing = "Longitude"
+			}
+			return nil, fmt.Sprintf("Invalid %s in stop %d", missing, i+1)
+		}
+		inputs = append(inputs, service.StopInput{
+			Kind:    s.Kind,
+			Lat:     *s.Lat,
+			Lng:     *s.Lng,
+			Address: s.Address,
+		})
+	}
+	return inputs, ""
+}
+
 // CreateRide godoc
 //
 //	@Summary		Request a new ride
@@ -147,27 +181,12 @@ func (h *RideHandler) CreateRide(c *gin.Context) {
 		vehicleType = "sedan"
 	}
 
-	inputs := make([]service.StopInput, 0, len(req.Stops))
-	for i, s := range req.Stops {
-		// See stopRequest: nothing validates these pointers, so an absent
-		// coordinate is caught here, by hand, with the offending stop named.
-		if s.Lat == nil || s.Lng == nil {
-			missing := "Latitude"
-			if s.Lat != nil {
-				missing = "Longitude"
-			}
-			fail(c, http.StatusUnprocessableEntity, "VALIDATION_ERROR",
-				fmt.Sprintf("Invalid %s in stop %d", missing, i+1), nil)
-			return
-		}
-		inputs = append(inputs, service.StopInput{
-			Kind:    s.Kind,
-			Lat:     *s.Lat,
-			Lng:     *s.Lng,
-			Address: s.Address,
-		})
+	inputs, invalidMsg := stopInputs(req.Stops)
+	if invalidMsg != "" {
+		fail(c, http.StatusUnprocessableEntity, "VALIDATION_ERROR", invalidMsg, nil)
+		return
 	}
-	stops, err := service.BuildItinerary(inputs, *req.DropoffLat, *req.DropoffLng, req.DropoffAddress)
+	stops, err := service.BuildItinerary(inputs, *req.DropoffLat, *req.DropoffLng, req.DropoffAddress, h.maxStops)
 	if err != nil {
 		// Itinerary validation is the client's doing, so 422. Only a
 		// ValidationError may speak for itself in `message`; anything else

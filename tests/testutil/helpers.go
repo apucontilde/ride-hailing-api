@@ -41,27 +41,13 @@ type TestResponse struct {
 	Body []byte
 }
 
-// NewStrictTestServerE builds a server whose geo repo never fabricates a
-// nearby driver (see MockGeoRepo.FabricateNearbyDriver). Use it for the
-// dispatch/offer suites: with the lenient repo a ride is always dispatched to
-// an invented driver, so "the driver never received the offer" cannot fail.
-func NewStrictTestServerE() (*TestServer, error) {
-	return newTestServerE(NewStrictMockGeoRepo(), NewMockNavigationRepo())
-}
-
-// NewTestServerWithNavE builds a server with a caller-supplied navigation
-// repository so route-failure paths are reachable without a live road network
-// (api_plans/[errors]_route_outage_contract_test.md). The geo repo is strict, so
-// this server keeps the dispatch suites' "no invented driver" guarantee.
-func NewTestServerWithNavE(navRepo *MockNavigationRepo) (*TestServer, error) {
-	return newTestServerE(NewStrictMockGeoRepo(), navRepo)
-}
-
-// NewTestServerWithNav is NewTestServerWithNavE with t.Skip semantics, matching
-// NewTestServer.
-func NewTestServerWithNav(t *testing.T, navRepo *MockNavigationRepo) *TestServer {
+// NewStrictTestServer builds a server whose geo repo never fabricates a nearby
+// driver (see MockGeoRepo.FabricateNearbyDriver). Use it for the dispatch/offer
+// suites: with the lenient repo a ride is always dispatched to an invented
+// driver, so "the driver never received the offer" cannot fail.
+func NewStrictTestServer(t *testing.T) *TestServer {
 	t.Helper()
-	ts, err := NewTestServerWithNavE(navRepo)
+	ts, err := newTestServerE(NewStrictMockGeoRepo(), NewMockNavigationRepo())
 	if err != nil {
 		t.Skipf("skipping: %v", err)
 		return nil
@@ -69,11 +55,13 @@ func NewTestServerWithNav(t *testing.T, navRepo *MockNavigationRepo) *TestServer
 	return ts
 }
 
-// NewStrictTestServer is NewStrictTestServerE with t.Skip semantics, matching
-// NewTestServer.
-func NewStrictTestServer(t *testing.T) *TestServer {
+// NewTestServerWithNav builds a server with a caller-supplied navigation
+// repository so route-failure paths are reachable without a live road network
+// (api_plans/[errors]_route_outage_contract_test.md). The geo repo is strict, so
+// this server keeps the dispatch suites' "no invented driver" guarantee.
+func NewTestServerWithNav(t *testing.T, navRepo *MockNavigationRepo) *TestServer {
 	t.Helper()
-	ts, err := NewStrictTestServerE()
+	ts, err := newTestServerE(NewStrictMockGeoRepo(), navRepo)
 	if err != nil {
 		t.Skipf("skipping: %v", err)
 		return nil
@@ -121,30 +109,12 @@ func newTestServerE(geoRepo *MockGeoRepo, navRepo *MockNavigationRepo) (*TestSer
 	}, nil
 }
 
-func NewTestServer(t *testing.T) *TestServer {
-	t.Helper()
-	ts, err := NewTestServerE()
-	if err != nil {
-		t.Skipf("skipping: %v", err)
-		return nil
-	}
-	return ts
-}
-
 func (ts *TestServer) PostJSON(path string, body interface{}) *TestResponse {
 	return ts.DoRequest("POST", path, ts.AuthTokens["rider"], body)
 }
 
-func (ts *TestServer) PutJSON(path string, body interface{}) *TestResponse {
-	return ts.DoRequest("PUT", path, ts.AuthTokens["rider"], body)
-}
-
 func (ts *TestServer) Get(path string) *TestResponse {
 	return ts.DoRequest("GET", path, ts.AuthTokens["rider"], nil)
-}
-
-func (ts *TestServer) Delete(path string) *TestResponse {
-	return ts.DoRequest("DELETE", path, ts.AuthTokens["rider"], nil)
 }
 
 func (ts *TestServer) DoRequest(method, path, token string, body interface{}) *TestResponse {
@@ -194,6 +164,14 @@ func (r *TestResponse) AssertStatus(t *testing.T, expected int) {
 	}
 }
 
+// AssertJSONHas checks that key (a dot-separated path) exists, and if expected
+// is supplied, that the value equals expected[0].
+//
+// Numeric caveat (I15): the body is decoded with encoding/json into
+// interface{}, so every JSON number becomes a float64. Pass float64 for numeric
+// expectations (e.g. float64(1), not 1) or the type mismatch will report a
+// failure. This is not made type-tolerant on purpose: a silent int/float
+// coercion would also paper over genuine shape changes.
 func (r *TestResponse) AssertJSONHas(t *testing.T, key string, expected ...interface{}) {
 	t.Helper()
 

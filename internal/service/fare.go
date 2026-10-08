@@ -51,6 +51,29 @@ type FareEstimate struct {
 	// the booking path can snapshot it (rides.grade_ascent_m) for
 	// re-derivation. It is only meaningful when GradeUpliftPct > 0.
 	AscentM float64
+
+	// IsEstimate is true when the itinerary did not follow roads (a pin outside
+	// every region, or a mixed/cross-region itinerary) and the price is over a
+	// straight-line estimate (api_plans/[fare]_waypoint_fare.md §3.5). It is
+	// additive; a covered trip is false.
+	IsEstimate bool
+	// Legs is the additive per-leg breakdown of a summed itinerary, in visit
+	// order. It always has at least one entry: a two-point route (Legs nil on
+	// the route) synthesizes exactly one equal to the whole trip. Per §3.3 the
+	// per-leg DistanceFare/TimeFare EXCLUDE the base and the conditions
+	// multiplier, so the trip's single base × multiplier plus the summed legs
+	// reproduces Total. Legs are informational, never independently quotable.
+	Legs []FareLeg
+}
+
+// FareLeg is one informational slice of a summed itinerary estimate. The money
+// is in major units and is deliberately pre-base, pre-multiplier: the trip's
+// base and conditions multiplier are applied once to the SUM (see FareEstimate).
+type FareLeg struct {
+	DistanceMeters int
+	DurationSecs   int
+	DistanceFare   float64
+	TimeFare       float64
 }
 
 // FareConfigurationError is an operator-actionable pricing misconfiguration:
@@ -119,7 +142,43 @@ func (s *FareService) CalculateEstimate(pickupLat, pickupLng, dropoffLat, dropof
 	if err != nil {
 		return nil, fmt.Errorf("failed to calculate route for fare: %w", err)
 	}
+	return s.priceRoute(route, pickupLat, pickupLng, vehicleType)
+}
 
+// CalculateItineraryEstimate prices the ordered itinerary
+// pickup → stops… → dropoff against ONE card, with ONE base, ONE conditions
+// multiplier, ONE capped grade uplift and ONE final half-up round
+// (api_plans/[fare]_waypoint_fare.md §3.1, §3.3). The route is composed by
+// GetItineraryRoute and priced once over the summed distance/duration/ascent.
+//
+// With no stops it delegates straight to CalculateEstimate, so the zero-stop
+// price is EXACTLY today's — the guarantee is structural, not a copy.
+// `stops` is the intermediate waypoints only: the pickup and dropoff are the
+// named arguments.
+func (s *FareService) CalculateItineraryEstimate(pickupLat, pickupLng float64, stops []model.LatLng, dropoffLat, dropoffLng float64, vehicleType string) (*FareEstimate, error) {
+	if len(stops) == 0 {
+		return s.CalculateEstimate(pickupLat, pickupLng, dropoffLat, dropoffLng, vehicleType)
+	}
+
+	waypoints := make([]model.LatLng, 0, len(stops)+2)
+	waypoints = append(waypoints, model.LatLng{Lat: pickupLat, Lng: pickupLng})
+	waypoints = append(waypoints, stops...)
+	waypoints = append(waypoints, model.LatLng{Lat: dropoffLat, Lng: dropoffLng})
+
+	route, err := s.navSvc.GetItineraryRoute(waypoints)
+	if err != nil {
+		return nil, fmt.Errorf("failed to calculate route for fare: %w", err)
+	}
+	return s.priceRoute(route, pickupLat, pickupLng, vehicleType)
+}
+
+// priceRoute runs the landed pricing formula once over a (summed) route. It is
+// the shared core of CalculateEstimate and CalculateItineraryEstimate, so the
+// zero-stop path and the itinerary path can never drift. It also builds the
+// additive per-leg breakdown: each leg's distance fare carries the SAME
+// trip-level grade uplift, so Σ legs.DistanceFare == DistanceFare and
+// Σ legs.TimeFare == TimeFare (within floating-point epsilon).
+func (s *FareService) priceRoute(route *RouteInfo, pickupLat, pickupLng float64, vehicleType string) (*FareEstimate, error) {
 	now := s.now()
 	regionID, err := s.resolveRegionID(route.RegionID)
 	if err != nil {
@@ -184,7 +243,35 @@ func (s *FareService) CalculateEstimate(pickupLat, pickupLng, dropoffLat, dropof
 		SupplyMultiplier: supply,
 		GradeUpliftPct:   gradeUpliftPct,
 		AscentM:          route.AscentM,
+		IsEstimate:       route.IsEstimate,
+		Legs:             fareLegs(route, rate, gradeUpliftPct),
 	}, nil
+}
+
+// fareLegs builds the additive per-leg breakdown from a route's per-leg slices.
+// A route with no per-leg data (the two-point path) synthesizes exactly one leg
+// equal to the whole trip, so the response always has len >= 1. The same
+// trip-level grade uplift is applied to every leg's distance fare; per the
+// contract the legs exclude the base and the conditions multiplier and carry no
+// per-leg rounding.
+func fareLegs(route *RouteInfo, rate *model.FareRate, gradeUpliftPct float64) []FareLeg {
+	routeLegs := route.Legs
+	if len(routeLegs) == 0 {
+		routeLegs = []RouteLeg{{DistanceMeters: route.DistanceMeters, DurationSecs: route.DurationSecs}}
+	}
+
+	legs := make([]FareLeg, 0, len(routeLegs))
+	for _, leg := range routeLegs {
+		distanceCents := (float64(leg.DistanceMeters) / 1000.0) * float64(rate.PerKmCents) * (1 + gradeUpliftPct)
+		timeCents := (float64(leg.DurationSecs) / 60.0) * float64(rate.PerMinCents)
+		legs = append(legs, FareLeg{
+			DistanceMeters: leg.DistanceMeters,
+			DurationSecs:   leg.DurationSecs,
+			DistanceFare:   distanceCents / 100,
+			TimeFare:       timeCents / 100,
+		})
+	}
+	return legs
 }
 
 // RecomputeActualFare prices a COMPLETED ride from its stored actuals

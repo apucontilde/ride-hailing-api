@@ -3,6 +3,8 @@ package tests
 import (
 	"net/http"
 	"testing"
+
+	"ride-hailing-api/tests/testutil"
 )
 
 func TestHealthLiveness(t *testing.T) {
@@ -14,13 +16,6 @@ func TestHealthLiveness(t *testing.T) {
 func TestHealthReadiness(t *testing.T) {
 	resp := ts.DoRequest("GET", "/health/ready", "", nil)
 	resp.AssertJSONHas(t, "checks.database")
-}
-
-func TestRateLimitHeadersPresent(t *testing.T) {
-	resp := ts.DoRequest("GET", "/health", "", nil)
-	if resp.Header.Get("X-RateLimit-Limit") == "" {
-		t.Log("rate limit headers not present (expected if middleware not applied)")
-	}
 }
 
 func TestSOSAlertCreated(t *testing.T) {
@@ -36,7 +31,7 @@ func TestSOSAlertCreated(t *testing.T) {
 	var loginResult struct {
 		AccessToken string `json:"access_token"`
 	}
-	parseJSON(t, loginResp.Body, &loginResult)
+	testutil.ParseJSON(t, loginResp.Body, &loginResult)
 
 	resp := ts.DoRequest("POST", "/api/v1/sos", loginResult.AccessToken, map[string]float64{
 		"lat": 40.7128,
@@ -58,7 +53,7 @@ func TestFeedbackSubmission(t *testing.T) {
 	var loginResult struct {
 		AccessToken string `json:"access_token"`
 	}
-	parseJSON(t, loginResp.Body, &loginResult)
+	testutil.ParseJSON(t, loginResp.Body, &loginResult)
 
 	resp := ts.DoRequest("POST", "/api/v1/feedback", loginResult.AccessToken, map[string]string{
 		"message": "Great app!",

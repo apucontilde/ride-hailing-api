@@ -159,6 +159,55 @@ func TestRideFinalFareRecomputedFromActualsDown(t *testing.T) {
 	}
 }
 
+// TestWaypointRideFinalFareRecomputedFromActualsNotSummedLegs proves the
+// completion charge still prices the DRIVEN trace, not the itinerary's summed
+// legs (api_plans/[fare]_waypoint_fare.md §3.4, §6): a one-stop trip books the
+// summed quote, but a shorter actual drive charges less.
+func TestWaypointRideFinalFareRecomputedFromActualsNotSummedLegs(t *testing.T) {
+	riderConn, _, driverToken, rideID, _ := setupAcceptedRideWithStops(t, 963,
+		[]map[string]interface{}{{"lat": 40.7200, "lng": -74.0000, "address": "Bakery"}})
+
+	advanceTo(t, driverToken, rideID, "driver_arrived", "in_progress")
+	testutil.ReadWSMessage(t, riderConn)
+	testutil.ReadWSMessage(t, riderConn)
+
+	quote, err := ts.RideRepo.FindByID(rideID)
+	if err != nil {
+		t.Fatalf("read quote: %v", err)
+	}
+	quotedTotal := quote.TotalFare
+	if quotedTotal <= 0 {
+		t.Fatalf("booked summed quote = %v, want positive", quotedTotal)
+	}
+
+	// ~5.6 km actual, well below the ~10 km summed two-leg booked route.
+	seedTrace(t, rideID, 40.0, 40.05, 5*time.Minute)
+
+	advanceTo(t, driverToken, rideID, "completed")
+	completed := readCompletedUpdate(t, riderConn, rideID)
+
+	finalFare, ok := completed["fare"].(map[string]interface{})
+	if !ok {
+		t.Fatalf("completed event missing fare: %v", completed)
+	}
+	finalTotal, _ := finalFare["total"].(float64)
+	if finalTotal >= quotedTotal {
+		t.Fatalf("final total = %v, want below the summed booked %v: the charge must use the driven trace",
+			finalTotal, quotedTotal)
+	}
+
+	stored, err := ts.RideRepo.FindByID(rideID)
+	if err != nil {
+		t.Fatalf("read stored ride: %v", err)
+	}
+	if stored.TotalFare != finalTotal {
+		t.Errorf("stored total_fare = %v, want the final %v", stored.TotalFare, finalTotal)
+	}
+	if stored.QuotedTotalFare == nil || *stored.QuotedTotalFare != quotedTotal {
+		t.Errorf("quoted_total_fare = %v, want the summed booked quote %v", stored.QuotedTotalFare, quotedTotal)
+	}
+}
+
 // TestRideFinalFareFallsBackWithoutTrace pins the no-fabrication contract: with
 // no usable trace the booked quote is charged unchanged, and it is still
 // captured exactly once as the quote.

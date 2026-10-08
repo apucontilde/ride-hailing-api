@@ -44,7 +44,7 @@ func TestGetRideReceiptEchoesAppliedGradeUplift(t *testing.T) {
 
 	c, w := newTestContext()
 	c.Params = gin.Params{{Key: "id", Value: ride.ID}}
-	NewRideHandler(nil, nil, stubRideFinder{ride: ride}).GetRideReceipt(c)
+	NewRideHandler(nil, nil, stubRideFinder{ride: ride}, 8).GetRideReceipt(c)
 
 	if w.Code != http.StatusOK {
 		t.Fatalf("status = %d, want 200 (body: %s)", w.Code, w.Body.String())

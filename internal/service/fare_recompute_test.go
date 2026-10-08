@@ -2,6 +2,7 @@ package service
 
 import (
 	"math"
+	"reflect"
 	"testing"
 
 	"ride-hailing-api/internal/model"
@@ -221,7 +222,7 @@ func TestRecomputeActualFare_Deterministic(t *testing.T) {
 	if err != nil {
 		t.Fatalf("second: %v", err)
 	}
-	if *first != *second {
+	if !reflect.DeepEqual(first, second) {
 		t.Errorf("recompute re-sampled the world:\n first  = %+v\n second = %+v", *first, *second)
 	}
 	if first.SurgeMultiplier != 1.3 {

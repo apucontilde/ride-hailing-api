@@ -169,6 +169,11 @@ func assertChain(t *testing.T, got []RouteResult, wantNodes []int64, wantAgg flo
 	}
 }
 
+// TestPGRoutingRepoSnapRadius is the pgRouting-engine parity of the native
+// snap-radius suite (snap_radius_test.go): the opt-in pgr_dijkstra path must
+// apply the same ROUTING_SNAP_RADIUS_M coverage rule as the native engine, so
+// the two engines never disagree about a pin. It is integration-only because it
+// needs live pgRouting, which is why it is not merged with the native tests.
 func TestPGRoutingRepoSnapRadius(t *testing.T) {
 	db := seedPGRTestGraph(t)
 

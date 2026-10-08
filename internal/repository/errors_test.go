@@ -46,11 +46,21 @@ func TestWrapDBConnectionFailureIsNotClientError(t *testing.T) {
 	// 08006 = connection_failure. The regression test for series failure #1:
 	// an outage must never be classifiable as a client error.
 	got := wrapDB("op", &pq.Error{Code: pqerror.Code("08006")})
-	if errors.Is(got, ErrNotFound) {
-		t.Errorf("connection failure classified as ErrNotFound: %v", got)
+	if got == nil {
+		t.Fatal("wrapDB dropped the connection-failure error")
 	}
-	if errors.Is(got, ErrConflict) {
-		t.Errorf("connection failure classified as ErrConflict: %v", got)
+	// Explicit classification: the only client-actionable outcomes are
+	// ErrNotFound and ErrConflict, and a connection failure must be neither —
+	// it is an internal (500) error.
+	classified := errors.Is(got, ErrNotFound) || errors.Is(got, ErrConflict)
+	if classified {
+		t.Fatalf("connection failure classified as a client error: %v", got)
+	}
+	// The original driver error must still be recoverable as the cause, so the
+	// negative above is not vacuous.
+	var pqErr *pq.Error
+	if !errors.As(got, &pqErr) || pqErr.Code != "08006" {
+		t.Fatalf("connection failure cause not preserved on the wrapped error: %v", got)
 	}
 }
 

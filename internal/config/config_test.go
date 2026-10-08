@@ -367,3 +367,42 @@ func TestFareConfigFromEnv(t *testing.T) {
 		})
 	}
 }
+
+// RIDE_MAX_STOPS (api_plans/[fare]_waypoint_fare.md §5) is the shared itinerary
+// cap. Load pins the default (8) and the env override; the non-positive
+// fallback lives at the consumer (BuildItinerary), so Load passes a negative
+// through verbatim.
+func TestRideMaxStopsConfigFromEnv(t *testing.T) {
+	cases := []struct {
+		name string
+		env  map[string]string
+		want int
+	}{
+		{name: "default_is_eight", want: DefaultRideMaxStops},
+		{name: "explicit_override", env: map[string]string{"RIDE_MAX_STOPS": "3"}, want: 3},
+		{
+			// getInt falls back to the default on an unparseable value; the
+			// non-positive fallback is applied by the consumer, not here, so
+			// even a negative is passed through.
+			name: "garbage_falls_back_to_default",
+			env:  map[string]string{"RIDE_MAX_STOPS": "many"},
+			want: DefaultRideMaxStops,
+		},
+		{name: "negative_is_passed_through_for_the_consumer", env: map[string]string{"RIDE_MAX_STOPS": "-1"}, want: -1},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Setenv("RIDE_MAX_STOPS", "")
+			if tc.env != nil {
+				t.Setenv("RIDE_MAX_STOPS", tc.env["RIDE_MAX_STOPS"])
+			}
+			if got := Load().RideMaxStops; got != tc.want {
+				t.Errorf("RideMaxStops = %d, want %d", got, tc.want)
+			}
+		})
+	}
+	if DefaultRideMaxStops != 8 {
+		t.Errorf("DefaultRideMaxStops = %d, want the documented 8", DefaultRideMaxStops)
+	}
+}

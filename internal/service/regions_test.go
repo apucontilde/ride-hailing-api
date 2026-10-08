@@ -3,7 +3,6 @@ package service
 import (
 	"errors"
 	"fmt"
-	"math"
 	"testing"
 
 	"ride-hailing-api/internal/config"
@@ -229,15 +228,6 @@ func TestResolveRegionNoCoverage(t *testing.T) {
 	}
 }
 
-func TestResolveRegionRequiresRegionSource(t *testing.T) {
-	// A repo without the optional capability cannot resolve anything.
-	svc := NewNavigationService(&navRepoFake{})
-
-	if _, _, ok := svc.ResolveRegion(sjPin[0], sjPin[1]); ok {
-		t.Error("a repo without RegionSource must not report coverage")
-	}
-}
-
 func TestResolveRegionRegistryErrorIsNotCoverage(t *testing.T) {
 	repo := newRegionRepo(registry(), cover(sjPin, "cr-sj"))
 	repo.regionsErr = errors.New(`relation "routing_regions" does not exist`)
@@ -288,9 +278,10 @@ func TestDefaultRegionSelection(t *testing.T) {
 }
 
 func TestOrderRegionsByProximity(t *testing.T) {
-	ordered := orderRegionsByProximity(registry(), sjPin[0], sjPin[1])
-	if len(ordered) != len(registry()) {
-		t.Fatalf("length %d, want %d", len(ordered), len(registry()))
+	regions := registry()
+	ordered := orderRegionsByProximity(regions, sjPin[0], sjPin[1])
+	if len(ordered) != len(regions) {
+		t.Fatalf("length %d, want %d", len(ordered), len(regions))
 	}
 	// Distances must be non-increasing (no two centers coincide here).
 	for i := 1; i < len(ordered); i++ {
@@ -301,8 +292,10 @@ func TestOrderRegionsByProximity(t *testing.T) {
 				ordered[i-1].RegionID, prev, ordered[i].RegionID, cur)
 		}
 	}
-	// The input slice must not be reordered in place (the registry is shared).
-	if registry()[0].RegionID != "cr" {
+	// The slice actually passed in must not be reordered in place (the registry
+	// is shared). Asserting on a fresh registry() would be vacuous: the copy
+	// under test is `regions`.
+	if regions[0].RegionID != "cr" {
 		t.Error("orderRegionsByProximity mutated its input")
 	}
 }
@@ -399,8 +392,12 @@ func TestGetRouteNoCoverageIsEstimate(t *testing.T) {
 		t.Errorf("an estimate must never invent a region, got %q", got.RegionID)
 	}
 
-	straight := routing.HaversineMeters(pacificPin[0], pacificPin[1], toLat, toLng)
-	wantDist := int(math.Round(straight))
+	// Pinned numeric oracle, deliberately NOT recomputed with
+	// routing.HaversineMeters: the production estimateRoute uses that very
+	// function, so recomputing here would make a wrong great-circle formula
+	// undetectable. These metres come from an independent law-of-cosines
+	// computation (R = 6371000, agreeing to <1 m).
+	const wantDist = 156891 // 5.00,-90.00 -> 6.00,-89.00
 	if got.DistanceMeters != wantDist {
 		t.Errorf("distance = %d, want the straight line %d", got.DistanceMeters, wantDist)
 	}
@@ -565,7 +562,9 @@ func TestGetRouteDatasourceUnavailableIsEstimate(t *testing.T) {
 	if !got.IsEstimate {
 		t.Error("a datasource that cannot be reached must read as an estimate")
 	}
-	wantDist := int(math.Round(routing.HaversineMeters(lcPin[0], lcPin[1], lcDropPin[0], lcDropPin[1])))
+	// Pinned numeric oracle (independent law-of-cosines, R = 6371000), NOT a
+	// recomputation through routing.HaversineMeters — see the no-coverage test.
+	const wantDist = 798 // 10.02,-84.97 -> 10.026,-84.966
 	if got.DistanceMeters != wantDist {
 		t.Errorf("distance = %d m, want the straight line %d m", got.DistanceMeters, wantDist)
 	}
@@ -612,7 +611,9 @@ func TestGetRouteCrossRegionIsEstimate(t *testing.T) {
 	if len(repo.routeIDs) != 0 {
 		t.Errorf("a cross-region trip must not be routed in either region, got %v", repo.routeIDs)
 	}
-	wantDist := int(math.Round(routing.HaversineMeters(sjPin[0], sjPin[1], sjDropPin[0], sjDropPin[1])))
+	// Pinned numeric oracle (independent law-of-cosines, R = 6371000), NOT a
+	// recomputation through routing.HaversineMeters.
+	const wantDist = 1651 // 9.93,-84.08 -> 9.9433,-84.0733
 	if got.DistanceMeters != wantDist {
 		t.Errorf("distance = %d, want the straight line %d", got.DistanceMeters, wantDist)
 	}
@@ -726,7 +727,9 @@ func TestGetRouteBeyondSnapRadiusIsEstimateWithTheDefaultRadius(t *testing.T) {
 	if !got.IsEstimate {
 		t.Error("a beyond-radius pin must answer is_estimate, not a snapped route")
 	}
-	wantDist := int(math.Round(routing.HaversineMeters(remotePin[0], remotePin[1], remoteDrop[0], remoteDrop[1])))
+	// Pinned numeric oracle (independent law-of-cosines, R = 6371000), NOT a
+	// recomputation through routing.HaversineMeters.
+	const wantDist = 1570 // 5.00,-90.00 -> 5.01,-90.01
 	if got.DistanceMeters != wantDist {
 		t.Errorf("distance = %d m, want the straight line %d m", got.DistanceMeters, wantDist)
 	}

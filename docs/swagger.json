@@ -102,6 +102,17 @@
           "description": "GradeUpliftPct is the climb uplift applied to the estimate's distance leg.",
           "type": "number"
         },
+        "is_estimate": {
+          "description": "IsEstimate is true when the itinerary was priced from a straight-line\nestimate rather than a road-following route (a pin outside every region,\nor a mixed/cross-region itinerary). It is additive and false for a\ncovered trip (api_plans/[fare]_waypoint_fare.md §3.5).",
+          "type": "boolean"
+        },
+        "legs": {
+          "description": "Legs is the additive per-leg breakdown, one entry per itinerary leg\n(stops+1), always at least one. Per-leg distance_fare/time_fare EXCLUDE\nthe base and the conditions multiplier; the summed legs plus the\nonce-applied base × multiplier reproduce `total`. Informational only.",
+          "items": {
+            "$ref": "#/definitions/handler.EstimateLeg"
+          },
+          "type": "array"
+        },
         "region_id": {
           "description": "Additive [fare] fields (api_plans/STATUS.md [fare]). They\ndescribe WHICH card priced the estimate and how the multiplier was built;\nno client ever supplies a price.",
           "type": "string"
@@ -123,6 +134,23 @@
         },
         "vehicle_type": {
           "type": "string"
+        }
+      },
+      "type": "object"
+    },
+    "handler.EstimateLeg": {
+      "properties": {
+        "distance_fare": {
+          "type": "number"
+        },
+        "distance_m": {
+          "type": "integer"
+        },
+        "duration_s": {
+          "type": "integer"
+        },
+        "time_fare": {
+          "type": "number"
         }
       },
       "type": "object"
@@ -561,6 +589,41 @@
       ],
       "type": "object"
     },
+    "handler.estimatePriceRequest": {
+      "properties": {
+        "dropoff_lat": {
+          "type": "number"
+        },
+        "dropoff_lng": {
+          "type": "number"
+        },
+        "pickup_lat": {
+          "description": "The four coordinates are pointers so an ABSENT value is distinguishable\nfrom a legitimate 0 (the equator / prime meridian, and the value a Go\nzero carries). `required` on a *float64 means \"non-nil\", not \"non-zero\",\nso 0 is accepted while an omitted coordinate stays a 422 naming the\nfield. The callers range-check the dereferenced values themselves.",
+          "type": "number"
+        },
+        "pickup_lng": {
+          "type": "number"
+        },
+        "stops": {
+          "description": "Stops is the ordered list of INTERMEDIATE waypoints, pickup excluded.\nOptional, so a body without it is byte-identical to the pre-016 request.\nOrder in the array IS the visit order; no sequence is accepted. The final\ndestination is never sent here — it is dropoff_lat/dropoff_lng/\ndropoff_address. See service.BuildItinerary for the rules.",
+          "items": {
+            "$ref": "#/definitions/handler.stopRequest"
+          },
+          "type": "array"
+        },
+        "vehicle_type": {
+          "description": "VehicleType is optional; omitted means all of sedan|suv|luxury. Anything\nelse is a 422.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "dropoff_lat",
+        "dropoff_lng",
+        "pickup_lat",
+        "pickup_lng"
+      ],
+      "type": "object"
+    },
     "handler.feedbackRequest": {
       "properties": {
         "message": {
@@ -712,6 +775,7 @@
           "type": "string"
         },
         "pickup_lat": {
+          "description": "The four coordinates are pointers so an ABSENT value is distinguishable\nfrom a legitimate 0 (the equator / prime meridian, and the value a Go\nzero carries). `required` on a *float64 means \"non-nil\", not \"non-zero\",\nso 0 is accepted while an omitted coordinate stays a 422 naming the\nfield. The callers range-check the dereferenced values themselves.",
           "type": "number"
         },
         "pickup_lng": {
@@ -2450,43 +2514,21 @@
       }
     },
     "/api/v1/estimates/price": {
-      "get": {
-        "description": "Computes base + distance + time fare with surge for each vehicle type, using the live routing engine.",
-        "operationId": "getEstimates-price",
+      "post": {
+        "consumes": [
+          "application/json"
+        ],
+        "description": "Computes base + distance + time fare with surge for each vehicle type over the ordered itinerary pickup → stops → dropoff. Returns an additive per-leg breakdown and an is_estimate flag.",
+        "operationId": "postEstimates-price",
         "parameters": [
           {
-            "description": "Pickup latitude",
-            "in": "query",
-            "name": "pickup_lat",
+            "description": "Price estimate request",
+            "in": "body",
+            "name": "body",
             "required": true,
-            "type": "number"
-          },
-          {
-            "description": "Pickup longitude",
-            "in": "query",
-            "name": "pickup_lng",
-            "required": true,
-            "type": "number"
-          },
-          {
-            "description": "Dropoff latitude",
-            "in": "query",
-            "name": "dropoff_lat",
-            "required": true,
-            "type": "number"
-          },
-          {
-            "description": "Dropoff longitude",
-            "in": "query",
-            "name": "dropoff_lng",
-            "required": true,
-            "type": "number"
-          },
-          {
-            "description": "Limit to one type (sedan|suv|luxury); all types when omitted",
-            "in": "query",
-            "name": "vehicle_type",
-            "type": "string"
+            "schema": {
+              "$ref": "#/definitions/handler.estimatePriceRequest"
+            }
           }
         ],
         "produces": [
@@ -2497,6 +2539,12 @@
             "description": "OK",
             "schema": {
               "$ref": "#/definitions/handler.EstimatesPriceResponse"
+            }
+          },
+          "400": {
+            "description": "Malformed request body",
+            "schema": {
+              "$ref": "#/definitions/handler.ErrorResponse"
             }
           },
           "422": {

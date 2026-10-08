@@ -20,17 +20,25 @@ const (
 	benchStep      = 0.0005
 )
 
-func benchmarkGrid(n int) ([]Node, []Edge) {
+// benchmarkLattice builds an n×n lattice with ~0.0005 degree spacing around San
+// José and 4-neighbour edges costed by haversine. elev supplies each node's
+// EleM (pass nil for the flat zero value), so benchmarkGrid and
+// benchmarkGridElevated share one builder and differ only in that field.
+func benchmarkLattice(n int, elev func(i, j int) float64) ([]Node, []Edge) {
 	nodes := make([]Node, 0, n*n)
 	edges := make([]Edge, 0, 2*(n*(n-1))*2)
 	id := func(i, j int) int64 { return int64(i*n + j) }
 	for i := 0; i < n; i++ {
 		for j := 0; j < n; j++ {
-			nodes = append(nodes, Node{
+			node := Node{
 				ID:  id(i, j),
 				Lat: benchOriginLat + float64(i)*benchStep,
 				Lng: benchOriginLng + float64(j)*benchStep,
-			})
+			}
+			if elev != nil {
+				node.EleM = elev(i, j)
+			}
+			nodes = append(nodes, node)
 		}
 	}
 	for i := 0; i < n; i++ {
@@ -55,6 +63,8 @@ func benchmarkGrid(n int) ([]Node, []Edge) {
 	}
 	return nodes, edges
 }
+
+func benchmarkGrid(n int) ([]Node, []Edge) { return benchmarkLattice(n, nil) }
 
 func benchmarkGridGraph(n int) *Graph {
 	nodes, edges := benchmarkGrid(n)
@@ -136,40 +146,9 @@ func BenchmarkNewGraph(b *testing.B) {
 // deterministic synthetic elevation field, so every edge carries a non-zero,
 // non-degenerate climb/descent: EleM = 120·sin(i·step) + 60·cos(j·step).
 func benchmarkGridElevated(n int) ([]Node, []Edge) {
-	nodes := make([]Node, 0, n*n)
-	edges := make([]Edge, 0, 2*(n*(n-1))*2)
-	id := func(i, j int) int64 { return int64(i*n + j) }
-	for i := 0; i < n; i++ {
-		for j := 0; j < n; j++ {
-			nodes = append(nodes, Node{
-				ID:   id(i, j),
-				Lat:  benchOriginLat + float64(i)*benchStep,
-				Lng:  benchOriginLng + float64(j)*benchStep,
-				EleM: 120*math.Sin(float64(i)*benchStep) + 60*math.Cos(float64(j)*benchStep),
-			})
-		}
-	}
-	for i := 0; i < n; i++ {
-		for j := 0; j < n; j++ {
-			if j+1 < n {
-				u, v := id(i, j), id(i, j+1)
-				edges = append(edges, Edge{
-					Source: u,
-					Target: v,
-					Cost:   HaversineMeters(nodes[v].Lat, nodes[v].Lng, nodes[u].Lat, nodes[u].Lng),
-				})
-			}
-			if i+1 < n {
-				u, v := id(i, j), id(i+1, j)
-				edges = append(edges, Edge{
-					Source: u,
-					Target: v,
-					Cost:   HaversineMeters(nodes[v].Lat, nodes[v].Lng, nodes[u].Lat, nodes[u].Lng),
-				})
-			}
-		}
-	}
-	return nodes, edges
+	return benchmarkLattice(n, func(i, j int) float64 {
+		return 120*math.Sin(float64(i)*benchStep) + 60*math.Cos(float64(j)*benchStep)
+	})
 }
 
 // benchmarkElevatedWeights is the documented non-zero weight set used by

@@ -51,91 +51,73 @@ func setupProtectedRoutes(svc *service.AuthService) *gin.Engine {
 	return r
 }
 
-func TestAuthRequiredWS_AcceptsAccessTokenQueryParam(t *testing.T) {
+func TestAuthRequiredTokenSources(t *testing.T) {
 	svc := newAuthService()
-	token := signToken(svc, "user-1", "rider")
+	wsToken := signToken(svc, "user-1", "rider")
+	tokenParam := signToken(svc, "user-2", "driver")
+	headerToken := signToken(svc, "user-h", "rider")
+	badQuery := signToken(svc, "user-q", "rider")
 	r := setupProtectedRoutes(svc)
 
-	req := httptest.NewRequest(http.MethodGet, "/ws?access_token="+token, nil)
-	w := httptest.NewRecorder()
-	r.ServeHTTP(w, req)
-
-	if w.Code != http.StatusOK {
-		t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
+	cases := []struct {
+		name       string
+		target     string
+		authHeader string
+		wantStatus int
+		wantBody   string
+	}{
+		{
+			name:       "ws_accepts_access_token_query_param",
+			target:     "/ws?access_token=" + wsToken,
+			wantStatus: http.StatusOK,
+			wantBody:   `{"user_id":"user-1"}`,
+		},
+		{
+			name:   "ws_accepts_token_query_param_and_injects_identity",
+			target: "/ws?token=" + tokenParam,
+			// Assert the identity the middleware injected, not just the status.
+			wantStatus: http.StatusOK,
+			wantBody:   `{"user_id":"user-2"}`,
+		},
+		{
+			name:       "ws_header_takes_precedence_over_query",
+			target:     "/ws?access_token=" + badQuery,
+			authHeader: "Bearer " + headerToken,
+			wantStatus: http.StatusOK,
+			wantBody:   `{"user_id":"user-h"}`,
+		},
+		{
+			name:       "ws_rejects_missing_token",
+			target:     "/ws",
+			wantStatus: http.StatusUnauthorized,
+		},
+		{
+			name:       "ws_rejects_invalid_token",
+			target:     "/ws?access_token=not-a-token",
+			wantStatus: http.StatusUnauthorized,
+		},
+		{
+			name:       "rest_rejects_query_token",
+			target:     "/api?access_token=" + wsToken,
+			wantStatus: http.StatusUnauthorized,
+		},
 	}
-	want := `{"user_id":"user-1"}`
-	if w.Body.String() != want {
-		t.Fatalf("expected body %s, got %s", want, w.Body.String())
-	}
-}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			req := httptest.NewRequest(http.MethodGet, tc.target, nil)
+			if tc.authHeader != "" {
+				req.Header.Set("Authorization", tc.authHeader)
+			}
+			w := httptest.NewRecorder()
+			r.ServeHTTP(w, req)
 
-func TestAuthRequiredWS_AcceptsTokenQueryParam(t *testing.T) {
-	svc := newAuthService()
-	token := signToken(svc, "user-2", "driver")
-	r := setupProtectedRoutes(svc)
-
-	req := httptest.NewRequest(http.MethodGet, "/ws?token="+token, nil)
-	w := httptest.NewRecorder()
-	r.ServeHTTP(w, req)
-
-	if w.Code != http.StatusOK {
-		t.Fatalf("expected 200, got %d", w.Code)
-	}
-}
-
-func TestAuthRequiredWS_HeaderTakesPrecedence(t *testing.T) {
-	svc := newAuthService()
-	valid := signToken(svc, "user-h", "rider")
-	bad := signToken(svc, "user-q", "rider")
-	r := setupProtectedRoutes(svc)
-
-	req := httptest.NewRequest(http.MethodGet, "/ws?access_token="+bad, nil)
-	req.Header.Set("Authorization", "Bearer "+valid)
-	w := httptest.NewRecorder()
-	r.ServeHTTP(w, req)
-
-	if w.Code != http.StatusOK || w.Body.String() != `{"user_id":"user-h"}` {
-		t.Fatalf("expected header token to win, got %d %s", w.Code, w.Body.String())
-	}
-}
-
-func TestAuthRequiredWS_RejectsMissingToken(t *testing.T) {
-	svc := newAuthService()
-	r := setupProtectedRoutes(svc)
-
-	req := httptest.NewRequest(http.MethodGet, "/ws", nil)
-	w := httptest.NewRecorder()
-	r.ServeHTTP(w, req)
-
-	if w.Code != http.StatusUnauthorized {
-		t.Fatalf("expected 401, got %d", w.Code)
-	}
-}
-
-func TestAuthRequiredWS_RejectsInvalidToken(t *testing.T) {
-	svc := newAuthService()
-	r := setupProtectedRoutes(svc)
-
-	req := httptest.NewRequest(http.MethodGet, "/ws?access_token=not-a-token", nil)
-	w := httptest.NewRecorder()
-	r.ServeHTTP(w, req)
-
-	if w.Code != http.StatusUnauthorized {
-		t.Fatalf("expected 401, got %d", w.Code)
-	}
-}
-
-func TestAuthRequired_DoesNotAcceptQueryToken(t *testing.T) {
-	svc := newAuthService()
-	token := signToken(svc, "user-1", "rider")
-	r := setupProtectedRoutes(svc)
-
-	req := httptest.NewRequest(http.MethodGet, "/api?access_token="+token, nil)
-	w := httptest.NewRecorder()
-	r.ServeHTTP(w, req)
-
-	if w.Code != http.StatusUnauthorized {
-		t.Fatalf("expected REST auth to reject query token, got %d", w.Code)
+			if w.Code != tc.wantStatus {
+				t.Fatalf("status = %d, want %d (body %s)", w.Code, tc.wantStatus, w.Body.String())
+			}
+			if tc.wantBody != "" && w.Body.String() != tc.wantBody {
+				t.Fatalf("body = %s, want %s", w.Body.String(), tc.wantBody)
+			}
+		})
 	}
 }
 

@@ -113,7 +113,7 @@ func loginOn(t *testing.T, srv *testutil.TestServer, email string) (token, id st
 			ID string `json:"id"`
 		} `json:"user"`
 	}
-	parseJSON(t, resp.Body, &login)
+	testutil.ParseJSON(t, resp.Body, &login)
 	return login.AccessToken, login.User.ID
 }
 

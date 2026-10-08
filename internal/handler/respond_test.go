@@ -21,102 +21,129 @@ func newTestContext() (*gin.Context, *httptest.ResponseRecorder) {
 	return c, w
 }
 
-func TestRespondRepoNotFound(t *testing.T) {
-	c, w := newTestContext()
-	// wrapDB-shaped error: operation prefix, the taxonomy sentinel, and the
-	// underlying driver error all chained with %w.
-	err := fmt.Errorf("load user: %w: %w", repository.ErrNotFound, errors.New("sql: no rows in result set"))
-
-	respondRepo(c, err, "user not found", "conflict", "internal failure")
-
-	if w.Code != http.StatusNotFound {
-		t.Fatalf("status = %d, want 404", w.Code)
-	}
-	var resp ErrorResponse
-	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
-		t.Fatalf("decode envelope: %v", err)
-	}
-	if resp.Error.Code != "NOT_FOUND" || resp.Error.Message != "user not found" {
-		t.Fatalf("envelope = %+v, want NOT_FOUND / user not found", resp.Error)
-	}
-	if len(c.Errors) != 1 || !strings.Contains(c.Errors[0].Error(), "no rows") {
-		t.Fatalf("c.Errors = %v, want one entry carrying the driver cause", c.Errors)
-	}
-}
-
-func TestRespondRepoConflict(t *testing.T) {
-	c, w := newTestContext()
-	err := fmt.Errorf("create user: %w: %w", repository.ErrConflict, errors.New("pq: duplicate key"))
-
-	respondRepo(c, err, "not found", "Account already exists", "internal failure")
-
-	if w.Code != http.StatusConflict {
-		t.Fatalf("status = %d, want 409", w.Code)
-	}
-	var resp ErrorResponse
-	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
-		t.Fatalf("decode envelope: %v", err)
-	}
-	if resp.Error.Code != "CONFLICT" || resp.Error.Message != "Account already exists" {
-		t.Fatalf("envelope = %+v, want CONFLICT / Account already exists", resp.Error)
-	}
-}
-
-func TestRespondRepoUnclassified(t *testing.T) {
-	for _, err := range []error{
-		errors.New("boom"),
-		fmt.Errorf("pq: connection refused: %w", errors.New("driver down")),
-	} {
-		c, w := newTestContext()
-
-		respondRepo(c, err, "not found", "conflict", "failed to load nearby drivers")
-
-		if w.Code != http.StatusInternalServerError {
-			t.Fatalf("status = %d, want 500", w.Code)
-		}
-		var resp ErrorResponse
-		if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
-			t.Fatalf("decode envelope: %v", err)
-		}
-		if resp.Error.Code != "INTERNAL" {
-			t.Fatalf("code = %q, want INTERNAL", resp.Error.Code)
-		}
-		// The caller's own operation sentence is what reaches the client, not a
-		// substitute like "internal error". This pins the operation-specific
-		// decision against quiet decay into a shared string.
-		if resp.Error.Message != "failed to load nearby drivers" {
-			t.Fatalf("message = %q, want the caller's own %q", resp.Error.Message, "failed to load nearby drivers")
-		}
-	}
-}
-
-// TestRespondRepoBodyNeverLeaksCause is the invariant-5 regression test: the
-// error body must never carry the cause's text ("log it, don't return it").
-func TestRespondRepoBodyNeverLeaksCause(t *testing.T) {
+// TestRespondRepoClassification is the one table for respondRepo's three-way
+// split (404 NOT_FOUND / 409 CONFLICT / 500 INTERNAL) plus invariant 5: the
+// public body must never carry the cause's text ("log it, don't return it").
+// (Consolidated from TestRespondRepoNotFound, TestRespondRepoConflict,
+// TestRespondRepoUnclassified and TestRespondRepoBodyNeverLeaksCause.)
+func TestRespondRepoClassification(t *testing.T) {
 	cases := []struct {
-		name   string
-		err    error
-		status int
+		name        string
+		err         error
+		notFound    string
+		conflict    string
+		internal    string
+		wantStatus  int
+		wantCode    string
+		wantMessage string
+		wantCause   string // must be recoverable from c.Errors
+		leak        string // must NOT appear in the response body
 	}{
-		{"not found", fmt.Errorf("load: %w: %w", repository.ErrNotFound, errors.New("boom secret rows")), http.StatusNotFound},
-		{"conflict", fmt.Errorf("create: %w: %w", repository.ErrConflict, errors.New("boom secret constraint")), http.StatusConflict},
-		{"internal", errors.New("boom secret driver"), http.StatusInternalServerError},
+		{
+			name:        "not_found",
+			err:         fmt.Errorf("load user: %w: %w", repository.ErrNotFound, errors.New("sql: no rows in result set")),
+			notFound:    "user not found",
+			conflict:    "conflict",
+			internal:    "internal failure",
+			wantStatus:  http.StatusNotFound,
+			wantCode:    "NOT_FOUND",
+			wantMessage: "user not found",
+			wantCause:   "no rows",
+			leak:        "no rows",
+		},
+		{
+			name:        "conflict",
+			err:         fmt.Errorf("create user: %w: %w", repository.ErrConflict, errors.New("pq: duplicate key")),
+			notFound:    "not found",
+			conflict:    "Account already exists",
+			internal:    "internal failure",
+			wantStatus:  http.StatusConflict,
+			wantCode:    "CONFLICT",
+			wantMessage: "Account already exists",
+			wantCause:   "duplicate key",
+			leak:        "duplicate key",
+		},
+		{
+			name:        "unclassified_plain",
+			err:         errors.New("boom"),
+			notFound:    "not found",
+			conflict:    "conflict",
+			internal:    "failed to load nearby drivers",
+			wantStatus:  http.StatusInternalServerError,
+			wantCode:    "INTERNAL",
+			wantMessage: "failed to load nearby drivers",
+			wantCause:   "boom",
+			leak:        "boom",
+		},
+		{
+			name:        "unclassified_driver",
+			err:         fmt.Errorf("pq: connection refused: %w", errors.New("driver down")),
+			notFound:    "not found",
+			conflict:    "conflict",
+			internal:    "failed to load nearby drivers",
+			wantStatus:  http.StatusInternalServerError,
+			wantCode:    "INTERNAL",
+			wantMessage: "failed to load nearby drivers",
+			wantCause:   "driver down",
+			leak:        "driver down",
+		},
+		{
+			name:        "not_found_secret_not_leaked",
+			err:         fmt.Errorf("load: %w: %w", repository.ErrNotFound, errors.New("boom secret rows")),
+			notFound:    "not found",
+			conflict:    "conflict",
+			internal:    "internal failure",
+			wantStatus:  http.StatusNotFound,
+			wantCode:    "NOT_FOUND",
+			wantMessage: "not found",
+			wantCause:   "boom secret rows",
+			leak:        "boom secret",
+		},
+		{
+			name:        "conflict_secret_not_leaked",
+			err:         fmt.Errorf("create: %w: %w", repository.ErrConflict, errors.New("boom secret constraint")),
+			notFound:    "not found",
+			conflict:    "conflict",
+			internal:    "internal failure",
+			wantStatus:  http.StatusConflict,
+			wantCode:    "CONFLICT",
+			wantMessage: "conflict",
+			wantCause:   "boom secret constraint",
+			leak:        "boom secret",
+		},
+		{
+			name:        "internal_secret_not_leaked",
+			err:         errors.New("boom secret driver"),
+			notFound:    "not found",
+			conflict:    "conflict",
+			internal:    "internal failure",
+			wantStatus:  http.StatusInternalServerError,
+			wantCode:    "INTERNAL",
+			wantMessage: "internal failure",
+			wantCause:   "boom secret driver",
+			leak:        "boom secret",
+		},
 	}
-
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			c, w := newTestContext()
-			respondRepo(c, tc.err, "not found", "conflict", "internal failure")
+			respondRepo(c, tc.err, tc.notFound, tc.conflict, tc.internal)
 
-			if w.Code != tc.status {
-				t.Fatalf("status = %d, want %d", w.Code, tc.status)
+			if w.Code != tc.wantStatus {
+				t.Fatalf("status = %d, want %d", w.Code, tc.wantStatus)
 			}
-			body := w.Body.String()
-			if strings.Contains(body, "boom secret") {
-				t.Fatalf("body leaks cause text: %s", body)
+			var resp ErrorResponse
+			if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+				t.Fatalf("decode envelope: %v", err)
 			}
-			if len(c.Errors) == 0 || !strings.Contains(c.Errors[0].Error(), "boom secret") {
-				t.Fatalf("cause not preserved in c.Errors: %v", c.Errors)
+			if resp.Error.Code != tc.wantCode || resp.Error.Message != tc.wantMessage {
+				t.Fatalf("envelope = %+v, want %s / %q", resp.Error, tc.wantCode, tc.wantMessage)
+			}
+			if strings.Contains(w.Body.String(), tc.leak) {
+				t.Fatalf("body leaks cause text %q: %s", tc.leak, w.Body.String())
+			}
+			if len(c.Errors) == 0 || !strings.Contains(c.Errors[0].Error(), tc.wantCause) {
+				t.Fatalf("c.Errors = %v, want a cause containing %q", c.Errors, tc.wantCause)
 			}
 		})
 	}
@@ -146,61 +173,60 @@ func TestFailEnvelopeShape(t *testing.T) {
 	}
 }
 
-func TestBindJSONValidationErrorUsesPublicLabel(t *testing.T) {
-	c, w := newTestContext()
-	// A registerRequest with a missing email trips the required tag on the
-	// `email` field; the public label "Email" must appear, not the Go names.
-	c.Request = httptest.NewRequest(http.MethodPost, "/", strings.NewReader(`{"phone":"+15550000004","password":"SecurePass1"}`))
-	c.Request.Header.Set("Content-Type", "application/json")
+// TestBindJSONValidationErrorUsesPublicLabels pins that validator failures name
+// the public label (from the JSON tag map), never the Go struct/field internals.
+// (Consolidated from the registerRequest and rideRequest cases.)
+func TestBindJSONValidationErrorUsesPublicLabels(t *testing.T) {
+	cases := []struct {
+		name        string
+		body        string
+		obj         func() any
+		wantMessage string
+		leaks       []string
+	}{
+		{
+			name:        "register_missing_email",
+			body:        `{"phone":"+15550000004","password":"SecurePass1"}`,
+			obj:         func() any { return &registerRequest{} },
+			wantMessage: "Invalid Email",
+			leaks:       []string{"registerRequest", "PickupLat", "binding", "required"},
+		},
+		{
+			name:        "ride_missing_pickup_lat",
+			body:        `{"pickup_lng":-46.6333,"dropoff_lat":-23.561,"dropoff_lng":-46.656}`,
+			obj:         func() any { return &rideRequest{} },
+			wantMessage: "Pickup latitude",
+			leaks:       []string{"PickupLat"},
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			c, w := newTestContext()
+			c.Request = httptest.NewRequest(http.MethodPost, "/", strings.NewReader(tc.body))
+			c.Request.Header.Set("Content-Type", "application/json")
 
-	if bindJSON(c, &registerRequest{}, "") {
-		t.Fatal("bindJSON returned true for an invalid body")
-	}
-
-	if w.Code != http.StatusUnprocessableEntity {
-		t.Fatalf("status = %d, want 422", w.Code)
-	}
-	var resp ErrorResponse
-	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
-		t.Fatalf("decode envelope: %v", err)
-	}
-	if resp.Error.Code != "VALIDATION_ERROR" {
-		t.Fatalf("code = %q, want VALIDATION_ERROR", resp.Error.Code)
-	}
-	if !strings.Contains(resp.Error.Message, "Invalid Email") {
-		t.Fatalf("message = %q, want it to name the public label \"Email\"", resp.Error.Message)
-	}
-	for _, leak := range []string{"registerRequest", "PickupLat", "binding", "required"} {
-		if strings.Contains(resp.Error.Message, leak) {
-			t.Fatalf("message leaks validator internals %q: %q", leak, resp.Error.Message)
-		}
-	}
-}
-
-func TestBindJSONValidationErrorPickupLatitude(t *testing.T) {
-	c, w := newTestContext()
-	// rideRequest: each coordinate is `required`; omitting pickup_lat must name
-	// "Pickup latitude", not the Go field "PickupLat".
-	body := `{"pickup_lng":-46.6333,"dropoff_lat":-23.561,"dropoff_lng":-46.656}`
-	c.Request = httptest.NewRequest(http.MethodPost, "/", strings.NewReader(body))
-	c.Request.Header.Set("Content-Type", "application/json")
-
-	if bindJSON(c, &rideRequest{}, "") {
-		t.Fatal("bindJSON returned true for an invalid body")
-	}
-
-	if w.Code != http.StatusUnprocessableEntity {
-		t.Fatalf("status = %d, want 422", w.Code)
-	}
-	var resp ErrorResponse
-	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
-		t.Fatalf("decode envelope: %v", err)
-	}
-	if !strings.Contains(resp.Error.Message, "Pickup latitude") {
-		t.Fatalf("message = %q, want \"Pickup latitude\"", resp.Error.Message)
-	}
-	if strings.Contains(resp.Error.Message, "PickupLat") {
-		t.Fatalf("message leaks Go field name: %q", resp.Error.Message)
+			if bindJSON(c, tc.obj(), "") {
+				t.Fatal("bindJSON returned true for an invalid body")
+			}
+			if w.Code != http.StatusUnprocessableEntity {
+				t.Fatalf("status = %d, want 422", w.Code)
+			}
+			var resp ErrorResponse
+			if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+				t.Fatalf("decode envelope: %v", err)
+			}
+			if resp.Error.Code != "VALIDATION_ERROR" {
+				t.Fatalf("code = %q, want VALIDATION_ERROR", resp.Error.Code)
+			}
+			if !strings.Contains(resp.Error.Message, tc.wantMessage) {
+				t.Fatalf("message = %q, want it to contain %q", resp.Error.Message, tc.wantMessage)
+			}
+			for _, leak := range tc.leaks {
+				if strings.Contains(resp.Error.Message, leak) {
+					t.Fatalf("message leaks validator internals %q: %q", leak, resp.Error.Message)
+				}
+			}
+		})
 	}
 }
 

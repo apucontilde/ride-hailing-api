@@ -63,6 +63,15 @@ func NewMockUserRepo() *MockUserRepo {
 	}
 }
 
+// SetFailNext arms a one-shot error for the next failing operation. It writes
+// under m.mu because the field is read by handler goroutines under the same
+// lock; a bare field assignment from the test goroutine is a data race.
+func (m *MockUserRepo) SetFailNext(err error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.FailNext = err
+}
+
 func (m *MockUserRepo) CreateUser(u *model.User) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -340,6 +349,14 @@ func NewMockRideRepo() *MockRideRepo {
 	}
 }
 
+// SetFailNext arms a one-shot error for the next failing operation (see
+// MockUserRepo.SetFailNext for the race rationale).
+func (m *MockRideRepo) SetFailNext(err error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.FailNext = err
+}
+
 // CreateRide mirrors the real repository's single-transaction write: the ride
 // and its itinerary land together or not at all.
 func (m *MockRideRepo) CreateRide(ride *model.Ride) error {
@@ -352,13 +369,19 @@ func (m *MockRideRepo) CreateRide(ride *model.Ride) error {
 	ride.RequestedAt = &now
 	ride.CreatedAt = now
 	ride.UpdatedAt = now
-	m.rides[id] = ride
 	for i := range ride.Stops {
 		ride.Stops[i].ID = newID()
 		ride.Stops[i].RideID = id
 		ride.Stops[i].CreatedAt = now
 		ride.Stops[i].UpdatedAt = now
 	}
+	// Store a private copy rather than aliasing the caller's pointer. The
+	// handler marshals its created ride while the dispatch goroutine can write
+	// status through UpdateRideStatus, so sharing one struct is a data race
+	// (go test -race ./tests/).
+	stored := *ride
+	stored.Stops = append([]model.RideStop(nil), ride.Stops...)
+	m.rides[id] = &stored
 	if len(ride.Stops) > 0 {
 		m.stops[id] = append([]model.RideStop(nil), ride.Stops...)
 	}
@@ -813,6 +836,14 @@ func NewMockGeoRepo() *MockGeoRepo {
 	}
 }
 
+// SetFailNext arms a one-shot error for the next failing write (see
+// MockUserRepo.SetFailNext for the race rationale).
+func (m *MockGeoRepo) SetFailNext(err error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.FailNext = err
+}
+
 // NewStrictMockGeoRepo returns a repo that never fabricates a driver: a ride
 // is only dispatched to a driver that actually went online, pushed a location
 // inside the 30s liveness window, and is within the search radius.
@@ -1041,6 +1072,23 @@ func NewMockDeviceTokenRepo() *MockDeviceTokenRepo {
 	return &MockDeviceTokenRepo{tokens: make(map[string]*model.DeviceToken)}
 }
 
+// SetFailNext arms a one-shot error for the next device-token operation (see
+// MockUserRepo.SetFailNext for the race rationale).
+func (m *MockDeviceTokenRepo) SetFailNext(err error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.FailNext = err
+}
+
+// SetFailNextRegister arms a one-shot error specifically for Register, kept
+// separate from SetFailNext so a background push lookup cannot consume the
+// injected register failure.
+func (m *MockDeviceTokenRepo) SetFailNextRegister(err error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.FailNextRegister = err
+}
+
 func (m *MockDeviceTokenRepo) Register(userID, token, platform string) (*model.DeviceToken, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -1102,6 +1150,14 @@ type MockFeedbackRepo struct {
 
 func NewMockFeedbackRepo() *MockFeedbackRepo {
 	return &MockFeedbackRepo{items: make([]*model.Feedback, 0)}
+}
+
+// SetFailNext arms a one-shot error for the next feedback write (see
+// MockUserRepo.SetFailNext for the race rationale).
+func (m *MockFeedbackRepo) SetFailNext(err error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.FailNext = err
 }
 
 func (m *MockFeedbackRepo) CreateFeedback(feedback *model.Feedback) error {

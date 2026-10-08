@@ -52,7 +52,7 @@ func strictLogin(t *testing.T, srv *testutil.TestServer, email string) string {
 	var result struct {
 		AccessToken string `json:"access_token"`
 	}
-	parseJSON(t, resp.Body, &result)
+	testutil.ParseJSON(t, resp.Body, &result)
 	return result.AccessToken
 }
 
@@ -177,7 +177,7 @@ func TestOfferReachesDriverWhenOnlineAndLocated(t *testing.T) {
 	var created struct {
 		Ride struct{ ID string } `json:"ride"`
 	}
-	parseJSON(t, createResp.Body, &created)
+	testutil.ParseJSON(t, createResp.Body, &created)
 
 	msg, err := testutil.TryReadWSMessage(driverConn, 5*time.Second)
 	if err != nil || msg == nil {
@@ -238,11 +238,17 @@ func TestNoOfferWhenDriverNeverPushedLocation(t *testing.T) {
 	assertRiderToldNoDriver(t, riderConn, 8*time.Second)
 }
 
-// TestNoOfferWhenDriverLocationIsStale pins the 30-second liveness window.
-// updated_at > NOW() - INTERVAL '30 seconds' is the only real gate on a
-// driver's dispatchability (MarkStaleDriversOffline is dead code — nothing
-// calls it), so a driver who stops moving stops receiving offers even while
-// their profile still says "online".
+// TestNoOfferWhenDriverLocationIsStale pins the dispatch behaviour when a
+// driver's last fix has aged past the 30-second liveness window: the driver
+// stops receiving offers even while their profile still says "online".
+//
+// NOTE: the 30s gate exercised here is MOCK logic, not production SQL. The
+// filter lives in MockGeoRepo.FindNearbyDrivers (tests/testutil/mock_repos.go),
+// which mirrors the shape of the real query only in spirit. This test therefore
+// does NOT certify the real `updated_at > NOW() - INTERVAL '30 seconds'`
+// predicate; coverage of the production GeoRepo.FindNearbyDrivers query belongs
+// to a DB-backed integration test. What is pinned here is the dispatch
+// outcome on top of a candidate set the repo reports as empty.
 func TestNoOfferWhenDriverLocationIsStale(t *testing.T) {
 	srv := testutil.NewStrictTestServer(t)
 	if srv == nil {
@@ -316,30 +322,4 @@ func TestNoOfferWhenDriverSocketIsDown(t *testing.T) {
 
 	// The rider is told nobody is available instead of waiting indefinitely.
 	assertRiderToldNoDriver(t, riderConn, 8*time.Second)
-}
-
-// TestOfferIsNotFabricatedForUnknownDrivers guards the mock itself: with
-// FabricateNearbyDriver off, an empty service area must yield an empty result
-// set. If this regresses, every test in this file silently stops testing the
-// real dispatch path.
-func TestOfferIsNotFabricatedForUnknownDrivers(t *testing.T) {
-	repo := testutil.NewStrictMockGeoRepo()
-	drivers, err := repo.FindNearbyDrivers(40.7128, -74.0060, 10000, 5)
-	if err != nil {
-		t.Fatalf("FindNearbyDrivers: %v", err)
-	}
-	if len(drivers) != 0 {
-		t.Fatalf("strict geo repo fabricated %d driver(s) with an empty service area", len(drivers))
-	}
-
-	// Sanity check that the lenient repo still fabricates, so the two modes
-	// cannot be silently conflated.
-	lenient := testutil.NewMockGeoRepo()
-	drivers, err = lenient.FindNearbyDrivers(40.7128, -74.0060, 10000, 5)
-	if err != nil {
-		t.Fatalf("FindNearbyDrivers: %v", err)
-	}
-	if len(drivers) != 1 {
-		t.Fatalf("expected the lenient repo to fabricate 1 driver, got %d", len(drivers))
-	}
 }

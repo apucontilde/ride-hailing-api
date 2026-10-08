@@ -3,6 +3,7 @@ package handler
 import (
 	"errors"
 	"fmt"
+	"log"
 	"net/http"
 	"strconv"
 	"time"
@@ -27,6 +28,9 @@ type PlatformHandler struct {
 	pushSvc      *push.Service
 	maxRadiusM   float64
 	defaultLimit int
+	// maxStops is config RIDE_MAX_STOPS, shared with the create path via
+	// service.BuildItinerary (api_plans/[fare]_waypoint_fare.md §5).
+	maxStops int
 }
 
 func NewPlatformHandler(
@@ -40,6 +44,7 @@ func NewPlatformHandler(
 	pushSvc *push.Service,
 	maxRadiusM float64,
 	defaultLimit int,
+	maxStops int,
 ) *PlatformHandler {
 	return &PlatformHandler{
 		navSvc:       navSvc,
@@ -52,6 +57,7 @@ func NewPlatformHandler(
 		pushSvc:      pushSvc,
 		maxRadiusM:   maxRadiusM,
 		defaultLimit: defaultLimit,
+		maxStops:     maxStops,
 	}
 }
 
@@ -365,30 +371,49 @@ func (h *PlatformHandler) PlacesDetails(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"place": nil})
 }
 
+// estimatePriceRequest is the POST body of /api/v1/estimates/price. It embeds
+// the shared coordinate/stops shape so its JSON tags cannot drift from
+// POST /rides (api_plans/[fare]_waypoint_fare.md §3.5).
+type estimatePriceRequest struct {
+	coordinateStopsRequest
+	// VehicleType is optional; omitted means all of sedan|suv|luxury. Anything
+	// else is a 422.
+	VehicleType string `json:"vehicle_type"`
+}
+
 // EstimatesPrice godoc
 //
 //	@Summary		Get price estimates by vehicle type
-//	@Description	Computes base + distance + time fare with surge for each vehicle type, using the live routing engine.
+//	@Description	Computes base + distance + time fare with surge for each vehicle type over the ordered itinerary pickup → stops → dropoff. Returns an additive per-leg breakdown and an is_estimate flag.
 //	@Tags			estimates
+//	@Accept			json
 //	@Produce		json
 //	@Security		BearerAuth
-//	@Param			pickup_lat		query		number	true	"Pickup latitude"
-//	@Param			pickup_lng		query		number	true	"Pickup longitude"
-//	@Param			dropoff_lat		query		number	true	"Dropoff latitude"
-//	@Param			dropoff_lng		query		number	true	"Dropoff longitude"
-//	@Param			vehicle_type	query		string	false	"Limit to one type (sedan|suv|luxury); all types when omitted"
-//	@Success		200				{object}	EstimatesPriceResponse
-//	@Failure		422				{object}	ErrorResponse	"Invalid parameters"
-//	@Failure		500				{object}	ErrorResponse	"Failed to compute estimate"
-//	@Router			/api/v1/estimates/price [get]
+//	@Param			body	body		estimatePriceRequest	true	"Price estimate request"
+//	@Success		200		{object}	EstimatesPriceResponse
+//	@Failure		400		{object}	ErrorResponse	"Malformed request body"
+//	@Failure		422		{object}	ErrorResponse	"Invalid parameters"
+//	@Failure		500		{object}	ErrorResponse	"Failed to compute estimate"
+//	@Router			/api/v1/estimates/price [post]
 func (h *PlatformHandler) EstimatesPrice(c *gin.Context) {
-	pickupLat, pickupLng, dropoffLat, dropoffLng, ok := h.parseCoordinates(c, pickupDropoffKeys)
-	if !ok {
+	var req estimatePriceRequest
+	if !bindJSON(c, &req, "") {
+		return
+	}
+
+	// `binding:"required"` guarantees presence only; the range is checked here,
+	// exactly as the create path does.
+	if msg, cause := validateCoordinatePair(req.PickupLat, req.PickupLng, "Pickup"); cause != nil {
+		fail(c, http.StatusUnprocessableEntity, "VALIDATION_ERROR", msg, cause)
+		return
+	}
+	if msg, cause := validateCoordinatePair(req.DropoffLat, req.DropoffLng, "Drop-off"); cause != nil {
+		fail(c, http.StatusUnprocessableEntity, "VALIDATION_ERROR", msg, cause)
 		return
 	}
 
 	vehicleTypes := []string{"sedan", "suv", "luxury"}
-	if vt := c.Query("vehicle_type"); vt != "" {
+	if vt := req.VehicleType; vt != "" {
 		switch vt {
 		case "sedan", "suv", "luxury":
 			vehicleTypes = []string{vt}
@@ -399,13 +424,39 @@ func (h *PlatformHandler) EstimatesPrice(c *gin.Context) {
 		}
 	}
 
+	// Build the itinerary exactly like CreateRide: one shared cap, one kind
+	// rule, one range rule. It returns the top-level dropoff as the final
+	// kind='destination' row, which is dropped before pricing (the pickup and
+	// dropoff travel as explicit arguments).
+	inputs, invalidMsg := stopInputs(req.Stops)
+	if invalidMsg != "" {
+		fail(c, http.StatusUnprocessableEntity, "VALIDATION_ERROR", invalidMsg, nil)
+		return
+	}
+	stops, err := service.BuildItinerary(inputs, *req.DropoffLat, *req.DropoffLng, "", h.maxStops)
+	if err != nil {
+		var verr *service.ValidationError
+		if errors.As(err, &verr) {
+			fail(c, http.StatusUnprocessableEntity, "VALIDATION_ERROR", verr.Message, err)
+			return
+		}
+		log.Printf("[estimates] unexpected itinerary error: %v", err)
+		fail(c, http.StatusInternalServerError, "INTERNAL", "failed to compute estimate", err)
+		return
+	}
+	waypoints := make([]model.LatLng, 0, len(stops)-1)
+	for i := 0; i < len(stops)-1; i++ {
+		waypoints = append(waypoints, model.LatLng{Lat: stops[i].Lat, Lng: stops[i].Lng})
+	}
+
 	estimates := make([]Estimate, 0, len(vehicleTypes))
 	for _, vt := range vehicleTypes {
-		est, err := h.fareSvc.CalculateEstimate(pickupLat, pickupLng, dropoffLat, dropoffLng, vt)
+		est, err := h.fareSvc.CalculateItineraryEstimate(*req.PickupLat, *req.PickupLng, waypoints,
+			*req.DropoffLat, *req.DropoffLng, vt)
 		if err != nil {
 			fail(c, http.StatusInternalServerError, "INTERNAL", "failed to compute estimate",
 				fmt.Errorf("[estimates] price failed vt=%s pickup=(%.5f,%.5f) dropoff=(%.5f,%.5f): %w",
-					vt, pickupLat, pickupLng, dropoffLat, dropoffLng, err))
+					vt, *req.PickupLat, *req.PickupLng, *req.DropoffLat, *req.DropoffLng, err))
 			return
 		}
 		estimates = append(estimates, Estimate{
@@ -422,10 +473,41 @@ func (h *PlatformHandler) EstimatesPrice(c *gin.Context) {
 			DemandMultiplier: est.DemandMultiplier,
 			SupplyMultiplier: est.SupplyMultiplier,
 			GradeUpliftPct:   est.GradeUpliftPct,
+			IsEstimate:       est.IsEstimate,
+			Legs:             estimateLegs(est.Legs),
 		})
 	}
 
 	c.JSON(http.StatusOK, gin.H{"estimates": estimates})
+}
+
+// validateCoordinatePair range-checks one (lat, lng) pointer pair. Presence is
+// guaranteed by `binding:"required"`; this covers the range, which `required`
+// cannot, and names the label ("Pickup"/"Drop-off") in the message.
+func validateCoordinatePair(lat, lng *float64, label string) (string, error) {
+	if lat == nil || lng == nil {
+		return fmt.Sprintf("Invalid %s", label), fmt.Errorf("[estimates] %s coordinate missing", label)
+	}
+	if dim := service.CoordinateOutOfRange(*lat, *lng); dim != "" {
+		return fmt.Sprintf("%s %s out of range", label, dim),
+			fmt.Errorf("[estimates] %s %s out of range (lat=%v lng=%v)", label, dim, *lat, *lng)
+	}
+	return "", nil
+}
+
+// estimateLegs maps the service's per-leg breakdown onto the wire shape. The
+// service guarantees at least one leg, so `legs` is never nil/empty.
+func estimateLegs(legs []service.FareLeg) []EstimateLeg {
+	out := make([]EstimateLeg, 0, len(legs))
+	for _, leg := range legs {
+		out = append(out, EstimateLeg{
+			DistanceMeters: leg.DistanceMeters,
+			DurationSecs:   leg.DurationSecs,
+			DistanceFare:   leg.DistanceFare,
+			TimeFare:       leg.TimeFare,
+		})
+	}
+	return out
 }
 
 // EstimatesETA godoc
@@ -638,16 +720,13 @@ func (h *PlatformHandler) StubPayment(c *gin.Context) {
 
 // paramSet defines the four query-string keys that name lat/lng for two points.
 type paramSet struct {
-	lat1 string // e.g. "pickup_lat" or "from_lat"
+	lat1 string // e.g. "from_lat"
 	lng1 string
 	lat2 string
 	lng2 string
 }
 
-var (
-	pickupDropoffKeys = paramSet{"pickup_lat", "pickup_lng", "dropoff_lat", "dropoff_lng"}
-	fromToKeys        = paramSet{"from_lat", "from_lng", "to_lat", "to_lng"}
-)
+var fromToKeys = paramSet{"from_lat", "from_lng", "to_lat", "to_lng"}
 
 // parseCoordinates parses two lat/lng pairs from query params using the given
 // key set. On the first missing/invalid value it writes the 422 response and

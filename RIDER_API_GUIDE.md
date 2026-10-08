@@ -439,7 +439,7 @@ GET /api/v1/geo/nearby-drivers?lat=-23.5505&lng=-46.6333&radius=5000&limit=20
 | GET | `/api/v1/places/autocomplete` | Yes | Real PostGIS + full-text search over OSM-seeded places |
 | GET | `/api/v1/places/geocode` | Yes | Stub |
 | GET | `/api/v1/places/details` | Yes | Stub |
-| GET | `/api/v1/estimates/price` | Yes | Real fare engine (base + distance + time + surge over route) |
+| POST | `/api/v1/estimates/price` | Yes | Real fare engine over the ordered itinerary `pickup → stops → dropoff` (base + distance + time + surge); additive `legs` + `is_estimate` |
 | GET | `/api/v1/estimates/eta` | Yes | Route-based ETA `{eta_seconds, distance_meters}` |
 | GET | `/api/v1/promotions` | Yes | Stub |
 | POST | `/api/v1/promotions/apply` | Yes | Stub |
@@ -500,10 +500,46 @@ a line instead of showing nothing, and `is_estimate` uses client geometry) is tr
 
 ### Price estimates
 
-`GET /api/v1/estimates/price` returns one estimate per vehicle class in
-`{ "estimates": [ … ] }`. The fare amounts are **major currency units on this JSON
-boundary** (dollars, not cents); the engine keeps integer cents internally and rounds
-once, half-up, on the final total.
+`POST /api/v1/estimates/price` prices the ordered itinerary
+`pickup → stops… → dropoff` and returns one estimate per vehicle class in
+`{ "estimates": [ … ] }`. The fare amounts are **major currency units on this
+JSON boundary** (dollars, not cents); the engine keeps integer cents internally
+and rounds once, half-up, on the final total.
+
+> **The `GET` route is removed** (hard cutover, no alias and no `Deprecation`
+> header). A stale `GET /api/v1/estimates/price` answers **404**; only `POST`
+> answers. The change lands in the same wave as the rider app.
+
+Request body (the same coordinate/stops field names as `POST /rides`, so the two
+cannot drift):
+
+```json
+{
+  "pickup_lat": 9.9333,
+  "pickup_lng": -84.0833,
+  "dropoff_lat": 9.9400,
+  "dropoff_lng": -84.1000,
+  "vehicle_type": "sedan",
+  "stops": [
+    { "lat": 9.9350, "lng": -84.0900, "address": "optional" }
+  ]
+}
+```
+
+- `pickup_*`/`dropoff_*` are required and range-checked.
+- `stops` is optional and ordered (array position **is** the visit order). Its
+  element shape is the create-ride `stopRequest` (`lat`/`lng`/`address`); an
+  absent coordinate is a `422` naming the stop, and a `kind` other than `"stop"`
+  (or omitted) is rejected exactly as on create.
+- `vehicle_type` is optional; omitted means all of `sedan|suv|luxury`; anything
+  else is `422`.
+- Both create and estimate enforce the **shared stop cap** `RIDE_MAX_STOPS`
+  (default **8**, configurable). Above it → `422 VALIDATION_ERROR` with the
+  human message `"a trip can have at most 8 stops"`. This is a **behavior change
+  on `POST /rides`** too: more than 8 intermediate stops now gets a 422.
+- A malformed body is `400 BAD_REQUEST`.
+
+Response (additive only — every pre-existing field keeps its meaning):
 
 ```json
 {
@@ -513,27 +549,50 @@ once, half-up, on the final total.
       "base_fare": 2.5,
       "distance_rate": 1.5,
       "time_rate": 0.4,
-      "distance_fare": 3.1,
+      "distance_fare": 3.71,
       "time_fare": 0.9,
       "surge_multiplier": 1.0,
-      "total": 6.5,
+      "total": 7.11,
       "region_id": "cr-sj",
       "currency": "USD",
       "demand_multiplier": 1.0,
       "supply_multiplier": 1.0,
-      "grade_uplift_pct": 0.0
+      "grade_uplift_pct": 0.0,
+      "is_estimate": false,
+      "legs": [
+        { "distance_m": 1650, "duration_s": 150, "distance_fare": 2.47, "time_fare": 0.60 },
+        { "distance_m": 820,  "duration_s": 75,  "distance_fare": 1.24, "time_fare": 0.30 }
+      ]
     }
   ]
 }
 ```
 
-`region_id`, `currency`, `demand_multiplier`, `supply_multiplier` and `grade_uplift_pct`
-are **additive**: an older client ignores them. `region_id` names the pricing region that
-was used and `currency` its ISO-4217 code. `surge_multiplier` is the unified conditions
-multiplier = `demand_multiplier × supply_multiplier`, floored at `1.0` (pricing never
-discounts below the authored tariff) and capped by `FARE_MAX_MULTIPLIER` (default `3.0`).
-`grade_uplift_pct` is the climb uplift applied to the distance leg and stays `0.0` until
-stage 01.
+`region_id`, `currency`, `demand_multiplier`, `supply_multiplier`,
+`grade_uplift_pct`, `is_estimate` and `legs` are **additive**: an older client
+ignores them. `region_id` names the pricing region that was used and `currency`
+its ISO-4217 code. `surge_multiplier` is the unified conditions multiplier =
+`demand_multiplier × supply_multiplier`, floored at `1.0` (pricing never
+discounts below the authored tariff) and capped by `FARE_MAX_MULTIPLIER`
+(default `3.0`). `grade_uplift_pct` is the climb uplift applied to the summed
+distance leg.
+
+`is_estimate` is `true` when the itinerary did not follow roads (a pin outside
+every region, or a mixed/cross-region itinerary) and the price is over a
+straight-line estimate; the default region's card then prices it.
+
+`legs` is the **additive per-leg breakdown**, one entry per leg (`stops + 1`,
+always at least one; the no-stop request yields a single leg equal to the whole
+trip). Per the pricing model there is exactly **one** base fare, **one**
+conditions multiplier and **one** grade uplift per estimate; the per-leg
+`distance_fare`/`time_fare` are informational and **exclude** the base and the
+multiplier, so `Σ legs.distance_fare == distance_fare`,
+`Σ legs.time_fare == time_fare`, and
+`total == round((base_fare + Σ legs.distance_fare + Σ legs.time_fare) × surge_multiplier)`.
+A client must render `total`; the legs are **not** independently quotable and
+there is **no per-leg rounding** (one half-up round on the trip total). The
+per-leg breakdown is on this estimate response only, never on the booking
+create/receipt payload.
 
 Two rules a client must honour:
 

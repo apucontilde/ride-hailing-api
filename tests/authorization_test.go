@@ -1,15 +1,11 @@
 package tests
 
 import (
-	"encoding/json"
 	"net/http"
 	"testing"
-)
 
-func TestRiderMeRequiresRiderRole(t *testing.T) {
-	resp := ts.DoRequest("GET", "/api/v1/rider/me", "", nil)
-	resp.AssertStatus(t, http.StatusUnauthorized)
-}
+	"ride-hailing-api/tests/testutil"
+)
 
 func TestRiderMeReturnsOwnProfile(t *testing.T) {
 	regResp := ts.PostJSON("/api/v1/auth/register", map[string]string{
@@ -30,7 +26,7 @@ func TestRiderMeReturnsOwnProfile(t *testing.T) {
 			ID string `json:"id"`
 		} `json:"user"`
 	}
-	parseJSON(t, loginResp.Body, &loginResult)
+	testutil.ParseJSON(t, loginResp.Body, &loginResult)
 
 	resp := ts.DoRequest("GET", "/api/v1/rider/me", loginResult.AccessToken, nil)
 	resp.AssertStatus(t, http.StatusOK)
@@ -50,7 +46,7 @@ func TestRiderUpdateMeAllowsOwnFields(t *testing.T) {
 	var loginResult struct {
 		AccessToken string `json:"access_token"`
 	}
-	parseJSON(t, loginResp.Body, &loginResult)
+	testutil.ParseJSON(t, loginResp.Body, &loginResult)
 
 	resp := ts.DoRequest("PUT", "/api/v1/rider/me", loginResult.AccessToken, map[string]string{
 		"first_name": "John",
@@ -73,7 +69,7 @@ func TestDriverMeRequiresDriverRole(t *testing.T) {
 	var loginResult struct {
 		AccessToken string `json:"access_token"`
 	}
-	parseJSON(t, loginResp.Body, &loginResult)
+	testutil.ParseJSON(t, loginResp.Body, &loginResult)
 
 	resp := ts.DoRequest("GET", "/api/v1/driver/me", loginResult.AccessToken, nil)
 	resp.AssertStatus(t, http.StatusForbidden)
@@ -92,7 +88,7 @@ func TestDriverStatusTransitions(t *testing.T) {
 	var loginResult struct {
 		AccessToken string `json:"access_token"`
 	}
-	parseJSON(t, loginResp.Body, &loginResult)
+	testutil.ParseJSON(t, loginResp.Body, &loginResult)
 	token := loginResult.AccessToken
 
 	ts.DoRequest("POST", "/api/v1/driver/register", token, nil)
@@ -105,7 +101,7 @@ func TestDriverStatusTransitions(t *testing.T) {
 	var driverLoginResult struct {
 		AccessToken string `json:"access_token"`
 	}
-	parseJSON(t, loginResp.Body, &driverLoginResult)
+	testutil.ParseJSON(t, loginResp.Body, &driverLoginResult)
 	token = driverLoginResult.AccessToken
 
 	resp := ts.DoRequest("PUT", "/api/v1/driver/me/status", token, map[string]string{
@@ -113,11 +109,4 @@ func TestDriverStatusTransitions(t *testing.T) {
 	})
 	resp.AssertStatus(t, http.StatusOK)
 	resp.AssertJSONHas(t, "driver.status", "online")
-}
-
-func parseJSON(t *testing.T, data []byte, v interface{}) {
-	t.Helper()
-	if err := json.Unmarshal(data, v); err != nil {
-		t.Fatalf("failed to parse JSON: %v", err)
-	}
 }

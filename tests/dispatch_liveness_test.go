@@ -121,7 +121,7 @@ func TestOfferToDriverWhoGoesOnlineWithoutMoving(t *testing.T) {
 	var created struct {
 		Ride struct{ ID string } `json:"ride"`
 	}
-	parseJSON(t, createResp.Body, &created)
+	testutil.ParseJSON(t, createResp.Body, &created)
 
 	msg, err := testutil.TryReadWSMessage(driverConn, 5*time.Second)
 	if err != nil || msg == nil {
@@ -226,7 +226,7 @@ func TestPresenceRefreshFailureKeepsTheStatusUpdateSucceeding(t *testing.T) {
 	driverID := onlyDriverRow(t, srv)
 
 	// The next repository write fails, which lands on the presence refresh.
-	srv.GeoRepo.FailNext = errors.New("pq: connection reset by peer")
+	srv.GeoRepo.SetFailNext(errors.New("pq: connection reset by peer"))
 
 	resp := srv.DoRequest("PUT", "/api/v1/driver/me/status", driverToken,
 		map[string]string{"status": "online"})
@@ -238,7 +238,7 @@ func TestPresenceRefreshFailureKeepsTheStatusUpdateSucceeding(t *testing.T) {
 			Status string `json:"status"`
 		} `json:"driver"`
 	}
-	parseJSON(t, resp.Body, &body)
+	testutil.ParseJSON(t, resp.Body, &body)
 	if body.Driver.Status != "online" {
 		t.Errorf("status = %q, want %q", body.Driver.Status, "online")
 	}
