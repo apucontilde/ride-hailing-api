@@ -32,7 +32,10 @@ void main() {
   }
 
   bool submitEnabled(WidgetTester tester) =>
-      tester.widget<FilledButton>(find.byKey(const Key('rate-submit'))).onPressed !=
+      tester.widget<ElevatedButton>(find.descendant(
+        of: find.byKey(const Key('rate-submit')),
+        matching: find.byType(ElevatedButton),
+      )).onPressed !=
       null;
 
   testWidgets('submit stays disabled until a star is picked', (tester) async {
