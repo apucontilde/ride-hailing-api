@@ -34,6 +34,18 @@ class LocationHelper {
     }
   }
 
+  /// Whether the platform location service (GPS) is switched on. Kept on the
+  /// helper so app code never has to import `geolocator` directly.
+  static Future<bool> isLocationServiceEnabled() =>
+      Geolocator.isLocationServiceEnabled();
+
+  /// Opens the OS app-permission settings (for a permanently denied permission).
+  static Future<bool> openAppSettings() => Geolocator.openAppSettings();
+
+  /// Opens the OS location-service settings (for services-off).
+  static Future<bool> openLocationSettings() =>
+      Geolocator.openLocationSettings();
+
   static Stream<Position> getPositionStream() {
     return Geolocator.getPositionStream(
       locationSettings: const LocationSettings(

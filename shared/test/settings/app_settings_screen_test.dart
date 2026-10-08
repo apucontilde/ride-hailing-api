@@ -288,15 +288,5 @@ void main() {
       // survives into the next sign-in.
       expect(completed, isFalse);
     });
-
-    test('showAppSignOutDialog is reachable through the barrel', () {
-      // The barrel is unfiltered, so every new symbol is public by construction;
-      // this keeps a rename from silently breaking an app that imports it.
-      expect(showAppSignOutDialog, isA<Function>());
-      expect(performAppSignOut, isA<Function>());
-      expect(closeSidebar, isA<Function>());
-      expect(normalisePhotoUrl(''), isNull);
-      expect(deriveInitials('Ana Rojas'), 'AR');
-    });
   });
 }

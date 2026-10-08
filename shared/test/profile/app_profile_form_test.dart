@@ -222,7 +222,7 @@ void main() {
       expect(gotPhone, '+5065559999');
     });
 
-    testWidgets('a blank phone arrives as null, not an empty string', (tester) async {
+    testWidgets('a blank or whitespace-only phone arrives as null, not an empty string', (tester) async {
       Object? gotPhone = 'unset';
       await tester.pumpWidget(
         wrap(
@@ -246,26 +246,8 @@ void main() {
       // The driver's `_save()` used to compute `text.isEmpty ? null : text`; that
       // computation now lives here once.
       expect(gotPhone, isNull);
-    });
 
-    testWidgets('a whitespace-only phone also arrives as null', (tester) async {
-      Object? gotPhone = 'unset';
-      await tester.pumpWidget(
-        wrap(
-          AppProfileForm(
-            firstName: 'Ava',
-            lastName: 'Lopez',
-            onSave: ({
-              required String firstName,
-              required String lastName,
-              String? phone,
-            }) async {
-              gotPhone = phone;
-            },
-          ),
-        ),
-      );
-
+      gotPhone = 'unset';
       await type(tester, 'Phone', '   ');
       await tester.tap(saveButton());
       await tester.pumpAndSettle();

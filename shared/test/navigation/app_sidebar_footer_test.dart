@@ -7,19 +7,24 @@ void main() {
   Future<void> pumpSidebarWithFooter(
     WidgetTester tester, {
     required AppSidebarFooter footer,
+    List<AppNavItem>? items,
   }) async {
     await tester.pumpWidget(
       MaterialApp(
         home: Scaffold(
           appBar: AppBar(leading: const AppSidebarToggleButton()),
           drawer: AppSidebar(
-            items: [
-              AppNavItem(destination: AppNavDestination.profile, route: '/profile'),
-              AppNavItem(
-                destination: AppNavDestination.settings,
-                route: '/settings',
-              ),
-            ],
+            items: items ??
+                [
+                  AppNavItem(
+                    destination: AppNavDestination.profile,
+                    route: '/profile',
+                  ),
+                  AppNavItem(
+                    destination: AppNavDestination.settings,
+                    route: '/settings',
+                  ),
+                ],
             account: const AppSidebarAccount(displayName: 'Ana Rojas'),
             onItemSelected: (_) {},
             footer: footer,
@@ -54,35 +59,63 @@ void main() {
       expect(title.style?.color, isNotNull);
     });
 
-    testWidgets('is a sibling of the scroller, not a child of it', (tester) async {
-      // A footer inside the ListView scrolls out of view, and sign-out must stay
-      // reachable whatever the item list length.
+    testWidgets('the pinned footer stays reachable while the item list scrolls', (tester) async {
+      // Constrain the viewport so the full set of destinations genuinely
+      // overflows the scroller; the helper's default two items fit on any screen.
+      tester.view.physicalSize = const Size(400, 400);
+      tester.view.devicePixelRatio = 1.0;
+      addTearDown(tester.view.reset);
+
       await pumpSidebarWithFooter(
         tester,
         footer: AppSidebarFooter(onSignOut: () async {}),
+        items: [
+          AppNavItem(
+            destination: AppNavDestination.profile,
+            route: '/profile',
+          ),
+          AppNavItem(
+            destination: AppNavDestination.rideHistory,
+            route: '/rides-history',
+          ),
+          AppNavItem(
+            destination: AppNavDestination.payment,
+            route: '/payment',
+          ),
+          AppNavItem(
+            destination: AppNavDestination.vehicle,
+            route: '/vehicle',
+          ),
+          AppNavItem(
+            destination: AppNavDestination.security,
+            route: '/security',
+          ),
+          AppNavItem(
+            destination: AppNavDestination.settings,
+            route: '/settings',
+          ),
+        ],
       );
 
-      expect(find.byType(ListView), findsOneWidget);
+      final signOut = find.byKey(const Key('sidebar-sign-out'));
+      // The footer is a sibling of the scroller, so it cannot scroll out of view.
       expect(
-        find.descendant(
-          of: find.byType(ListView),
-          matching: find.byKey(const Key('sidebar-sign-out')),
-        ),
+        find.descendant(of: find.byType(ListView), matching: signOut),
         findsNothing,
       );
-      expect(find.byKey(const Key('sidebar-sign-out')), findsOneWidget);
-    });
+      expect(signOut, findsOneWidget);
 
-    testWidgets('stays on screen with a list long enough to scroll', (tester) async {
-      await pumpSidebarWithFooter(
-        tester,
-        footer: AppSidebarFooter(onSignOut: () async {}),
-      );
+      final position =
+          tester.state<ScrollableState>(find.byType(Scrollable)).position;
+      expect(position.maxScrollExtent, greaterThan(0));
 
-      final viewport = tester.getSize(find.byType(ListView));
-      final footerRect = tester.getRect(find.byKey(const Key('sidebar-sign-out')));
-      expect(footerRect.top, greaterThanOrEqualTo(viewport.height - 1));
-      expect(footerRect.bottom, lessThanOrEqualTo(tester.getSize(find.byType(Scaffold)).height));
+      await tester.drag(find.byType(ListView), const Offset(0, -300));
+      await tester.pumpAndSettle();
+
+      // The list actually moved, and sign-out is still on screen.
+      expect(position.pixels, greaterThan(0));
+      expect(signOut, findsOneWidget);
+      expect(tester.getRect(signOut).bottom, lessThanOrEqualTo(400));
     });
   });
 

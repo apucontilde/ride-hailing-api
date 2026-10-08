@@ -165,7 +165,14 @@ void main() {
 
     await service.connect(token: 'token');
     await waitFor(() => connected >= 1);
-
     expect(connected, 1);
+
+    // The contract is "every (re)connect", not just the first: the driver
+    // re-publishes its position from this hook on each one.
+    await service.disconnect();
+    await service.connect(token: 'token');
+    await waitFor(() => connected >= 2);
+
+    expect(connected, 2);
   });
 }

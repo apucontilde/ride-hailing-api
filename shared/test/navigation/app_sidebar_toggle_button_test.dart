@@ -74,7 +74,7 @@ void main() {
       expect(find.byKey(const Key('sidebar-item-settings')), findsOneWidget);
     });
 
-    testWidgets('the default icon is Icons.menu', (tester) async {
+    testWidgets('the icon defaults to Icons.menu and null falls back to it', (tester) async {
       // Regression guard: the rider's `auth_flow_test.dart` and
       // `home_screen_test.dart` both locate this button with
       // `find.byIcon(Icons.menu)`, so the default may not change.
@@ -83,7 +83,13 @@ void main() {
           home: Scaffold(body: Center(child: AppSidebarToggleButton())),
         ),
       );
+      expect(find.byIcon(Icons.menu), findsOneWidget);
 
+      await tester.pumpWidget(
+        const MaterialApp(
+          home: Scaffold(body: Center(child: AppSidebarToggleButton(icon: null))),
+        ),
+      );
       expect(find.byIcon(Icons.menu), findsOneWidget);
     });
 
@@ -122,16 +128,6 @@ void main() {
       expect(button.style, isNotNull);
       final background = button.style?.backgroundColor?.resolve(<WidgetState>{});
       expect(background, Colors.white);
-    });
-
-    testWidgets('a null icon falls back to Icons.menu', (tester) async {
-      await tester.pumpWidget(
-        const MaterialApp(
-          home: Scaffold(body: Center(child: AppSidebarToggleButton(icon: null))),
-        ),
-      );
-
-      expect(find.byIcon(Icons.menu), findsOneWidget);
     });
 
     testWidgets('tooltip is passed through', (tester) async {

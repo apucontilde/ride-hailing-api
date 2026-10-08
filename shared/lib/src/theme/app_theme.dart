@@ -28,9 +28,28 @@ class AppRadii {
   static const double sm = 8;
   static const double md = 12;
   static const double lg = 16;
+
+  /// The rounded top of a bottom sheet (the trip sheet used `20`).
+  static const double sheet = 20;
+
+  /// Dialogs and full bottom sheets (Material's `28`).
+  static const double dialog = 28;
+
+  /// A fully rounded pill/chip.
+  static const double pill = 999;
+
+  /// Alias for [pill]: a fully rounded (`full`) radius.
+  static const double full = pill;
+
+  /// The drag handle capsule.
+  static const double handle = 2;
 }
 
 /// Type tokens.
+///
+/// The role tokens are size/weight only and inherit their colour, so a screen
+/// can still tint a role with `AppColors` without a second literal. They are
+/// the canonical replacement for hand-written `TextStyle(fontSize: …)`.
 class AppTextStyles {
   AppTextStyles._();
 
@@ -42,6 +61,36 @@ class AppTextStyles {
     fontWeight: FontWeight.w600,
     letterSpacing: 0.8,
     color: Color(0xFF5F6368),
+  );
+
+  /// Screen/section headings (18 / w600).
+  static const TextStyle title = TextStyle(
+    fontSize: 18,
+    fontWeight: FontWeight.w600,
+  );
+
+  /// Prominent sub-headings and option titles (16 / w600).
+  static const TextStyle subtitle = TextStyle(
+    fontSize: 16,
+    fontWeight: FontWeight.w600,
+  );
+
+  /// Body copy (14 / w400).
+  static const TextStyle body = TextStyle(fontSize: 14);
+
+  /// Form labels and dense rows (13 / w500).
+  static const TextStyle label = TextStyle(
+    fontSize: 13,
+    fontWeight: FontWeight.w500,
+  );
+
+  /// Captions and helper text (12 / w400).
+  static const TextStyle caption = TextStyle(fontSize: 12);
+
+  /// A money amount (16 / w600).
+  static const TextStyle fare = TextStyle(
+    fontSize: 16,
+    fontWeight: FontWeight.w600,
   );
 }
 
@@ -101,7 +150,7 @@ class AppTheme {
       ),
       dialogTheme: DialogThemeData(
         shape: RoundedRectangleBorder(
-          borderRadius: BorderRadius.circular(28),
+          borderRadius: BorderRadius.circular(AppRadii.dialog),
         ),
       ),
     );

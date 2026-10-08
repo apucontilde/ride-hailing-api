@@ -18,7 +18,12 @@ void main() {
       await tester.pumpWidget(
         wrap(const AppProfileHeader(displayName: 'Ana Maria Rojas Perez')),
       );
+      expect(find.text('AM'), findsOneWidget);
 
+      // Blank words are dropped rather than producing an empty initial.
+      await tester.pumpWidget(
+        wrap(const AppProfileHeader(displayName: '  Ana   Maria  Rojas ')),
+      );
       expect(find.text('AM'), findsOneWidget);
     });
 
@@ -28,6 +33,10 @@ void main() {
       await tester.pumpWidget(wrap(const AppProfileHeader(displayName: 'Driver')));
 
       expect(find.text('D'), findsOneWidget);
+
+      // Padded and lowercase: initials are uppercased, blanks dropped.
+      await tester.pumpWidget(wrap(const AppProfileHeader(displayName: '  ana ')));
+      expect(find.text('A'), findsOneWidget);
     });
 
     testWidgets('supplied initials replace the derived ones', (tester) async {
@@ -58,35 +67,27 @@ void main() {
   });
 
   group('AppProfileHeader photo', () {
-    testWidgets('a blank photoUrl falls back to initials, never NetworkImage', (tester) async {
+    testWidgets('a missing or blank photoUrl falls back to initials, never NetworkImage', (tester) async {
       // `DriverProfile.photoUrl` is passed straight through from JSON and is ''
       // for every driver without a photo — the common case. `NetworkImage('')`
       // paints a red error box and throws an unhandled async image error.
-      await tester.pumpWidget(
-        wrap(const AppProfileHeader(displayName: 'Ava Lopez', photoUrl: '')),
-      );
+      for (final photoUrl in <String?>[null, '', '   ']) {
+        await tester.pumpWidget(
+          wrap(AppProfileHeader(displayName: 'Ava Lopez', photoUrl: photoUrl)),
+        );
 
-      final avatar = tester.widget<CircleAvatar>(find.byType(CircleAvatar));
-      expect(avatar.backgroundImage, isNull);
-      expect(find.text('AL'), findsOneWidget);
+        final avatar = tester.widget<CircleAvatar>(find.byType(CircleAvatar));
+        expect(avatar.backgroundImage, isNull);
+        expect(find.text('AL'), findsOneWidget);
+      }
     });
 
-    testWidgets('a whitespace-only photoUrl is also absent', (tester) async {
-      await tester.pumpWidget(
-        wrap(const AppProfileHeader(displayName: 'Ava Lopez', photoUrl: '   ')),
-      );
-
-      final avatar = tester.widget<CircleAvatar>(find.byType(CircleAvatar));
-      expect(avatar.backgroundImage, isNull);
-      expect(find.text('AL'), findsOneWidget);
-    });
-
-    testWidgets('a real photoUrl is used and suppresses the initials', (tester) async {
+    testWidgets('a real photoUrl is used, trimmed, and suppresses the initials', (tester) async {
       await tester.pumpWidget(
         wrap(
           const AppProfileHeader(
             displayName: 'Ava Lopez',
-            photoUrl: 'https://example.com/ava.png',
+            photoUrl: '  https://example.com/ava.png  ',
           ),
         ),
       );
@@ -105,21 +106,6 @@ void main() {
         'https://example.com/ava.png',
       );
       expect(find.text('AL'), findsNothing);
-    });
-
-    test('normalisePhotoUrl collapses the two models shapes to one', () {
-      expect(normalisePhotoUrl(null), isNull);
-      expect(normalisePhotoUrl(''), isNull);
-      expect(normalisePhotoUrl('   '), isNull);
-      expect(normalisePhotoUrl(' https://x/y.png '), 'https://x/y.png');
-    });
-
-    test('deriveInitials is the rule both apps hand-rolled', () {
-      expect(deriveInitials('Ana Rojas'), 'AR');
-      expect(deriveInitials('Ava'), 'A');
-      expect(deriveInitials('  Ana   Maria  Rojas '), 'AM');
-      expect(deriveInitials(''), '');
-      expect(deriveInitials('ana'), 'A');
     });
   });
 
@@ -206,9 +192,8 @@ void main() {
 
       expect(find.byType(Chip), findsOneWidget);
       expect(find.text('idle'), findsOneWidget);
-    });
 
-    testWidgets('the driver onboarding chip renders its own copy', (tester) async {
+      // The driver reuses the same slot for its onboarding copy.
       await tester.pumpWidget(
         wrap(
           const AppProfileHeader(
@@ -218,6 +203,7 @@ void main() {
         ),
       );
 
+      expect(find.byType(Chip), findsOneWidget);
       expect(find.text('Onboarding pending'), findsOneWidget);
     });
 

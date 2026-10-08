@@ -28,18 +28,14 @@ void main() {
   }
 
   group('apiErrorMessage', () {
-    test('returns the backend message for a mapped DioException', () {
-      final error = asInterceptorThrows(409, 'email already registered');
-      expect(apiErrorMessage(error, 'Registration failed.'),
-          'email already registered');
-    });
-
-    test('prefers the backend message over Dio’s verbose description', () {
+    test('returns the backend message, not Dio’s verbose description', () {
       // Regression: the register screen rendered `DioException.message`
       // verbatim, so a duplicate email produced a multi-paragraph English
       // wall ending in an MDN link instead of "email already registered".
       final error = asInterceptorThrows(409, 'email already registered');
       final message = apiErrorMessage(error, 'Registration failed.');
+
+      expect(message, 'email already registered');
       expect(message, isNot(contains('This exception was thrown')));
       expect(message, isNot(contains('developer.mozilla.org')));
       expect(message.length, lessThan(80));

@@ -3,8 +3,8 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:ride_hailing_shared/ride_hailing_shared.dart';
 
 void main() {
-  group('AppNavDestination', () {
-    test('ids are the kebab-case strings the sidebar keys are built from', () {
+  group('AppNavDestination declared parity', () {
+    test('declares the ids, labels, icons, sections and headings both apps rely on', () {
       // Both apps' nav-item suites assert `Key('sidebar-item-<id>')` against
       // these exact strings, so a camelCase id here turns them red for a reason
       // no analyzer will report.
@@ -12,9 +12,7 @@ void main() {
         AppNavDestination.values.map((d) => d.id),
         ['profile', 'ride-history', 'payment', 'vehicle', 'security', 'settings'],
       );
-    });
 
-    test('canonical labels, icons and sections are the parity defaults', () {
       expect(AppNavDestination.profile.label, 'Profile');
       expect(AppNavDestination.profile.icon, Icons.person_outline);
       expect(AppNavDestination.profile.section, AppNavSection.account);
@@ -34,11 +32,7 @@ void main() {
 
       expect(AppNavDestination.settings.icon, Icons.settings_outlined);
       expect(AppNavDestination.settings.section, AppNavSection.app);
-    });
-  });
 
-  group('AppNavSection', () {
-    test('headings are the four fixed groups, in render order', () {
       expect(
         AppNavSection.values.map((s) => s.title),
         ['ACCOUNT', 'ACTIVITY', 'SAFETY', 'APP'],
