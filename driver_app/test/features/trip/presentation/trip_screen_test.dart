@@ -20,6 +20,8 @@ import 'package:driver_app/features/trip/providers/trip_notifier.dart';
 import 'package:driver_app/features/trip/presentation/trip_screen.dart';
 import 'package:driver_app/features/rides/data/rated_rides_provider.dart';
 
+import '../../../support/trip_fixtures.dart';
+
 class MockApiClient extends Mock implements ApiClient {}
 
 class MockDio extends Mock implements Dio {}
@@ -28,8 +30,8 @@ class MockDriverWebSocketService extends Mock
     implements DriverWebSocketService {}
 
 void main() {
-  const pickupLat = 9.9300, pickupLng = -84.0800;
-  const dropoffLat = 9.9500, dropoffLng = -84.1000;
+  const pickupLat = tripPickupLat, pickupLng = tripPickupLng;
+  const dropoffLat = tripDropoffLat, dropoffLng = tripDropoffLng;
 
   late MockApiClient mockApiClient;
   late MockDio mockDio;
@@ -113,16 +115,12 @@ void main() {
     Map<String, dynamic>? fare,
     String? cancelledBy,
   }) {
-    rideState.onWsEvent(WsEvent(
-      type: WsEventType.updated,
-      data: {
-        'ride_id': rideId,
-        'status': status,
-        'fare': ?fare,
-        'cancelled_by': ?cancelledBy,
-        'pickup': {'lat': pickupLat, 'lng': pickupLng, 'address': 'Central Park'},
-        'dropoff': {'lat': dropoffLat, 'lng': dropoffLng, 'address': 'Airport'},
-      },
+    rideState.onWsEvent(rideUpdated(
+      rideId: rideId,
+      status: status,
+      fare: fare,
+      cancelledBy: cancelledBy,
+      includePlaces: true,
     ));
   }
 

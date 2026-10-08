@@ -541,7 +541,9 @@ void main() {
         ], total: 2),
       );
 
-      expect(container.read(earningsProvider), same(EarningsSummary.empty));
+      final before = container.read(earningsProvider);
+      expect(before.loadedTotal, 0);
+      expect(before.completedTrips, 0);
 
       await history().refresh();
 

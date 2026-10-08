@@ -387,7 +387,9 @@ void main() {
               ],
             },
           )).called(1);
-      expect(service, isNotNull);
+      // The failed push was buffered and the service is still live, so the next
+      // fix can be pushed and the buffer flushed.
+      expect(service.active, isTrue);
       service.stop();
     });
 

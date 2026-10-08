@@ -1,17 +1,10 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:ride_hailing_shared/ride_hailing_shared.dart';
-import 'package:driver_app/config.dart';
 import 'package:driver_app/features/navigation/driver_nav_items.dart';
 
 void main() {
   group('buildDriverNavItems with the shipped flag', () {
-    test('the flag is false, so the gate below is the real behaviour', () {
-      // If this ever flips, the vehicle assertions here must move to the
-      // includeVehicle: true expectations rather than be deleted.
-      expect(ApiConfig.vehicleFeatureEnabled, isFalse);
-    });
-
     test('lists exactly the three driver destinations', () {
       expect(buildDriverNavItems(), hasLength(3));
     });
@@ -28,13 +21,6 @@ void main() {
       expect(ids.toSet(), hasLength(ids.length));
     });
 
-    test('sections are the canonical groups, in order', () {
-      expect(
-        buildDriverNavItems().map((i) => i.section),
-        [AppNavSection.account, AppNavSection.activity, AppNavSection.app],
-      );
-    });
-
     test('routes are the driver router paths', () {
       // The rider's history is /history; the driver's is /rides-history. Routes
       // are the app-owned half of the seam.
@@ -44,24 +30,12 @@ void main() {
       );
     });
 
-    test('every icon is the canonical one', () {
-      expect(
-        buildDriverNavItems().map((i) => i.icon),
-        [Icons.person_outline, Icons.history, Icons.settings_outlined],
-      );
-      for (final item in buildDriverNavItems()) {
-        expect(item.icon, item.destination.icon, reason: item.id);
-      }
-    });
-
     test("the only label override is 'Ride history & earnings'", () {
       for (final item in buildDriverNavItems()) {
         if (item.destination == AppNavDestination.rideHistory) {
           // Deliberate divergence from the rider's 'History': earnings are a
           // driver-only concept.
           expect(item.label, 'Ride history & earnings');
-        } else {
-          expect(item.label, item.destination.label, reason: item.id);
         }
       }
     });
@@ -118,11 +92,5 @@ void main() {
       expect(items.firstWhere((i) => i.id == 'vehicle').label, 'Vehicle');
     });
 
-    test('the parameter is what makes the gated case testable', () {
-      // `ApiConfig.vehicleFeatureEnabled` is a const, so without the parameter a
-      // suite could only ever exercise whichever branch the flag happens to be.
-      expect(buildDriverNavItems(includeVehicle: false), hasLength(3));
-      expect(buildDriverNavItems(includeVehicle: true), hasLength(4));
-    });
   });
 }

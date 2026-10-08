@@ -9,6 +9,8 @@ import 'package:driver_app/features/rides/data/rides_repository.dart';
 import 'package:driver_app/features/rides/data/rated_rides_provider.dart';
 import 'package:driver_app/features/rides/presentation/rate_sheet.dart';
 
+import '../../../support/sheet_harness.dart';
+
 class MockRidesRepository extends Mock implements RidesRepository {}
 
 void main() {
@@ -21,32 +23,12 @@ void main() {
   Future<void> pumpSheet(
     WidgetTester tester, {
     required String rideId,
-  }) async {
-    await tester.pumpWidget(
-      ProviderScope(
-        overrides: [ridesRepositoryProvider.overrideWith((ref) => repo)],
-        child: MaterialApp(
-          home: Builder(
-            builder: (context) => Scaffold(
-              body: Center(
-                child: TextButton(
-                  onPressed: () => showModalBottomSheet<void>(
-                    context: context,
-                    isScrollControlled: true,
-                    builder: (_) => RateSheet(rideId: rideId),
-                  ),
-                  child: const Text('open'),
-                ),
-              ),
-            ),
-          ),
-        ),
-      ),
+  }) {
+    return pumpModalSheet(
+      tester,
+      overrides: [ridesRepositoryProvider.overrideWith((ref) => repo)],
+      builder: (_) => RateSheet(rideId: rideId),
     );
-    await tester.tap(find.text('open'));
-    await tester.pump();
-    await tester.pump(const Duration(milliseconds: 300));
-    await tester.pump();
   }
 
   bool submitEnabled(WidgetTester tester) =>
@@ -66,7 +48,7 @@ void main() {
 
     expect(submitEnabled(tester), isTrue);
 
-    await tester.pumpWidget(const SizedBox());
+    await drainModalTimers(tester);
   });
 
   testWidgets('a tapped star fills up to that star', (tester) async {
@@ -90,7 +72,7 @@ void main() {
       Icons.star_border,
     );
 
-    await tester.pumpWidget(const SizedBox());
+    await drainModalTimers(tester);
   });
 
   testWidgets('submitting sends score and comment once, then closes',
@@ -123,7 +105,7 @@ void main() {
     expect(find.byType(RateSheet), findsNothing);
     expect(find.text('Thanks — rating sent'), findsOneWidget);
 
-    await tester.pumpWidget(const SizedBox());
+    await drainModalTimers(tester);
   });
 
   testWidgets('a second submit while one is in flight is impossible',
@@ -160,7 +142,7 @@ void main() {
 
     expect(find.byType(RateSheet), findsNothing);
 
-    await tester.pumpWidget(const SizedBox());
+    await drainModalTimers(tester);
   });
 
   testWidgets('a failure shows an inline error and keeps the sheet open',
@@ -188,7 +170,7 @@ void main() {
     expect(find.byType(RateSheet), findsOneWidget);
     expect(submitEnabled(tester), isTrue);
 
-    await tester.pumpWidget(const SizedBox());
+    await drainModalTimers(tester);
   });
 
   testWidgets('a rejected score is reported without closing', (tester) async {
@@ -208,7 +190,7 @@ void main() {
     expect(find.text('Pick between 1 and 5 stars.'), findsOneWidget);
     expect(find.byType(RateSheet), findsOneWidget);
 
-    await tester.pumpWidget(const SizedBox());
+    await drainModalTimers(tester);
   });
 
   testWidgets('"Not now" closes without rating', (tester) async {
@@ -227,7 +209,7 @@ void main() {
         ));
     expect(find.byType(RateSheet), findsNothing);
 
-    await tester.pumpWidget(const SizedBox());
+    await drainModalTimers(tester);
   });
 
   group('the rated-rides list', () {
@@ -337,7 +319,7 @@ void main() {
             cancelToken: any(named: 'cancelToken'),
           )).called(1);
 
-      await tester.pumpWidget(const SizedBox());
+      await drainModalTimers(tester);
     });
 
     testWidgets('a ride the server already lists is rated before any submit', (
@@ -356,7 +338,7 @@ void main() {
         isFalse,
       );
 
-      await tester.pumpWidget(const SizedBox());
+      await drainModalTimers(tester);
     });
 
     testWidgets('a failed submit leaves the loaded answer alone', (
@@ -389,7 +371,7 @@ void main() {
         RatingStatus.unrated,
       );
 
-      await tester.pumpWidget(const SizedBox());
+      await drainModalTimers(tester);
     });
   });
 }

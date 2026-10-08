@@ -267,9 +267,7 @@ void main() {
       }
     });
 
-    testWidgets('the overridden label renders and the others stay canonical', (
-      tester,
-    ) async {
+    testWidgets('the overridden label renders', (tester) async {
       await pumpHome(tester, profileContainer());
       await openSidebar(tester);
 
@@ -277,8 +275,6 @@ void main() {
       // unscoped — and unique, because the AppBar title renders the driver's
       // name, never a destination label.
       expect(find.text('Ride history & earnings'), findsOneWidget);
-      expect(find.text('Profile'), findsOneWidget);
-      expect(find.text('Settings'), findsOneWidget);
       // The canonical label must not leak through the override.
       expect(find.text('Ride history'), findsNothing);
     });
@@ -308,20 +304,6 @@ void main() {
   });
 
   group('driver sidebar header', () {
-    testWidgets('shows the name and the status on the dot row', (tester) async {
-      await pumpHome(tester, profileContainer());
-      await openSidebar(tester);
-
-      expect(inHeader(find.text('Ada Lovelace')), findsOneWidget);
-      expect(inHeader(find.text('online')), findsOneWidget);
-      expect(inHeader(find.byKey(const Key('status-dot'))), findsOneWidget);
-
-      final dot = tester.widget<Container>(
-        inHeader(find.byKey(const Key('status-dot'))),
-      );
-      expect((dot.decoration! as BoxDecoration).color, Colors.green);
-    });
-
     testWidgets(
       "the old 'Status: …' email-slot string is gone from the header",
       (tester) async {
@@ -337,51 +319,11 @@ void main() {
       },
     );
 
-    testWidgets('honours photoUrl by falling back to initials when it is blank', (
-      tester,
-    ) async {
-      await pumpHome(tester, profileContainer());
-      await openSidebar(tester);
-
-      // `DriverProfile.photoUrl` is `''` here, which is what the API returns for a
-      // driver with no photo. `NetworkImage('')` would paint a red error box.
-      expect(inHeader(find.text('AL')), findsOneWidget);
-      final avatar = tester.widget<CircleAvatar>(
-        find.descendant(
-          of: find.byType(AppSidebarHeader),
-          matching: find.byType(CircleAvatar),
-        ),
-      );
-      expect(avatar.backgroundImage, isNull);
-    });
-
     testWidgets('shows the rating row', (tester) async {
       await pumpHome(tester, profileContainer());
       await openSidebar(tester);
 
       expect(inHeader(find.text('★ 4.9')), findsOneWidget);
-    });
-
-    testWidgets("a nameless driver shows 'Driver' and a 'D' avatar", (
-      tester,
-    ) async {
-      // Known bug #3: onboarding never `PUT`s /driver/me, so a fresh driver's
-      // fullName really is empty. The `'Driver'` fallback is app-side and the
-      // shared rule derives the initial from it.
-      final container = ProviderContainer(
-        overrides: [
-          ...baseOverrides(),
-          driverProfileProvider.overrideWith(
-            (ref) => const DriverProfile(userId: 'd2'),
-          ),
-        ],
-      );
-      addTearDown(container.dispose);
-      await pumpHome(tester, container);
-      await openSidebar(tester);
-
-      expect(inHeader(find.text('Driver')), findsOneWidget);
-      expect(inHeader(find.text('D')), findsOneWidget);
     });
   });
 

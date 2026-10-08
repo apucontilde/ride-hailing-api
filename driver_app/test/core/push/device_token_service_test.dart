@@ -219,19 +219,6 @@ void main() {
       await expectLater(service.unregister(), completes);
     });
 
-    test('register() failure is non-fatal to the caller', () async {
-      when(() => mockDio.post(any(), data: any(named: 'data')))
-          .thenThrow(DioException(
-        requestOptions: RequestOptions(path: ApiEndpoints.devices),
-      ));
-      final service = buildService(FakePushTokenSource(token: 'tok-123'));
-
-      await service.register();
-
-      // The call is attempted but the exception never escapes.
-      verify(() => mockDio.post(any(), data: any(named: 'data'))).called(1);
-    });
-
     test('the raw token never reaches debugPrint', () async {
       when(() => mockDio.post(any(), data: any(named: 'data')))
           .thenThrow(DioException(

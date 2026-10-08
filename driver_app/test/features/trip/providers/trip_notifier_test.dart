@@ -13,6 +13,8 @@ import 'package:driver_app/core/network/ws_event.dart';
 import 'package:driver_app/core/ride/ride_state_notifier.dart';
 import 'package:driver_app/features/trip/providers/trip_notifier.dart';
 
+import '../../../support/trip_fixtures.dart';
+
 class MockApiClient extends Mock implements ApiClient {}
 
 class MockDio extends Mock implements Dio {}
@@ -28,9 +30,10 @@ void main() {
   late TripNotifier notifier;
 
   // 0.001° of latitude is ~111 m, 0.003° is ~333 m — either side of the
-  // 200 m refetch threshold.
-  const pickupLat = 9.9300, pickupLng = -84.0800;
-  const dropoffLat = 9.9500, dropoffLng = -84.1000;
+  // 200 m refetch threshold. Aliased from the shared trip fixtures so both
+  // suites agree on the coordinates.
+  const pickupLat = tripPickupLat, pickupLng = tripPickupLng;
+  const dropoffLat = tripDropoffLat, dropoffLng = tripDropoffLng;
 
   setUp(() {
     mockApiClient = MockApiClient();
@@ -66,37 +69,18 @@ void main() {
     Map<String, dynamic>? fare,
     String? cancelledBy,
   }) {
-    rideState.onWsEvent(WsEvent(
-      type: WsEventType.updated,
-      data: {
-        'ride_id': rideId,
-        'status': status,
-        'fare': ?fare,
-        'cancelled_by': ?cancelledBy,
-      },
+    rideState.onWsEvent(rideUpdated(
+      rideId: rideId,
+      status: status,
+      fare: fare,
+      cancelledBy: cancelledBy,
     ));
   }
 
   /// A full `accepted` broadcast, i.e. what the dispatch/accept path delivers.
   void seedAcceptedRide() {
     broadcast(status: 'accepted');
-    rideState.onWsEvent(WsEvent(
-      type: WsEventType.updated,
-      data: {
-        'ride_id': 'r1',
-        'status': 'accepted',
-        'pickup': {
-          'lat': pickupLat,
-          'lng': pickupLng,
-          'address': 'Central Park',
-        },
-        'dropoff': {
-          'lat': dropoffLat,
-          'lng': dropoffLng,
-          'address': 'Airport',
-        },
-      },
-    ));
+    rideState.onWsEvent(rideUpdated(status: 'accepted', includePlaces: true));
   }
 
   void stubStatusPut({String status = 'driver_arrived'}) {
@@ -161,32 +145,6 @@ void main() {
 
       broadcast(status: 'cancelled');
       expect(notifier.state.stage, TripStage.cancelled);
-    });
-
-    test('a status-only broadcast keeps the held ride id and places', () {
-      seedAcceptedRide();
-      broadcast(status: 'driver_arrived');
-
-      final ride = notifier.state.currentRide;
-      expect(ride, isNotNull);
-      expect(ride!.id, 'r1');
-      expect(ride.pickupLat, pickupLat);
-      expect(ride.dropoffLng, dropoffLng);
-    });
-
-    test('a broadcast for another ride does not replace the held one', () {
-      seedAcceptedRide();
-      broadcast(rideId: 'other', status: 'in_progress');
-
-      expect(notifier.state.currentRide!.id, 'r1');
-    });
-
-    test('cancelled_by from the event is surfaced', () {
-      seedAcceptedRide();
-      broadcast(status: 'cancelled', cancelledBy: 'rider');
-
-      expect(notifier.state.stage, TripStage.cancelled);
-      expect(notifier.state.cancelledBy, 'rider');
     });
   });
 

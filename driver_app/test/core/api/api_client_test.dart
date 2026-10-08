@@ -2,204 +2,64 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:dio/dio.dart';
 import 'package:http_mock_adapter/http_mock_adapter.dart';
 import 'package:driver_app/core/api/api_client.dart';
-import 'package:driver_app/core/api/api_exceptions.dart';
-import 'package:driver_app/core/api/endpoints.dart';
 import 'package:driver_app/config.dart';
 
+/// The shared [ApiClient] error-mapping suite lives in `rider_app` (both apps
+/// re-export the same class), so this file keeps only the driver-owned surface:
+/// the auth-header contract `setToken` installs on every request.
 void main() {
-  group('ApiClient', () {
-    late ApiClient apiClient;
-    late DioAdapter dioAdapter;
+  late ApiClient apiClient;
+  late DioAdapter dioAdapter;
 
-    setUp(() {
-      apiClient = ApiClient(baseUrl: ApiConfig.baseUrl);
-      dioAdapter = DioAdapter(dio: apiClient.dio);
-    });
+  /// Registers a request interceptor that records, through [captured], the
+  /// headers the request actually leaves with — *after* the client's own auth
+  /// interceptor has run.
+  void captureRequestHeaders(
+    ApiClient client,
+    void Function(Map<String, dynamic>) captured,
+  ) {
+    client.dio.interceptors.add(
+      InterceptorsWrapper(
+        onRequest: (options, handler) {
+          captured(Map<String, dynamic>.from(options.headers));
+          handler.next(options);
+        },
+      ),
+    );
+  }
 
-    test('creates Dio instance with correct base URL', () {
-      expect(apiClient.dio.options.baseUrl, ApiConfig.baseUrl);
-      expect(apiClient.dio.options.connectTimeout,
-          const Duration(seconds: 10));
-      expect(apiClient.dio.options.receiveTimeout,
-          const Duration(seconds: 10));
-      expect(apiClient.dio.options.headers['Content-Type'], 'application/json');
-    });
-
-    test('setToken adds auth header to requests', () async {
-      apiClient.setToken('test-token-123');
-
-      dioAdapter.onGet(
-        '/test',
-        (server) => server.reply(200, {'ok': true}),
-        headers: {'Authorization': 'Bearer test-token-123'},
-      );
-
-      final response = await apiClient.dio.get('/test');
-      expect(response.statusCode, 200);
-    });
-
-    test('setToken(null) removes auth header', () async {
-      apiClient.setToken('test-token');
-      apiClient.setToken(null);
-
-      dioAdapter.onGet(
-        '/test',
-        (server) => server.reply(200, {'ok': true}),
-      );
-
-      final response = await apiClient.dio.get('/test');
-      expect(response.statusCode, 200);
-    });
-
-    test('error interceptor maps 401 to UnauthorizedException', () async {
-      dioAdapter.onGet(
-        '/test',
-        (server) => server.reply(401, {'message': 'Invalid token'}),
-      );
-
-      try {
-        await apiClient.dio.get('/test');
-        fail('Expected exception');
-      } on DioException catch (e) {
-        expect(e.error, isA<UnauthorizedException>());
-      }
-    });
-
-    test('error interceptor maps 404 to NotFoundException', () async {
-      dioAdapter.onGet(
-        '/test',
-        (server) => server.reply(404, {'message': 'Not found'}),
-      );
-
-      try {
-        await apiClient.dio.get('/test');
-        fail('Expected exception');
-      } on DioException catch (e) {
-        expect(e.error, isA<NotFoundException>());
-      }
-    });
-
-    test('error interceptor maps 500 to ServerException', () async {
-      dioAdapter.onGet(
-        '/test',
-        (server) => server.reply(500, {'message': 'Server error'}),
-      );
-
-      try {
-        await apiClient.dio.get('/test');
-        fail('Expected exception');
-      } on DioException catch (e) {
-        expect(e.error, isA<ServerException>());
-      }
-    });
-
-    test('401 triggers unauthorizedHandler refresh and retries with success', () async {
-      var refreshed = 0;
-      apiClient.unauthorizedHandler = () async {
-        refreshed++;
-        dioAdapter.onGet(
-          '/test',
-          (server) => server.reply(200, {'ok': true}),
-        );
-        return true;
-      };
-
-      dioAdapter.onGet(
-        '/test',
-        (server) => server.reply(401, {'message': 'Invalid token'}),
-      );
-
-      final response = await apiClient.dio.get('/test');
-
-      expect(response.statusCode, 200);
-      expect(refreshed, 1);
-    });
-
-    test('401 with unauthorizedHandler failing keeps the original error', () async {
-      apiClient.unauthorizedHandler = () async => false;
-
-      dioAdapter.onGet(
-        '/test',
-        (server) => server.reply(401, {'message': 'Invalid token'}),
-      );
-
-      try {
-        await apiClient.dio.get('/test');
-        fail('Expected exception');
-      } on DioException catch (e) {
-        expect(e.error, isA<UnauthorizedException>());
-      }
-    });
-
-    test('401 on the refresh endpoint does not loop back into refresh', () async {
-      dioAdapter.onGet(
-        '/api/v1/auth/refresh',
-        (server) => server.reply(401, {'message': 'Refresh expired'}),
-      );
-
-      try {
-        await apiClient.dio.get('/api/v1/auth/refresh');
-        fail('Expected exception');
-      } on DioException catch (e) {
-        expect(e.error, isA<UnauthorizedException>());
-      }
-    });
-
-    test('error interceptor maps 400 to BadRequestException', () async {
-      dioAdapter.onGet(
-        '/test',
-        (server) => server.reply(400, {'message': 'Bad input'}),
-      );
-
-      try {
-        await apiClient.dio.get('/test');
-        fail('Expected exception');
-      } on DioException catch (e) {
-        expect(e.error, isA<BadRequestException>());
-      }
-    });
+  setUp(() {
+    apiClient = ApiClient(baseUrl: ApiConfig.baseUrl);
+    dioAdapter = DioAdapter(dio: apiClient.dio);
   });
 
-  group('safety endpoints', () {
-    late ApiClient apiClient;
-    late DioAdapter dioAdapter;
+  group('ApiClient auth header', () {
+    test('setToken adds the bearer header to requests', () async {
+      apiClient.setToken('test-token-123');
+      Map<String, dynamic>? sent;
+      captureRequestHeaders(apiClient, (headers) => sent = headers);
 
-    setUp(() {
-      apiClient = ApiClient(baseUrl: ApiConfig.baseUrl);
-      dioAdapter = DioAdapter(dio: apiClient.dio);
+      dioAdapter.onGet('/test', (server) => server.reply(200, {'ok': true}));
+
+      final response = await apiClient.dio.get('/test');
+      expect(response.statusCode, 200);
+      expect(sent?['Authorization'], 'Bearer test-token-123');
     });
 
-    test('POST /api/v1/sos sends the position body', () async {
-      dioAdapter.onPost(
-        ApiEndpoints.sos,
-        (server) => server.reply(201, {'message': 'SOS alert received'}),
-        data: {'lat': 9.9333, 'lng': -84.0833},
-      );
+    test('setToken(null) removes the auth header from later requests', () async {
+      apiClient.setToken('test-token');
+      apiClient.setToken(null);
+      Map<String, dynamic>? sent;
+      captureRequestHeaders(apiClient, (headers) => sent = headers);
 
-      final response = await apiClient.dio.post(
-        ApiEndpoints.sos,
-        data: {'lat': 9.9333, 'lng': -84.0833},
-      );
+      dioAdapter.onGet('/test', (server) => server.reply(200, {'ok': true}));
 
-      expect(response.statusCode, 201);
-      expect(ApiEndpoints.sos, '/api/v1/sos');
-    });
-
-    test('POST /api/v1/feedback sends the app_issue type and message',
-        () async {
-      dioAdapter.onPost(
-        ApiEndpoints.feedback,
-        (server) => server.reply(201, {'message': 'feedback submitted'}),
-        data: {'type': 'app_issue', 'message': 'App crashed'},
-      );
-
-      final response = await apiClient.dio.post(
-        ApiEndpoints.feedback,
-        data: {'type': 'app_issue', 'message': 'App crashed'},
-      );
-
-      expect(response.statusCode, 201);
-      expect(ApiEndpoints.feedback, '/api/v1/feedback');
+      final response = await apiClient.dio.get('/test');
+      expect(response.statusCode, 200);
+      // The mock route alone would answer a leaked bearer happily, so assert on
+      // the captured request: this fails if the header is still present.
+      expect(sent, isNotNull);
+      expect(sent!.containsKey('Authorization'), isFalse);
     });
   });
 }

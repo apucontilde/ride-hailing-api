@@ -1,5 +1,9 @@
 import 'dart:async';
 
+// Provided transitively by flutter_test; importing it directly needs this
+// escape hatch because the test-only dependency is not declared in pubspec.
+// ignore: depend_on_referenced_packages
+import 'package:fake_async/fake_async.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:mocktail/mocktail.dart';
 
@@ -55,21 +59,24 @@ void main() {
     expect(notifier.state.offerExpiresAt, isNull);
   });
 
-  test('offer clears itself after the local deadline', () async {
-    final notifier = RideStateNotifier(
-      mockWs,
-      apiClient: mockApiClient,
-      offerTimeout: const Duration(milliseconds: 200),
-    );
-    addTearDown(notifier.dispose);
+  test('offer clears itself after the local deadline', () {
+    // A fake clock: the offer timer is asserted without a real wait.
+    fakeAsync((async) {
+      final notifier = RideStateNotifier(
+        mockWs,
+        apiClient: mockApiClient,
+        offerTimeout: const Duration(milliseconds: 200),
+      );
+      addTearDown(notifier.dispose);
 
-    events.add(offer('r1'));
-    await flush();
-    expect(notifier.state.offeredRideId, 'r1');
+      events.add(offer('r1'));
+      async.flushMicrotasks();
+      expect(notifier.state.offeredRideId, 'r1');
 
-    await Future<void>.delayed(const Duration(milliseconds: 400));
-    expect(notifier.state.offeredRideId, isNull);
-    expect(notifier.state.offerExpiresAt, isNull);
+      async.elapse(const Duration(milliseconds: 200));
+      expect(notifier.state.offeredRideId, isNull);
+      expect(notifier.state.offerExpiresAt, isNull);
+    });
   });
 
   test('ride.updated replaces the current ride and clears the offer', () async {

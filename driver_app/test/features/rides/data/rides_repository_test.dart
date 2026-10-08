@@ -255,25 +255,18 @@ void main() {
         expect(captured[1], {'score': 5, 'comment': 'Great rider'});
       });
 
-      test('omits a blank comment rather than sending an empty string',
-          () async {
+      test('omits the comment when it is blank or absent', () async {
         await repo.rateRide(rideId: 'r1', score: 3, comment: '   ');
-
-        final captured = verify(() => mockDio.post(
-              any(),
-              data: captureAny(named: 'data'),
-            )).captured;
-        expect(captured.single, {'score': 3});
-      });
-
-      test('omits the comment key entirely when none is given', () async {
         await repo.rateRide(rideId: 'r1', score: 1);
 
         final captured = verify(() => mockDio.post(
               any(),
               data: captureAny(named: 'data'),
             )).captured;
-        expect(captured.single, {'score': 1});
+        expect(captured, [
+          {'score': 3},
+          {'score': 1},
+        ]);
       });
 
       test('refuses a score outside 1..5 without touching the network',

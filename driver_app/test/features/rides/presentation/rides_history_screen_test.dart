@@ -27,18 +27,31 @@ String get _thisMonth =>
 String get _lastMonth =>
     DateTime(_now.year, _now.month - 1, 1, 12).toIso8601String();
 
-/// The label the card must show for [_thisMonth], from the production formatter.
-String get _thisMonthLabel => EarningsMonth(
-  month: DateTime(_now.year, _now.month),
-  total: 0,
-  trips: 0,
-).label;
+/// Hardcoded month names, deliberately independent of the production
+/// `EarningsMonth.label` formatter: if that formatter ever changed shape this
+/// test should go red rather than silently agree with it.
+const _monthNames = [
+  'January',
+  'February',
+  'March',
+  'April',
+  'May',
+  'June',
+  'July',
+  'August',
+  'September',
+  'October',
+  'November',
+  'December',
+];
 
-String get _lastMonthLabel => EarningsMonth(
-  month: DateTime(_now.year, _now.month - 1),
-  total: 0,
-  trips: 0,
-).label;
+String _monthLabel(int year, int month) =>
+    '${_monthNames[month - 1]} $year';
+
+/// The literal label the card must show for [_thisMonth].
+String get _thisMonthLabel => _monthLabel(_now.year, _now.month);
+
+String get _lastMonthLabel => _monthLabel(_now.year, _now.month - 1);
 
 Ride ride(
   String id, {

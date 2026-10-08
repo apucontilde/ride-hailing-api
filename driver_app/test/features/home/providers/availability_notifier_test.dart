@@ -95,6 +95,10 @@ void main() {
 
       // Only one call should result in success because second is ignored.
       expect(notifier.online, isTrue);
+      verify(() => mockDio.put(
+        ApiEndpoints.driverMeStatus,
+        data: any(named: 'data'),
+      )).called(1);
     });
 
     test('setOnline flips state without network call', () {
@@ -130,7 +134,8 @@ void main() {
       expect(seen, [true, false, true, false]);
     });
 
-    test('toggle() writes the new status into driverProfileProvider', () async {
+    test('toggle() keeps the shared profile cache in step in both directions',
+        () async {
       // Regression: the status flip used to update only `availabilityProvider`,
       // leaving the shared profile cache at its login-time value. The home
       // screen gates the offer sheet on that cache's `isOnline`, so every
@@ -156,12 +161,8 @@ void main() {
         'online',
         reason: 'the shared profile cache must follow the status toggle',
       );
-    });
 
-    test('toggle() off updates the profile cache too', () async {
-      container.read(driverProfileProvider.notifier).state =
-          DriverProfile(status: 'online');
-      notifier.syncFromProfile(DriverProfile(status: 'online'));
+      // ...and the same in the other direction.
       when(() => mockDio.put(
         ApiEndpoints.driverMeStatus,
         data: any(named: 'data'),

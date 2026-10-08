@@ -15,9 +15,10 @@ class MockApiClient extends Mock implements ApiClient {}
 
 class MockWebSocketService extends Mock implements WebSocketService {}
 
-/// The first coverage `settings_screen.dart` has ever had — driver known bug #4
-/// names profile, settings and vehicle as untested, and the rider has had a
-/// settings suite all along.
+/// The shared `AppSettingsScreen` rows/dialog are covered by
+/// `shared/test/settings/app_settings_screen_test.dart`; this suite keeps only
+/// the driver-owned surface: the driver literals this app feeds in and the
+/// driver's sign-out wiring (socket teardown + token clear + `/login`).
 void main() {
   late MockAuthStorage mockStorage;
   late MockApiClient mockApiClient;
@@ -66,10 +67,11 @@ void main() {
     );
   }
 
-  testWidgets('shows app info, server and sign out', (tester) async {
+  testWidgets('renders the driver literals and opens /safety', (tester) async {
     await tester.pumpWidget(createTestWidget());
     await tester.pumpAndSettle();
 
+    // Driver literals fed into the shared screen.
     expect(find.text('Driver App'), findsOneWidget);
     expect(
       find.text('v${ApiConfig.appVersion} · companion to rider_app'),
@@ -79,14 +81,8 @@ void main() {
     expect(find.text(ApiConfig.baseUrl), findsOneWidget);
     expect(find.text('Sign out'), findsOneWidget);
     expect(find.byIcon(Icons.logout), findsOneWidget);
-  });
 
-  testWidgets('the safety row opens /safety', (tester) async {
-    await tester.pumpWidget(createTestWidget());
-    await tester.pumpAndSettle();
-
-    // The driver's only entry to US-12, and it goes through the shared
-    // `extraSections` slot rather than a bespoke Card/ListTile.
+    // The driver's only entry to US-12, through the shared `extraSections` slot.
     expect(find.text('Safety & support'), findsOneWidget);
     await tester.tap(find.text('Safety & support'));
     await tester.pumpAndSettle();
@@ -94,9 +90,8 @@ void main() {
     expect(find.text('Safety Page'), findsOneWidget);
   });
 
-  testWidgets('tapping sign out asks for confirmation with the driver copy', (
-    tester,
-  ) async {
+  testWidgets('sign-out wires the driver session teardown and returns to /login',
+      (tester) async {
     await tester.pumpWidget(createTestWidget());
     await tester.pumpAndSettle();
 
@@ -114,28 +109,15 @@ void main() {
       find.text('You will need to log in again to request rides.'),
       findsNothing,
     );
-  });
 
-  testWidgets('cancelling the dialog keeps the session', (tester) async {
-    await tester.pumpWidget(createTestWidget());
-    await tester.pumpAndSettle();
-
-    await tester.tap(find.text('Sign out'));
-    await tester.pumpAndSettle();
+    // Backing out must not touch the session.
     await tester.tap(find.widgetWithText(TextButton, 'Cancel'));
     await tester.pumpAndSettle();
-
     expect(find.text('Sign out?'), findsNothing);
     verifyNever(() => mockWebSocketService.disconnect());
     verifyNever(() => mockStorage.clearTokens());
-  });
 
-  testWidgets('confirming clears the session and returns to /login', (
-    tester,
-  ) async {
-    await tester.pumpWidget(createTestWidget());
-    await tester.pumpAndSettle();
-
+    // Confirming tears the session down and lands on /login.
     await tester.tap(find.text('Sign out'));
     await tester.pumpAndSettle();
     await tester.tap(find.widgetWithText(FilledButton, 'Sign out'));

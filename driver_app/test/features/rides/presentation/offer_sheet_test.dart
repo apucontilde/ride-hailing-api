@@ -2,7 +2,6 @@ import 'dart:async';
 
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
-import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:mocktail/mocktail.dart';
 import 'package:ride_hailing_shared/ride_hailing_shared.dart';
 import 'package:driver_app/core/network/websocket_service.dart';
@@ -10,6 +9,8 @@ import 'package:driver_app/core/network/ws_event.dart';
 import 'package:driver_app/core/ride/ride_state_notifier.dart';
 import 'package:driver_app/features/rides/data/rides_repository.dart';
 import 'package:driver_app/features/rides/presentation/offer_sheet.dart';
+
+import '../../../support/sheet_harness.dart';
 
 class MockDriverWebSocketService extends Mock
     implements DriverWebSocketService {}
@@ -42,36 +43,16 @@ void main() {
     await tester.pump();
   }
 
-  Future<void> pumpSheet(WidgetTester tester) async {
-    await tester.pumpWidget(
-      ProviderScope(
-        overrides: [
-          rideStateProvider.overrideWith((ref) => notifier),
-          ridesRepositoryProvider.overrideWith((ref) => mockRepo),
-          driverWebSocketServiceProvider.overrideWithValue(mockWs),
-        ],
-        child: MaterialApp(
-          home: Builder(
-            builder: (context) => Scaffold(
-              body: Center(
-                child: TextButton(
-                  onPressed: () => showModalBottomSheet<void>(
-                    context: context,
-                    isScrollControlled: true,
-                    builder: (context) => const OfferSheet(),
-                  ),
-                  child: const Text('open'),
-                ),
-              ),
-            ),
-          ),
-        ),
-      ),
+  Future<void> pumpSheet(WidgetTester tester) {
+    return pumpModalSheet(
+      tester,
+      overrides: [
+        rideStateProvider.overrideWith((ref) => notifier),
+        ridesRepositoryProvider.overrideWith((ref) => mockRepo),
+        driverWebSocketServiceProvider.overrideWithValue(mockWs),
+      ],
+      builder: (context) => const OfferSheet(),
     );
-    await tester.tap(find.text('open'));
-    await tester.pump();
-    await tester.pump(const Duration(milliseconds: 300));
-    await tester.pump();
   }
 
   void stubRide({double? totalFare = 12.4, String? fareCurrency}) {
@@ -103,7 +84,7 @@ void main() {
     expect(find.text('Airport'), findsOneWidget);
     expect(find.text('12.40'), findsOneWidget);
 
-    await tester.pumpWidget(const SizedBox());
+    await drainModalTimers(tester);
   });
 
   testWidgets('prefixes the API currency when the ride carries one',
@@ -115,7 +96,7 @@ void main() {
 
     expect(find.text('USD12.40'), findsOneWidget);
 
-    await tester.pumpWidget(const SizedBox());
+    await drainModalTimers(tester);
   });
 
   testWidgets('keeps the placeholder for a ride with no fare', (tester) async {
@@ -126,7 +107,7 @@ void main() {
 
     expect(find.text('-'), findsOneWidget);
 
-    await tester.pumpWidget(const SizedBox());
+    await drainModalTimers(tester);
   });
 
   testWidgets('countdown reaches 0 and disables both buttons', (tester) async {
@@ -156,7 +137,7 @@ void main() {
     expect(accept.onPressed, isNull);
     expect(decline.onPressed, isNull);
 
-    await tester.pumpWidget(const SizedBox());
+    await drainModalTimers(tester);
   });
 
   testWidgets('accept over a live websocket sends nested accept and pops',
@@ -176,7 +157,7 @@ void main() {
     expect(notifier.state.currentRide, isNotNull);
     expect(find.text('Trip accepted'), findsOneWidget);
 
-    await tester.pumpWidget(const SizedBox());
+    await drainModalTimers(tester);
   });
 
   testWidgets('accept with a dead websocket falls back to HTTP',
@@ -196,7 +177,7 @@ void main() {
     expect(notifier.state.currentRide, isNotNull);
     expect(find.text('Trip accepted'), findsOneWidget);
 
-    await tester.pumpWidget(const SizedBox());
+    await drainModalTimers(tester);
   });
 
   testWidgets('409 from the HTTP fallback shows trip no longer available',
@@ -215,7 +196,7 @@ void main() {
     expect(find.text('Trip no longer available'), findsOneWidget);
     expect(notifier.state.currentRide, isNull);
 
-    await tester.pumpWidget(const SizedBox());
+    await drainModalTimers(tester);
   });
 
   testWidgets('decline sends WS decline and closes the sheet', (tester) async {
@@ -232,6 +213,6 @@ void main() {
     expect(notifier.state.offeredRideId, isNull);
     expect(find.byType(OfferSheet), findsNothing);
 
-    await tester.pumpWidget(const SizedBox());
+    await drainModalTimers(tester);
   });
 }

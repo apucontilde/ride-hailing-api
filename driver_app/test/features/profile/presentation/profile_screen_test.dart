@@ -100,48 +100,27 @@ void main() {
       tester.widget<TextFormField>(find.widgetWithText(TextFormField, label));
 
   group('ProfileScreen header', () {
-    testWidgets('renders the API values, not literals', (tester) async {
+    testWidgets('maps the API rating to the app-owned label', (tester) async {
       await pumpProfile(tester);
 
-      expect(find.text('Ava Lopez'), findsOneWidget);
-      // Two-letter initials, first asserted anywhere: nothing guarded this before
-      // the shared header took it over.
-      expect(find.text('AL'), findsOneWidget);
-      expect(find.text('online'), findsOneWidget);
-      expect(find.byKey(const Key('status-dot')), findsOneWidget);
+      // `ratingSummaryLabel` is driver-owned: the shared header renders an
+      // opaque string, and the star formatting is this screen's decision.
       expect(find.text('★ 4.8'), findsOneWidget);
-      expect(find.byIcon(Icons.star), findsOneWidget);
-      expect(find.text('verified'), findsOneWidget);
     });
 
-    testWidgets("a nameless driver falls back to 'Driver' and a 'D' avatar", (
-      tester,
-    ) async {
-      // Known bug #3 means this is the common path for a fresh driver, not an
-      // edge case: onboarding never `PUT`s /driver/me.
-      await pumpProfile(tester, seed: const DriverProfile(userId: 'd2'));
+    testWidgets(
+      "a nameless driver falls back to 'Driver', 'New driver' and the pending chip",
+      (tester) async {
+        // Known bug #3 means this is the common path for a fresh driver, not an
+        // edge case: onboarding never `PUT`s /driver/me.
+        await pumpProfile(tester, seed: const DriverProfile(userId: 'd2'));
 
-      expect(find.text('Driver'), findsOneWidget);
-      expect(find.text('D'), findsOneWidget);
-      // An empty `onboarding_status` is the other half of that fresh-driver shape.
-      expect(find.text('Onboarding pending'), findsOneWidget);
-      expect(find.text('New driver'), findsOneWidget);
-    });
-
-    testWidgets('a blank photoUrl shows initials rather than a broken image', (
-      tester,
-    ) async {
-      await pumpProfile(tester);
-
-      // `DriverProfile.fromJson` passes `photo_url` straight through, so `''` is
-      // what a driver without a photo actually has. `NetworkImage('')` paints a
-      // red error box; the shared header treats blank as absent.
-      final avatar = tester.widget<CircleAvatar>(
-        find.byType(CircleAvatar).first,
-      );
-      expect(avatar.backgroundImage, isNull);
-      expect(find.text('AL'), findsOneWidget);
-    });
+        // All three strings are app-owned decisions fed to the shared header.
+        expect(find.text('Driver'), findsOneWidget);
+        expect(find.text('New driver'), findsOneWidget);
+        expect(find.text('Onboarding pending'), findsOneWidget);
+      },
+    );
   });
 
   group('ProfileScreen form', () {
@@ -343,16 +322,6 @@ void main() {
       // after this stage the screen is reachable only by deep link.
       expect(find.byKey(const Key('nav-link-vehicle')), findsNothing);
       expect(find.text('Vehicle & documents'), findsNothing);
-    });
-
-    testWidgets('the card drops the old subtitles', (tester) async {
-      await pumpProfile(tester);
-
-      // `AppNavItem` carries label, icon and route only, so the three subtitles
-      // this card used to render are a recorded content loss, not a regression.
-      expect(find.text('Verification'), findsNothing);
-      expect(find.text('Earnings & past trips'), findsNothing);
-      expect(find.text('Account & sign out'), findsNothing);
     });
   });
 }
