@@ -58,52 +58,86 @@ class _RidesHistoryScreenState extends ConsumerState<RidesHistoryScreen> {
     // One refresh covers both lists: which rides are completed and which of
     // them are already rated have to agree, and they arrive from two endpoints.
     Future<void> refreshAll() => Future.wait([
-          ref.read(historyProvider.notifier).refresh(silent: true),
-          ref.read(ratedRidesProvider.notifier).refresh(),
-        ]);
+      ref.read(historyProvider.notifier).refresh(silent: true),
+      ref.read(ratedRidesProvider.notifier).refresh(),
+    ]);
 
     // Body-only: `DriverShell` owns the Scaffold/AppBar for the section. The
     // AppBar's refresh action moves into the body so the control survives the
     // chrome handover (pull-to-refresh remains as well).
+    final topContent = <Widget>[
+      Align(
+        alignment: Alignment.centerRight,
+        child: Padding(
+          padding: const EdgeInsets.only(top: 4, right: 8),
+          child: IconButton(
+            key: const Key('history-refresh'),
+            tooltip: 'Refresh',
+            onPressed: history.loading ? null : refreshAll,
+            icon: const Icon(Icons.refresh),
+          ),
+        ),
+      ),
+      _EarningsCard(summary: earnings, total: history.total),
+      if (history.error != null)
+        Padding(
+          padding: const EdgeInsets.symmetric(
+            horizontal: AppSpacing.lg,
+            vertical: AppSpacing.sm,
+          ),
+          child: AppErrorRow(
+            key: const Key('error-retry'),
+            message: history.error!,
+            onRetry: () => ref.read(historyProvider.notifier).refresh(),
+          ),
+        ),
+      // A rated list that failed to load leaves every prompt below in
+      // `unknown`: silently offering them again is the bug this replaces,
+      // so say what happened and let the driver retry instead.
+      if (ratedRides.hasError)
+        Padding(
+          padding: const EdgeInsets.symmetric(
+            horizontal: AppSpacing.lg,
+            vertical: AppSpacing.sm,
+          ),
+          child: AppErrorRow(
+            key: const Key('error-retry'),
+            message: ratedRidesErrorMessage,
+            onRetry: () => ref.read(ratedRidesProvider.notifier).refresh(),
+          ),
+        ),
+    ];
+
+    // Empty history: `AppEmptyState` is the `RefreshIndicator`'s own scrollable.
+    // Nested inside the history `ListView` (as it was) an inner scrollable
+    // swallowed a pull on the empty copy at notification depth 1, so the
+    // enclosing `RefreshIndicator` never fired. The top content rides in the
+    // empty state's `header` so the surface stays a single scrollable.
+    if (history.rides.isEmpty && !history.loading) {
+      return RefreshIndicator(
+        onRefresh: refreshAll,
+        child: AppEmptyState(
+          icon: Icons.receipt_long,
+          message: 'No trips yet',
+          description: 'Completed trips and your fares will show up here.',
+          topSpacing: AppSpacing.xl,
+          header: Column(mainAxisSize: MainAxisSize.min, children: topContent),
+        ),
+      );
+    }
+
     return RefreshIndicator(
       onRefresh: refreshAll,
       child: ListView(
         controller: _scroll,
         physics: const AlwaysScrollableScrollPhysics(),
         children: [
-          Align(
-            alignment: Alignment.centerRight,
-            child: Padding(
-              padding: const EdgeInsets.only(top: 4, right: 8),
-              child: IconButton(
-                key: const Key('history-refresh'),
-                tooltip: 'Refresh',
-                onPressed: history.loading ? null : refreshAll,
-                icon: const Icon(Icons.refresh),
-              ),
-            ),
-          ),
-          _EarningsCard(summary: earnings, total: history.total),
-          if (history.error != null)
-            _ErrorRow(
-              message: history.error!,
-              onRetry: () => ref.read(historyProvider.notifier).refresh(),
-            ),
-          // A rated list that failed to load leaves every prompt below in
-          // `unknown`: silently offering them again is the bug this replaces,
-          // so say what happened and let the driver retry instead.
-          if (ratedRides.hasError)
-            _ErrorRow(
-              message: ratedRidesErrorMessage,
-              onRetry: () => ref.read(ratedRidesProvider.notifier).refresh(),
-            ),
+          ...topContent,
           if (history.loading && history.rides.isEmpty)
             const Padding(
               padding: EdgeInsets.symmetric(vertical: 48),
               child: Center(child: CircularProgressIndicator()),
             )
-          else if (history.rides.isEmpty)
-            const _EmptyState()
           else ...[
             for (final ride in history.rides) _RideTile(ride: ride),
             if (history.loadingMore)
@@ -129,56 +163,54 @@ class _EarningsCard extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
-    return Card(
-      margin: const EdgeInsets.all(16),
-      child: Padding(
-        padding: const EdgeInsets.all(16),
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            Text('Fares this month', style: theme.textTheme.labelLarge),
-            const SizedBox(height: 4),
-            Text(
-              key: const Key('earnings-month-total'),
-              formatMoney(summary.monthTotal, currency: summary.currency),
-              style: theme.textTheme.headlineMedium,
-            ),
-            Text(
-              summary.monthTrips == 1
-                  ? '1 completed trip'
-                  : '${summary.monthTrips} completed trips',
-              style: theme.textTheme.bodySmall,
-            ),
-            if (summary.months.isNotEmpty) ...[
-              const Divider(height: 24),
-              for (final month in summary.months)
-                Padding(
-                  padding: const EdgeInsets.symmetric(vertical: 2),
-                  child: Row(
-                    mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                    children: [
-                      Text(month.label, style: theme.textTheme.bodyMedium),
-                      Text(
-                        '${month.trips} · '
-                        '${formatMoney(month.total, currency: month.currency)}',
-                        style: theme.textTheme.bodyMedium,
-                      ),
-                    ],
-                  ),
+    return AppCard(
+      margin: const EdgeInsets.all(AppSpacing.lg),
+      padding: const EdgeInsets.all(AppSpacing.lg),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Text('Fares this month', style: theme.textTheme.labelLarge),
+          const SizedBox(height: 4),
+          Text(
+            key: const Key('earnings-month-total'),
+            formatMoney(summary.monthTotal, currency: summary.currency),
+            style: theme.textTheme.headlineMedium,
+          ),
+          Text(
+            summary.monthTrips == 1
+                ? '1 completed trip'
+                : '${summary.monthTrips} completed trips',
+            style: theme.textTheme.bodySmall,
+          ),
+          if (summary.months.isNotEmpty) ...[
+            const Divider(height: 24),
+            for (final month in summary.months)
+              Padding(
+                padding: const EdgeInsets.symmetric(vertical: 2),
+                child: Row(
+                  mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                  children: [
+                    Text(month.label, style: theme.textTheme.bodyMedium),
+                    Text(
+                      '${month.trips} · '
+                      '${formatMoney(month.total, currency: month.currency)}',
+                      style: theme.textTheme.bodyMedium,
+                    ),
+                  ],
                 ),
-            ],
-            const SizedBox(height: 8),
-            // The honest caveat: the server's earnings endpoints are stubs, so
-            // this covers the pages loaded, not the driver's whole book.
-            Text(
-              'Sum of fares on the ${summary.completedTrips} completed '
-              '${summary.completedTrips == 1 ? 'trip' : 'trips'} loaded so far'
-              '${total > summary.completedTrips ? ' of $total' : ''}. '
-              'Withdrawals are not available yet.',
-              style: theme.textTheme.bodySmall,
-            ),
+              ),
           ],
-        ),
+          const SizedBox(height: 8),
+          // The honest caveat: the server's earnings endpoints are stubs, so
+          // this covers the pages loaded, not the driver's whole book.
+          Text(
+            'Sum of fares on the ${summary.completedTrips} completed '
+            '${summary.completedTrips == 1 ? 'trip' : 'trips'} loaded so far'
+            '${total > summary.completedTrips ? ' of $total' : ''}. '
+            'Withdrawals are not available yet.',
+            style: theme.textTheme.bodySmall,
+          ),
+        ],
       ),
     );
   }
@@ -198,25 +230,26 @@ class _RideTile extends ConsumerWidget {
     // claim. The server already knows which rides are rated, so a cold start
     // does not re-prompt for old trips. `valueOrNull` keeps the resolved answer
     // readable across a refresh; a not-yet-resolved future is `unknown`.
-    final status = ref.watch(ratedRideStatusProvider(ride.id)).valueOrNull ??
+    final status =
+        ref.watch(ratedRideStatusProvider(ride.id)).valueOrNull ??
         RatingStatus.unknown;
     final when = _rideDate(ride);
     // A cancelled trip paid nothing; grey it out rather than showing a fare it
     // never earned.
     final dimmed = ride.status == 'cancelled';
 
-    return ListTile(
+    return AppListTile(
       key: Key('ride-tile-${ride.id}'),
       leading: Icon(
         completed ? Icons.check_circle : Icons.cancel,
-        color: completed ? Colors.green : Colors.grey,
+        color: completed ? AppColors.success : AppColors.muted,
       ),
       title: Text(
         '${ride.pickupAddress ?? 'Pickup'} → ${ride.dropoffAddress ?? 'Dropoff'}',
         maxLines: 2,
         overflow: TextOverflow.ellipsis,
         style: dimmed
-            ? theme.textTheme.bodyLarge?.copyWith(color: Colors.grey)
+            ? theme.textTheme.bodyLarge?.copyWith(color: AppColors.muted)
             : theme.textTheme.bodyLarge,
       ),
       subtitle: Text(
@@ -236,7 +269,7 @@ class _RideTile extends ConsumerWidget {
                 ? formatMoney(ride.totalFare!, currency: ride.fareCurrency)
                 : '—',
             style: theme.textTheme.titleMedium?.copyWith(
-              color: dimmed ? Colors.grey : null,
+              color: dimmed ? AppColors.muted : null,
             ),
           ),
           // Only a completed ride can be rated, and only once — as far as the
@@ -258,7 +291,9 @@ class _RideTile extends ConsumerWidget {
           else if (status == RatingStatus.rated)
             Text(
               'Rated',
-              style: theme.textTheme.labelSmall?.copyWith(color: Colors.green),
+              style: theme.textTheme.labelSmall?.copyWith(
+                color: AppColors.success,
+              ),
             ),
         ],
       ),
@@ -305,64 +340,6 @@ class _RideTile extends ConsumerWidget {
           : 'Cancelled by ${ride.cancelledBy == 'rider' ? 'rider' : ride.cancelledBy}',
     _ => ride.status,
   };
-}
-
-class _EmptyState extends StatelessWidget {
-  const _EmptyState();
-
-  @override
-  Widget build(BuildContext context) {
-    return Padding(
-      padding: const EdgeInsets.symmetric(vertical: 64, horizontal: 24),
-      child: Column(
-        children: [
-          Icon(
-            Icons.receipt_long,
-            size: 48,
-            color: Theme.of(context).colorScheme.outline,
-          ),
-          const SizedBox(height: 12),
-          Text('No trips yet', style: Theme.of(context).textTheme.titleMedium),
-          const SizedBox(height: 4),
-          const Text(
-            'Completed trips and your fares will show up here.',
-            textAlign: TextAlign.center,
-          ),
-        ],
-      ),
-    );
-  }
-}
-
-class _ErrorRow extends StatelessWidget {
-  final String message;
-  final VoidCallback onRetry;
-
-  const _ErrorRow({required this.message, required this.onRetry});
-
-  @override
-  Widget build(BuildContext context) {
-    return Padding(
-      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
-      child: Row(
-        children: [
-          Icon(Icons.error_outline, color: Theme.of(context).colorScheme.error),
-          const SizedBox(width: 8),
-          Expanded(
-            child: Text(
-              message,
-              style: TextStyle(color: Theme.of(context).colorScheme.error),
-            ),
-          ),
-          TextButton(
-            key: const Key('error-retry'),
-            onPressed: onRetry,
-            child: const Text('Retry'),
-          ),
-        ],
-      ),
-    );
-  }
 }
 
 class _EndOfList extends StatelessWidget {

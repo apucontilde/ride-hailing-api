@@ -3,7 +3,6 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
 import 'package:ride_hailing_shared/ride_hailing_shared.dart';
 import '../../../core/auth/auth_provider.dart';
-import 'widgets/auth_text_field.dart';
 
 class RegisterScreen extends ConsumerStatefulWidget {
   const RegisterScreen({super.key});
@@ -59,7 +58,7 @@ class _RegisterScreenState extends ConsumerState<RegisterScreen> {
             mainAxisAlignment: MainAxisAlignment.center,
             crossAxisAlignment: CrossAxisAlignment.stretch,
             children: [
-              AuthTextField(
+              AppTextField(
                 controller: _emailController,
                 label: 'Email',
                 hint: 'Enter your email',
@@ -68,7 +67,7 @@ class _RegisterScreenState extends ConsumerState<RegisterScreen> {
                 validator: Validators.validateEmail,
               ),
               const SizedBox(height: 16),
-              AuthTextField(
+              AppTextField(
                 controller: _phoneController,
                 label: 'Phone',
                 hint: 'Enter your phone number',
@@ -77,7 +76,7 @@ class _RegisterScreenState extends ConsumerState<RegisterScreen> {
                 validator: Validators.validatePhone,
               ),
               const SizedBox(height: 16),
-              AuthTextField(
+              AppTextField(
                 controller: _passwordController,
                 label: 'Password',
                 hint: 'Enter your password',
@@ -96,21 +95,16 @@ class _RegisterScreenState extends ConsumerState<RegisterScreen> {
                 const SizedBox(height: 12),
                 Text(
                   authState.error!,
-                  style: TextStyle(
+                  style: AppTextStyles.body.copyWith(
                     color: Theme.of(context).colorScheme.error,
                   ),
                 ),
               ],
               const SizedBox(height: 24),
-              ElevatedButton(
-                onPressed: authState.isLoading ? null : _submit,
-                child: authState.isLoading
-                    ? const SizedBox(
-                        height: 20,
-                        width: 20,
-                        child: CircularProgressIndicator(strokeWidth: 2),
-                      )
-                    : const Text('Sign Up'),
+              AppButton(
+                label: 'Sign Up',
+                onPressed: _submit,
+                isLoading: authState.isLoading,
               ),
               const SizedBox(height: 16),
               TextButton(

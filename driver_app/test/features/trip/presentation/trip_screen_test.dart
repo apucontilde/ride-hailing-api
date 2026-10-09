@@ -586,7 +586,12 @@ void main() {
       expect(find.text(ratedRidesErrorMessage), findsOneWidget);
 
       stubRatings(const []);
-      await tester.tap(find.byKey(const Key('trip-ratings-retry')));
+      await tester.tap(
+        find.descendant(
+          of: find.byKey(const Key('trip-ratings-retry')),
+          matching: find.byType(TextButton),
+        ),
+      );
       await tester.pump();
       await tester.pump();
 
@@ -675,6 +680,8 @@ void main() {
       expect(lines[1].points.length, 3);
       expect(lines[1].color, Colors.blue);
       expect(find.textContaining('4.2 km'), findsOneWidget);
+      // The stage action is the shared button.
+      expect(find.byType(AppButton), findsWidgets);
     });
 
     testWidgets('a failed route falls back to the dashed straight line',
@@ -740,6 +747,7 @@ void main() {
         findsOneWidget,
       );
       expect(find.byIcon(Icons.error_outline), findsOneWidget);
+      expect(find.byType(AppErrorRow), findsOneWidget);
     });
   });
 }

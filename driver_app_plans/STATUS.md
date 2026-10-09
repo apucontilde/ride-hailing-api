@@ -74,6 +74,12 @@
 - Home is a first-class sidebar destination: the shared `AppNavDestination.home` row (`/home`) leads `buildDriverNavItems`, so it renders first in the drawer and the profile card — `driver_app/lib/features/navigation/driver_nav_items.dart:27-30`. Condensed from `[nav]_home_destination.md` (landed/deleted).
 - Guaranteed back navigation: `DriverShell` renders `AppBackButton(onFallback: → /home)` as `leading` on every non-Home section with the sidebar toggle moved to `actions`, `/home` stays back-free — `driver_app/lib/features/navigation/driver_shell.dart:61,68-71`; explicit `AppBackButton` on safety/onboarding/register/forgot/reset (`safety_screen.dart:107`, `onboarding_screen.dart:63`, `register_screen.dart:51`, `forgot_password_screen.dart:64`, `reset_password_screen.dart:69`) and trip (`trip_screen.dart:198,201`, `automaticallyImplyLeading: false`, suppressed while terminal — mutation-proven); `/login` intentionally back-free; bug #14 fixed (`onboarding_screen.dart:119-127` signs out then `/login`). Trip pushed-stack harness `driver_app/test/features/trip/presentation/trip_screen_test.dart:195-218,243-277`. Condensed from `[nav]_back_navigation.md` (landed/deleted).
 
+### [design]
+- Driver screens migrated onto the landed shared `[design]` tokens/components, imported straight from the barrel (no app shim; `shared/` otherwise unchanged): `home_screen.dart`, `offer_sheet.dart`, `rides_history_screen.dart`, `trip_screen.dart`, `profile_screen.dart`, `onboarding_screen.dart`, `vehicle_screen.dart`, `safety_screen.dart`, the auth screens and `driver_shell.dart`. The driver-local `driver_app/lib/features/auth/presentation/widgets/auth_text_field.dart` was **deleted**; all auth/onboarding fields now use the shared `AppTextField`. Condensed from `[design]_shared_style_adoption.md` (landed/deleted).
+- Additive shared change: `AppEmptyState` gained optional `description` + `header` (both null-default; rider callers unchanged) — `shared/lib/src/components/app_empty_state.dart:16,27,36`. The history empty state makes `AppEmptyState` the `RefreshIndicator`'s **direct child** (single scrollable, no nested-scrollable pull-to-refresh dead zone) and restores the copy `'No trips yet'` + `'Completed trips and your fares will show up here.'` — `driver_app/lib/features/rides/presentation/rides_history_screen.dart:117-126`; pull-to-refresh regression test `driver_app/test/features/rides/presentation/rides_history_screen_test.dart:193-217`.
+- Route-honesty colors via `AppColors.routeReady`/`AppColors.routeEstimate` (`shared/lib/src/theme/app_colors.dart:66,69`; `driver_app/lib/features/trip/presentation/trip_screen.dart:312,319`); `AppBackButton` and trip terminal suppression intact; the five sections stay body-only under `DriverShell`. Adversarial verdict **CONFIRMED** (migration), with the two regressions it found (dropped empty-state copy; nested-scrollable pull-to-refresh dead zone) fixed and mutation/reproduction-proven.
+- **Migration notes (low, not defects):** several shared tokens are exported but currently have no driver call site (`AppElevation`, `AppMotion`, `AppStatusChip`, `AppSectionHeader`, `AppSheetHandle`, `AppTextStyles.fare` — consumed by other plans/features); the migration normalized some semantic values (`Colors.grey`→`AppColors.muted`, `bold`→`w600`) as the intended single-identity behavior; a duplicate `Key('error-retry')` exists on sibling history error rows (`rides_history_screen.dart:89,104`).
+
 ## Known bugs & issues
 
 Source citations in this file are **fully qualified from the repo root** (`rider_app/lib/...`,
@@ -111,7 +117,6 @@ unambiguous; Go and cross-package paths are repo-relative. Never cite a bare
 | `[location]_background_tracking.md` | location | landed `[location]` foreground permissions (`driver_app_plans/STATUS.md` → Landed `[location]`) | **DEFERRED.** Keep an online/on-trip driver dispatchable while backgrounded: owns the coupled `ACCESS_BACKGROUND_LOCATION` + `FOREGROUND_SERVICE`/`FOREGROUND_SERVICE_LOCATION` permissions, an Android foreground service + persistent notification (`geolocator` `foregroundNotificationConfig`, with the plugin's activity-tied caveat and a durable background-isolate fallback), online/offline lifecycle (not the unconditional Home start), guards against a bare-permission non-fix, the shared `LocationHelper` opt-in change (coordinate the rider plan), and the Play Store background-location declaration. Target: bug #18. |
 | `rider_app_plans/[map]_self_hosted_tile_host.md` | map | [] — **deferred; rider `[map]` landed** | **DEFERRED; rider-authored, consumed by reference (not re-authored here).** Replace the OSM public host with a self-hosted tile server; values-only change to the shared `MapTileConfig`. |
 | `rider_app_plans/[map]_runtime_remote_tile_config.md` | map | [] — **deferred; rider `[map]` landed** | **DEFERRED; rider-authored, consumed by reference (not re-authored here).** Fetch tile URL/key/attribution at runtime instead of compile-time `String.fromEnvironment`; shared factory unchanged; needs an `api_plans` contract. |
-| `[design]_shared_style_adoption.md` | design | landed `[design]` foundation (`rider_app_plans/STATUS.md` → Landed `[design]`) | Driver migration onto the landed shared tokens/components (no redefinition); delete the driver-local `AuthTextField` in favor of shared `AppTextField`; remove driver hardcoded colors/radii/text styles (`home_screen.dart:140-144,161,180,267`, `onboarding_screen.dart:141`, `offer_sheet.dart:145-147,214-224`, `rate_sheet.dart:92-95,153-163`, `rides_history_screen.dart:310-366`, `trip_screen.dart:259-279`). No behavior change. |
 
 The deferred rows (`[location]_background_tracking.md` and the two rider-authored `[map]` follow-ups
 consumed by reference) stay unnumbered and carry `status: deferred`. The two `[map]` follow-ups keep
@@ -121,8 +126,9 @@ stays unnumbered because it does not depend on an *open* plan. Flip a deferred p
 and revisit its `depends_on` when its gate lands.
 
 The latest landings (2026-10-08) — `[map]_android_tile_access.md`,
-`[location]_android_location_permission.md`, `[nav]_home_destination.md`, `[nav]_back_navigation.md` —
-were condensed into Landed → `[map]`/`[location]`/`[nav]` and deleted (bugs #14–#17 closed). Earlier,
+`[location]_android_location_permission.md`, `[nav]_home_destination.md`, `[nav]_back_navigation.md`,
+`[design]_shared_style_adoption.md` — were condensed into Landed →
+`[map]`/`[location]`/`[nav]`/`[design]` and deleted (bugs #14–#17 closed). Earlier,
 `01_[history]_rated_pagination_past_cap.md` landed 2026-10-05 and was deleted (Landed → `[history]`;
 bug #10 closed).
 
@@ -170,17 +176,19 @@ export PATH=~/fvm/default/bin:$HOME/.pub-cache/bin:$PATH   # Linux FVM SDK (the 
 melos run analyze
 melos run test
 ```
-Last verified 2026-10-08: full-workspace `melos run analyze` → driver/shared/rider **SUCCESS**; `melos run test` → **driver 315**, rider 394, shared 189 — all passed. Re-count, don't trust old totals (the 2026-10-08 audit's dedup of duplicate/placeholder suites explains the earlier drift from 302/165/363). The 2026-10-05 `[history]` suites and adversarial checks (the `truncated`⇒`unknown` type, the `FutureProvider.family` `ride_id` resolution, the exact `GET /driver/ratings?ride_id=` shape, no residual hardcoded `$`/`toStringAsFixed`, the sole-currency aggregate rule) remain **CONFIRMED**. **Android on-device behavior is UNVERIFIABLE in this WSL tree** (no emulator/Gradle); close on an Android host with `flutter build apk --release`, inspect the **merged** release manifest for `INTERNET` + `ACCESS_FINE_LOCATION`/`ACCESS_COARSE_LOCATION` + `uses-feature android.hardware.location.gps required="true"` and **no** `ACCESS_BACKGROUND_LOCATION`, then install and confirm tiles render (not "Access Blocked"), attribution is visible, a driver goes online/receives an offer, and the outbound tile `User-Agent` is `driver_app/<appVersion> (+contact: ricardoapuch@gmail.com)` — not a browser string and not `com.driver.app`. This pass is **docs-only** (no driver source, manifest or test edited).
+Last verified 2026-10-08: full-workspace `melos run analyze` → driver/shared/rider **SUCCESS** (clean); `melos run test` → **driver 316**, rider 394, shared 189 — all passed. The `[design]` driver adoption's added empty-state pull-to-refresh test is the +1 over the earlier 315 count. Re-count, don't trust old totals (the 2026-10-08 audit's dedup of duplicate/placeholder suites explains the earlier drift from 302/165/363; the deleted `[design]` plan's own stale baseline `driver_app 337` was never a `STATUS.md` number). The 2026-10-05 `[history]` suites and adversarial checks (the `truncated`⇒`unknown` type, the `FutureProvider.family` `ride_id` resolution, the exact `GET /driver/ratings?ride_id=` shape, no residual hardcoded `$`/`toStringAsFixed`, the sole-currency aggregate rule) remain **CONFIRMED**; the `[design]` migration is likewise **CONFIRMED**, including the two regressions it first surfaced (dropped empty-state copy; nested-scrollable pull-to-refresh dead zone) now fixed and mutation/reproduction-proven. **Android on-device behavior is UNVERIFIABLE in this WSL tree** (no emulator/Gradle); close on an Android host with `flutter build apk --release`, inspect the **merged** release manifest for `INTERNET` + `ACCESS_FINE_LOCATION`/`ACCESS_COARSE_LOCATION` + `uses-feature android.hardware.location.gps required="true"` and **no** `ACCESS_BACKGROUND_LOCATION`, then install and confirm tiles render (not "Access Blocked"), attribution is visible, a driver goes online/receives an offer, and the outbound tile `User-Agent` is `driver_app/<appVersion> (+contact: ricardoapuch@gmail.com)` — not a browser string and not `com.driver.app`. This pass is **docs-only** (no driver source, manifest or test edited).
 
-Cross-domain map/location/nav (2026-10-08): the rider canonical `[map]` shared tile contract and
-`[location]` manifest fix landed; the driver `[map]_android_tile_access.md`,
-`[location]_android_location_permission.md`, `[nav]_home_destination.md` and
-`[nav]_back_navigation.md` plans are now landed and deleted, condensed above. `depends_on` re-checked
-2026-10-08 — **no dangling targets**: `01_[auth]_web_session_persistence.md` names the still-open
-`rider_app_plans/[auth]_web_session_persistence.md`; `[design]_shared_style_adoption.md` names landed
-`[design]` capability (`rider_app_plans/STATUS.md` → Landed `[design]`); `[location]_background_tracking.md`
-names landed `[location]` capability; the two rider-authored deferred `[map]` rows resolve to existing
-files. **Remaining drift (not edited, out of scope):** `[design]_shared_style_adoption.md:73,188,225`
-still calls the deleted rider `[rating]_unify_rating_ui.md` "(open)" (landed — see
-`rider_app_plans/STATUS.md` → Landed `[rating]`). No source, manifest or test edited; the counts above
-come from the supplied 2026-10-08 re-run.
+Cross-domain map/location/nav/design (2026-10-08): the rider canonical `[map]` shared tile contract
+and `[location]` manifest fix landed; the driver `[map]_android_tile_access.md`,
+`[location]_android_location_permission.md`, `[nav]_home_destination.md`,
+`[nav]_back_navigation.md` and `[design]_shared_style_adoption.md` plans are now landed and deleted,
+condensed above. `depends_on` re-checked 2026-10-08 — **no dangling targets**:
+`01_[auth]_web_session_persistence.md` names the still-open
+`rider_app_plans/[auth]_web_session_persistence.md`; `[location]_background_tracking.md` names landed
+`[location]` capability; the two rider-authored deferred `[map]` rows
+(`rider_app_plans/[map]_self_hosted_tile_host.md`,
+`rider_app_plans/[map]_runtime_remote_tile_config.md`) resolve to existing files. No drift remains:
+the stale `[design]` prose calling the landed rider `[rating]_unify_rating_ui.md` "(open)" lived only
+in the now-deleted `[design]` plan file (rider work landed — `rider_app_plans/STATUS.md` → Landed
+`[rating]`). No source, manifest or test edited; the counts above come from the supplied 2026-10-08
+re-run.

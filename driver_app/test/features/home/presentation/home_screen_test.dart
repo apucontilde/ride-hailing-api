@@ -131,6 +131,7 @@ void main() {
     await pumpHome(tester);
 
     expect(find.text('Offline'), findsOneWidget);
+    expect(find.byType(AppBadge), findsOneWidget);
     expect(find.byKey(const Key('home-active-trip')), findsNothing);
     expect(find.text('Trip'), findsNothing);
   });

@@ -6,11 +6,9 @@ import 'package:dio/dio.dart';
 import 'package:mocktail/mocktail.dart';
 import 'package:go_router/go_router.dart';
 import 'package:driver_app/core/auth/auth_provider.dart';
-import 'package:driver_app/core/auth/auth_storage.dart';
-import 'package:driver_app/core/api/api_client.dart';
-import 'package:driver_app/core/api/api_exceptions.dart';
 import 'package:driver_app/core/network/websocket_service.dart';
 import 'package:driver_app/features/auth/presentation/login_screen.dart';
+import 'package:ride_hailing_shared/ride_hailing_shared.dart';
 
 class MockAuthStorage extends Mock implements AuthStorage {}
 class MockApiClient extends Mock implements ApiClient {}
@@ -124,7 +122,10 @@ void main() {
 
     expect(find.text('Email'), findsOneWidget);
     expect(find.text('Password'), findsOneWidget);
+    // The auth fields are the shared widget, not the deleted app-local copy.
+    expect(find.byType(AppTextField), findsNWidgets(2));
     expect(find.widgetWithText(ElevatedButton, 'Log In'), findsOneWidget);
+    expect(find.byType(AppButton), findsOneWidget);
   });
 
   testWidgets('shows validation errors for empty fields',

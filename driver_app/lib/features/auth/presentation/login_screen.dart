@@ -1,9 +1,8 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
+import 'package:ride_hailing_shared/ride_hailing_shared.dart';
 import '../../../core/auth/auth_provider.dart';
-import '../../../core/utils/validators.dart';
-import 'widgets/auth_text_field.dart';
 
 class LoginScreen extends ConsumerStatefulWidget {
   const LoginScreen({super.key});
@@ -102,7 +101,7 @@ class _LoginScreenState extends ConsumerState<LoginScreen> {
               mainAxisAlignment: MainAxisAlignment.center,
               crossAxisAlignment: CrossAxisAlignment.stretch,
               children: [
-                AuthTextField(
+                AppTextField(
                   controller: _emailController,
                   label: 'Email',
                   hint: 'Enter your email',
@@ -112,7 +111,7 @@ class _LoginScreenState extends ConsumerState<LoginScreen> {
                   validator: Validators.validateEmail,
                 ),
                 const SizedBox(height: 16),
-                AuthTextField(
+                AppTextField(
                   controller: _passwordController,
                   label: 'Password',
                   hint: 'Enter your password',
@@ -142,21 +141,16 @@ class _LoginScreenState extends ConsumerState<LoginScreen> {
                   const SizedBox(height: 12),
                   Text(
                     authState.error!,
-                    style: TextStyle(
+                    style: AppTextStyles.body.copyWith(
                       color: Theme.of(context).colorScheme.error,
                     ),
                   ),
                 ],
                 const SizedBox(height: 24),
-                ElevatedButton(
-                  onPressed: authState.isLoading ? null : _submit,
-                  child: authState.isLoading
-                      ? const SizedBox(
-                          height: 20,
-                          width: 20,
-                          child: CircularProgressIndicator(strokeWidth: 2),
-                        )
-                      : const Text('Log In'),
+                AppButton(
+                  label: 'Log In',
+                  onPressed: _submit,
+                  isLoading: authState.isLoading,
                 ),
                 const SizedBox(height: 16),
                 TextButton(

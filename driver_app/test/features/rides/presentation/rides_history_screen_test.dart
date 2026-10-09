@@ -45,8 +45,7 @@ const _monthNames = [
   'December',
 ];
 
-String _monthLabel(int year, int month) =>
-    '${_monthNames[month - 1]} $year';
+String _monthLabel(int year, int month) => '${_monthNames[month - 1]} $year';
 
 /// The literal label the card must show for [_thisMonth].
 String get _thisMonthLabel => _monthLabel(_now.year, _now.month);
@@ -176,10 +175,43 @@ void main() {
     await pumpHistory(tester);
 
     expect(find.text('No trips yet'), findsOneWidget);
+    expect(find.byType(AppEmptyState), findsOneWidget);
+    // The design migration dropped this helper sentence when the per-screen
+    // `_EmptyState` became the shared `AppEmptyState`; it must stay.
+    expect(
+      find.text('Completed trips and your fares will show up here.'),
+      findsOneWidget,
+    );
     // No currency on the loaded fares: the amount renders bare, never a
     // fabricated `$`.
     expect(find.text('0.00'), findsOneWidget);
     expect(find.text('0 completed trips'), findsOneWidget);
+
+    await tester.pumpWidget(const SizedBox());
+  });
+
+  testWidgets('a pull-down on the empty state re-fetches the history', (
+    tester,
+  ) async {
+    stubHistory(const []);
+
+    await pumpHistory(tester);
+    expect(find.byType(AppEmptyState), findsOneWidget);
+
+    // Drag down on the empty surface itself. In the nested build this started a
+    // scroll inside the `AppEmptyState` `ListView`, so the inner scrollable
+    // consumed it at notification depth 1 and the enclosing `RefreshIndicator`
+    // never fired; now the empty state is the `RefreshIndicator`'s own
+    // scrollable, so the pull reaches it and `refreshAll` runs.
+    await tester.fling(find.text('No trips yet'), const Offset(0, 300), 1000);
+    await tester.pump();
+    await tester.pump(const Duration(seconds: 1)); // scroll animation
+    await tester.pump(const Duration(seconds: 1)); // indicator settle
+    await tester.pump(const Duration(seconds: 1)); // indicator hide
+
+    // One load from `initState` plus one from the pull. `verify` consumes the
+    // calls it matches, so this is asserted once, at the end.
+    verify(() => repo.history(page: 1, perPage: historyPageSize)).called(2);
 
     await tester.pumpWidget(const SizedBox());
   });
@@ -223,124 +255,126 @@ void main() {
     },
   );
 
-  testWidgets('a completed tile renders the final fare at cents with its currency',
-      (tester) async {
-    stubHistory([
-      ride(
-        'r1',
-        status: 'completed',
-        fare: 13.2,
-        currency: 'USD',
-        completedAt: _thisMonth,
-      ),
-    ], total: 1);
-
-    await pumpHistory(tester);
-
-    // The final charge from the API, at two decimals and prefixed with the
-    // API's own currency code — never a rounded or invented value. Scoped to
-    // the tile: the earnings card shows the same sum for this one-ride month.
-    expect(
-      find.descendant(
-        of: find.byKey(const Key('ride-tile-r1')),
-        matching: find.text('USD13.20'),
-      ),
-      findsOneWidget,
-    );
-    expect(find.text('USD13.00'), findsNothing);
-
-    await tester.pumpWidget(const SizedBox());
-  });
-
-    testWidgets('a month breakdown lists the loaded months newest first', (
-      tester,
-    ) async {
+  testWidgets(
+    'a completed tile renders the final fare at cents with its currency',
+    (tester) async {
       stubHistory([
         ride(
           'r1',
           status: 'completed',
-          fare: 10,
+          fare: 13.2,
           currency: 'USD',
-          completedAt: _thisMonth,
-        ),
-        ride(
-          'r2',
-          status: 'completed',
-          fare: 7,
-          currency: 'USD',
-          completedAt: _lastMonth,
-        ),
-      ], total: 2);
-
-      await pumpHistory(tester);
-
-      expect(find.text(_thisMonthLabel), findsOneWidget);
-      expect(find.text('1 · USD10.00'), findsOneWidget);
-      expect(find.text(_lastMonthLabel), findsOneWidget);
-      expect(find.text('1 · USD7.00'), findsOneWidget);
-      // No withdraw affordance: that endpoint is a backend stub, so the only
-      // mention of it is the disclaimer.
-      expect(find.textContaining('Withdraw'), findsOneWidget);
-      expect(find.widgetWithText(TextButton, 'Withdraw'), findsNothing);
-
-      await tester.pumpWidget(const SizedBox());
-    });
-
-    testWidgets('the aggregate card renders a non-USD region code, never \$', (
-      tester,
-    ) async {
-      stubHistory([
-        ride(
-          'r1',
-          status: 'completed',
-          fare: 8,
-          currency: 'CRC',
           completedAt: _thisMonth,
         ),
       ], total: 1);
 
       await pumpHistory(tester);
 
+      // The final charge from the API, at two decimals and prefixed with the
+      // API's own currency code — never a rounded or invented value. Scoped to
+      // the tile: the earnings card shows the same sum for this one-ride month.
       expect(
-        tester.widget<Text>(find.byKey(const Key('earnings-month-total'))).data,
-        'CRC8.00',
+        find.descendant(
+          of: find.byKey(const Key('ride-tile-r1')),
+          matching: find.text('USD13.20'),
+        ),
+        findsOneWidget,
       );
-      expect(find.text(r'$8.00'), findsNothing);
+      expect(find.text('USD13.00'), findsNothing);
 
       await tester.pumpWidget(const SizedBox());
-    });
+    },
+  );
 
-    testWidgets('mixed-currency fares drop the symbol rather than invent one', (
-      tester,
-    ) async {
-      stubHistory([
-        ride(
-          'r1',
-          status: 'completed',
-          fare: 8,
-          currency: 'USD',
-          completedAt: _thisMonth,
-        ),
-        ride(
-          'r2',
-          status: 'completed',
-          fare: 2,
-          currency: 'CRC',
-          completedAt: _thisMonth,
-        ),
-      ], total: 2);
+  testWidgets('a month breakdown lists the loaded months newest first', (
+    tester,
+  ) async {
+    stubHistory([
+      ride(
+        'r1',
+        status: 'completed',
+        fare: 10,
+        currency: 'USD',
+        completedAt: _thisMonth,
+      ),
+      ride(
+        'r2',
+        status: 'completed',
+        fare: 7,
+        currency: 'USD',
+        completedAt: _lastMonth,
+      ),
+    ], total: 2);
 
-      await pumpHistory(tester);
+    await pumpHistory(tester);
 
-      expect(
-        tester.widget<Text>(find.byKey(const Key('earnings-month-total'))).data,
-        '10.00',
-      );
-      expect(find.text('USD10.00'), findsNothing);
-      expect(find.text('CRC10.00'), findsNothing);
+    expect(find.text(_thisMonthLabel), findsOneWidget);
+    expect(find.text('1 · USD10.00'), findsOneWidget);
+    expect(find.text(_lastMonthLabel), findsOneWidget);
+    expect(find.text('1 · USD7.00'), findsOneWidget);
+    // No withdraw affordance: that endpoint is a backend stub, so the only
+    // mention of it is the disclaimer.
+    expect(find.textContaining('Withdraw'), findsOneWidget);
+    expect(find.widgetWithText(TextButton, 'Withdraw'), findsNothing);
 
-      await tester.pumpWidget(const SizedBox());
-    });
+    await tester.pumpWidget(const SizedBox());
+  });
+
+  testWidgets('the aggregate card renders a non-USD region code, never \$', (
+    tester,
+  ) async {
+    stubHistory([
+      ride(
+        'r1',
+        status: 'completed',
+        fare: 8,
+        currency: 'CRC',
+        completedAt: _thisMonth,
+      ),
+    ], total: 1);
+
+    await pumpHistory(tester);
+
+    expect(
+      tester.widget<Text>(find.byKey(const Key('earnings-month-total'))).data,
+      'CRC8.00',
+    );
+    expect(find.text(r'$8.00'), findsNothing);
+
+    await tester.pumpWidget(const SizedBox());
+  });
+
+  testWidgets('mixed-currency fares drop the symbol rather than invent one', (
+    tester,
+  ) async {
+    stubHistory([
+      ride(
+        'r1',
+        status: 'completed',
+        fare: 8,
+        currency: 'USD',
+        completedAt: _thisMonth,
+      ),
+      ride(
+        'r2',
+        status: 'completed',
+        fare: 2,
+        currency: 'CRC',
+        completedAt: _thisMonth,
+      ),
+    ], total: 2);
+
+    await pumpHistory(tester);
+
+    expect(
+      tester.widget<Text>(find.byKey(const Key('earnings-month-total'))).data,
+      '10.00',
+    );
+    expect(find.text('USD10.00'), findsNothing);
+    expect(find.text('CRC10.00'), findsNothing);
+
+    await tester.pumpWidget(const SizedBox());
+  });
 
   testWidgets('only completed rides offer a rating, and only once', (
     tester,
@@ -434,7 +468,12 @@ void main() {
 
       // Retry re-requests, and the prompt returns once the server answers.
       stubRatings(const []);
-      await tester.tap(find.byKey(const Key('error-retry')).last);
+      await tester.tap(
+        find.descendant(
+          of: find.byKey(const Key('error-retry')).last,
+          matching: find.byType(TextButton),
+        ),
+      );
       await tester.pump();
       await tester.pump();
 
@@ -451,9 +490,7 @@ void main() {
       await tester.pumpWidget(const SizedBox());
     });
 
-    testWidgets('the refresh control re-reads the rated list', (
-      tester,
-    ) async {
+    testWidgets('the refresh control re-reads the rated list', (tester) async {
       stubHistory([
         ride('r1', status: 'completed', fare: 10, completedAt: _thisMonth),
       ], total: 1);
@@ -572,6 +609,7 @@ void main() {
 
     expect(find.text('Could not load your ride history.'), findsOneWidget);
     expect(find.text('Retry'), findsOneWidget);
+    expect(find.byType(AppErrorRow), findsOneWidget);
     expect(find.byKey(const Key('ride-tile-r1')), findsOneWidget);
 
     // Retry re-requests and the error clears once it succeeds.

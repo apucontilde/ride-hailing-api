@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:ride_hailing_shared/ride_hailing_shared.dart';
 import '../../../config.dart';
 import '../../../core/api/endpoints.dart';
 import '../../../core/auth/auth_provider.dart';
@@ -43,9 +44,13 @@ class _ComingSoon extends StatelessWidget {
         child: Column(
           mainAxisAlignment: MainAxisAlignment.center,
           children: [
-            Icon(Icons.construction, size: 64, color: Colors.grey),
+            Icon(
+              Icons.construction,
+              size: 64,
+              color: AppColors.mutedFaint,
+            ),
             SizedBox(height: 16),
-            Text('Coming soon', style: TextStyle(fontSize: 20)),
+            Text('Coming soon', style: AppTextStyles.title),
             SizedBox(height: 8),
             Text(
               'Vehicle & documents verification is handled by the admin team. '
@@ -69,16 +74,16 @@ class _VehicleDetails extends ConsumerWidget {
       data: (data) => ListView(
         padding: const EdgeInsets.all(24),
         children: [
-          Card(
+          AppCard(
             child: Column(
               children: [
-                ListTile(
+                AppListTile(
                   leading: const Icon(Icons.directions_car_outlined),
                   title: const Text('Status'),
                   subtitle: Text('${data['status'] ?? 'unknown'}'),
                 ),
                 const Divider(height: 1),
-                ListTile(
+                AppListTile(
                   leading: const Icon(Icons.info_outline),
                   title: const Text('Detail'),
                   subtitle: Text('${data['message'] ?? 'No details'}'),
@@ -95,8 +100,8 @@ class _VehicleDetails extends ConsumerWidget {
         ],
       ),
       loading: () => const Center(child: CircularProgressIndicator()),
-      error: (e, _) => Center(
-        child: Text('Could not load vehicle details. Please try again.'),
+      error: (e, _) => const AppErrorState(
+        message: 'Could not load vehicle details. Please try again.',
       ),
     );
   }

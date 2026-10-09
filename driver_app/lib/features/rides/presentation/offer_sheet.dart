@@ -139,16 +139,12 @@ class _OfferSheetState extends ConsumerState<OfferSheet> {
 
   @override
   Widget build(BuildContext context) {
-    return Container(
+    return AppBottomSheet(
       padding: const EdgeInsets.all(24),
-      decoration: BoxDecoration(
-        color: Theme.of(context).scaffoldBackgroundColor,
-        borderRadius: const BorderRadius.vertical(top: Radius.circular(20)),
-      ),
       child: Column(
         mainAxisSize: MainAxisSize.min,
         children: [
-          const Icon(Icons.local_taxi, size: 48, color: Colors.green),
+          const Icon(Icons.local_taxi, size: 48, color: AppColors.success),
           const SizedBox(height: 16),
           Text(
             'New Ride Offer',
@@ -165,7 +161,7 @@ class _OfferSheetState extends ConsumerState<OfferSheet> {
               padding: const EdgeInsets.symmetric(vertical: 12),
               child: Text(
                 _loadError!,
-                style: TextStyle(color: Theme.of(context).colorScheme.error),
+                style: AppTextStyles.body.copyWith(color: AppColors.danger),
               ),
             )
           else if (_ride != null) ...[
@@ -189,10 +185,10 @@ class _OfferSheetState extends ConsumerState<OfferSheet> {
               const SizedBox(width: 6),
               Text(
                 '${_secondsLeft}s',
-                style: TextStyle(
+                style: AppTextStyles.title.copyWith(
                   fontSize: 24,
                   fontWeight: FontWeight.bold,
-                  color: _expired ? Theme.of(context).colorScheme.error : null,
+                  color: _expired ? AppColors.danger : null,
                 ),
               ),
             ],
@@ -201,8 +197,8 @@ class _OfferSheetState extends ConsumerState<OfferSheet> {
           if (_expired) ...[
             Text(
               'Offer expired',
-              style: TextStyle(
-                color: Theme.of(context).colorScheme.error,
+              style: AppTextStyles.body.copyWith(
+                color: AppColors.danger,
                 fontWeight: FontWeight.bold,
               ),
             ),
@@ -211,24 +207,25 @@ class _OfferSheetState extends ConsumerState<OfferSheet> {
           Row(
             children: [
               Expanded(
-                child: FilledButton(
+                child: AppButton(
+                  label: 'Accept',
                   onPressed: _expired ? null : _accept,
-                  child: const Text('Accept'),
                 ),
               ),
               const SizedBox(width: 12),
               Expanded(
-                child: OutlinedButton(
+                child: AppButton(
+                  label: 'Decline',
+                  variant: AppButtonVariant.secondary,
                   onPressed: _expired ? null : _decline,
-                  child: const Text('Decline'),
                 ),
               ),
             ],
           ),
           const SizedBox(height: 8),
-          const Text(
+          Text(
             'Leaving the sheet lets the server expiry handle it.',
-            style: TextStyle(fontSize: 12, color: Colors.grey),
+            style: AppTextStyles.caption.copyWith(color: AppColors.muted),
           ),
         ],
       ),
@@ -239,7 +236,7 @@ class _OfferSheetState extends ConsumerState<OfferSheet> {
     return Row(
       mainAxisAlignment: MainAxisAlignment.spaceBetween,
       children: [
-        Text(label, style: const TextStyle(fontWeight: FontWeight.bold)),
+        Text(label, style: AppTextStyles.body.copyWith(fontWeight: FontWeight.bold)),
         Expanded(
           child: Text(
             value,

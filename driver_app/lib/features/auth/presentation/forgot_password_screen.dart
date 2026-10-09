@@ -5,7 +5,6 @@ import 'package:dio/dio.dart';
 import 'package:ride_hailing_shared/ride_hailing_shared.dart';
 import '../../../core/auth/auth_provider.dart';
 import '../../../core/api/endpoints.dart';
-import 'widgets/auth_text_field.dart';
 
 /// Wired to the real `POST /auth/forgot-password` endpoint (US-1). On success
 /// the recovery link flow continues on the reset-password screen.
@@ -72,7 +71,7 @@ class _ForgotPasswordScreenState extends ConsumerState<ForgotPasswordScreen> {
             mainAxisAlignment: MainAxisAlignment.center,
             crossAxisAlignment: CrossAxisAlignment.stretch,
             children: [
-              AuthTextField(
+              AppTextField(
                 controller: _emailController,
                 label: 'Email',
                 hint: 'Enter your account email',
@@ -84,26 +83,21 @@ class _ForgotPasswordScreenState extends ConsumerState<ForgotPasswordScreen> {
                 const SizedBox(height: 12),
                 Text(
                   _error!,
-                  style: TextStyle(color: Theme.of(context).colorScheme.error),
+                  style: AppTextStyles.body.copyWith(color: AppColors.danger),
                 ),
               ],
               if (_info != null) ...[
                 const SizedBox(height: 12),
                 Text(
                   _info!,
-                  style: TextStyle(color: Theme.of(context).colorScheme.primary),
+                  style: AppTextStyles.body.copyWith(color: AppColors.primary),
                 ),
               ],
               const SizedBox(height: 24),
-              ElevatedButton(
-                onPressed: _isLoading ? null : _submit,
-                child: _isLoading
-                    ? const SizedBox(
-                        height: 20,
-                        width: 20,
-                        child: CircularProgressIndicator(strokeWidth: 2),
-                      )
-                    : const Text('Send recovery link'),
+              AppButton(
+                label: 'Send recovery link',
+                onPressed: _submit,
+                isLoading: _isLoading,
               ),
               const SizedBox(height: 16),
               TextButton(

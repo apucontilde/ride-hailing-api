@@ -5,7 +5,6 @@ import 'package:dio/dio.dart';
 import 'package:ride_hailing_shared/ride_hailing_shared.dart';
 import '../../../core/auth/auth_provider.dart';
 import '../../../core/api/endpoints.dart';
-import 'widgets/auth_text_field.dart';
 
 /// Completes the real password-recovery flow via `POST /auth/reset-password`
 /// `{token, new_password}` — the destination of the recovery link.
@@ -77,7 +76,7 @@ class _ResetPasswordScreenState extends ConsumerState<ResetPasswordScreen> {
             mainAxisAlignment: MainAxisAlignment.center,
             crossAxisAlignment: CrossAxisAlignment.stretch,
             children: [
-              AuthTextField(
+              AppTextField(
                 controller: _tokenController,
                 label: 'Reset token',
                 hint: 'Paste the token from your recovery link',
@@ -86,7 +85,7 @@ class _ResetPasswordScreenState extends ConsumerState<ResetPasswordScreen> {
                     Validators.validateRequired(value, 'Reset token'),
               ),
               const SizedBox(height: 16),
-              AuthTextField(
+              AppTextField(
                 controller: _passwordController,
                 label: 'New password',
                 hint: 'Enter a new password',
@@ -98,26 +97,21 @@ class _ResetPasswordScreenState extends ConsumerState<ResetPasswordScreen> {
                 const SizedBox(height: 12),
                 Text(
                   _error!,
-                  style: TextStyle(color: Theme.of(context).colorScheme.error),
+                  style: AppTextStyles.body.copyWith(color: AppColors.danger),
                 ),
               ],
               if (_info != null) ...[
                 const SizedBox(height: 12),
                 Text(
                   _info!,
-                  style: TextStyle(color: Theme.of(context).colorScheme.primary),
+                  style: AppTextStyles.body.copyWith(color: AppColors.primary),
                 ),
               ],
               const SizedBox(height: 24),
-              ElevatedButton(
-                onPressed: _isLoading ? null : _submit,
-                child: _isLoading
-                    ? const SizedBox(
-                        height: 20,
-                        width: 20,
-                        child: CircularProgressIndicator(strokeWidth: 2),
-                      )
-                    : const Text('Reset password'),
+              AppButton(
+                label: 'Reset password',
+                onPressed: _submit,
+                isLoading: _isLoading,
               ),
               const SizedBox(height: 16),
               TextButton(

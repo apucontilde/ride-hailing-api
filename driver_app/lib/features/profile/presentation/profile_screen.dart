@@ -67,7 +67,7 @@ class _ProfileScreenState extends ConsumerState<ProfileScreen> {
           // derives `'D'` from `'Driver'` on its own.
           displayName: driver.fullName.isEmpty ? 'Driver' : driver.fullName,
           photoUrl: driver.photoUrl,
-          statusColor: driver.isOnline ? Colors.green : Colors.grey,
+          statusColor: driver.isOnline ? AppColors.success : AppColors.muted,
           statusLabel: driver.status,
           statusChipLabel: driver.onboardingStatus.isEmpty
               ? 'Onboarding pending'

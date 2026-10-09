@@ -72,7 +72,7 @@ class _OnboardingScreenState extends ConsumerState<OnboardingScreen> {
             mainAxisAlignment: MainAxisAlignment.center,
             crossAxisAlignment: CrossAxisAlignment.stretch,
             children: [
-              const Icon(Icons.directions_car, size: 64, color: Colors.blue),
+              const Icon(Icons.directions_car, size: 64, color: AppColors.info),
               const SizedBox(height: 16),
               Text(
                 'Drive with us',
@@ -85,13 +85,13 @@ class _OnboardingScreenState extends ConsumerState<OnboardingScreen> {
                 textAlign: TextAlign.center,
               ),
               const SizedBox(height: 24),
-              AuthField(
+              AppTextField(
                 controller: _firstNameController,
                 label: 'First name',
                 validator: Validators.validateName,
               ),
               const SizedBox(height: 16),
-              AuthField(
+              AppTextField(
                 controller: _lastNameController,
                 label: 'Last name',
                 validator: Validators.validateName,
@@ -101,19 +101,14 @@ class _OnboardingScreenState extends ConsumerState<OnboardingScreen> {
                 Text(
                   authState.error!,
                   textAlign: TextAlign.center,
-                  style: TextStyle(color: Theme.of(context).colorScheme.error),
+                  style: AppTextStyles.body.copyWith(color: AppColors.danger),
                 ),
               ],
               const SizedBox(height: 24),
-              ElevatedButton(
-                onPressed: _registering ? null : _register,
-                child: _registering
-                    ? const SizedBox(
-                        height: 20,
-                        width: 20,
-                        child: CircularProgressIndicator(strokeWidth: 2),
-                      )
-                    : const Text('Register as a driver'),
+              AppButton(
+                label: 'Register as a driver',
+                onPressed: _register,
+                isLoading: _registering,
               ),
               const SizedBox(height: 12),
               TextButton(
@@ -130,31 +125,6 @@ class _OnboardingScreenState extends ConsumerState<OnboardingScreen> {
           ),
         ),
       ),
-    );
-  }
-}
-
-class AuthField extends StatelessWidget {
-  final TextEditingController controller;
-  final String label;
-  final String? Function(String?)? validator;
-
-  const AuthField({
-    super.key,
-    required this.controller,
-    required this.label,
-    this.validator,
-  });
-
-  @override
-  Widget build(BuildContext context) {
-    return TextFormField(
-      controller: controller,
-      decoration: InputDecoration(
-        labelText: label,
-        border: OutlineInputBorder(borderRadius: BorderRadius.circular(12)),
-      ),
-      validator: validator,
     );
   }
 }

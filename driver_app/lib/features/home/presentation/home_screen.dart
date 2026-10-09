@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
+import 'package:ride_hailing_shared/ride_hailing_shared.dart';
 import '../../../core/auth/auth_provider.dart';
 import '../../../core/ride/ride_state_notifier.dart';
 import '../../../core/location/location_service.dart';
@@ -131,24 +132,11 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
                     Text(name),
-                    Row(
-                      children: [
-                        Container(
-                          width: 10,
-                          height: 10,
-                          decoration: BoxDecoration(
-                            shape: BoxShape.circle,
-                            color: driver?.isOnline == true
-                                ? Colors.green
-                                : Colors.grey,
-                          ),
-                        ),
-                        const SizedBox(width: 6),
-                        Text(
-                          driver?.status ?? 'offline',
-                          style: Theme.of(context).textTheme.bodySmall,
-                        ),
-                      ],
+                    AppBadge(
+                      label: driver?.status ?? 'offline',
+                      color: driver?.isOnline == true
+                          ? AppColors.success
+                          : AppColors.muted,
                     ),
                   ],
                 ),
@@ -158,12 +146,12 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
         ),
         if (permission.deniedPermanently)
           Material(
-            color: Colors.red.shade50,
+            color: AppColors.dangerTint,
             child: Padding(
               padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
               child: Row(
                 children: [
-                  const Icon(Icons.location_disabled, color: Colors.red),
+                  const Icon(Icons.location_disabled, color: AppColors.danger),
                   const SizedBox(width: 8),
                   Expanded(
                     child: Text(
@@ -177,7 +165,7 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
           ),
         if (heldRide != null)
           Material(
-            color: Colors.blue.shade50,
+            color: AppColors.infoTint,
             child: InkWell(
               key: const Key('home-active-trip'),
               onTap: () {
@@ -191,7 +179,7 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
                 ),
                 child: Row(
                   children: [
-                    const Icon(Icons.local_taxi, color: Colors.blue),
+                    const Icon(Icons.local_taxi, color: AppColors.info),
                     const SizedBox(width: 12),
                     Expanded(
                       child: Column(
@@ -263,8 +251,8 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
                   Container(
                     padding: const EdgeInsets.all(12),
                     decoration: BoxDecoration(
-                      color: Colors.grey.shade100,
-                      borderRadius: BorderRadius.circular(8),
+                      color: AppColors.surfaceMuted,
+                      borderRadius: BorderRadius.circular(AppRadii.sm),
                     ),
                     child: Column(
                       children: [
@@ -287,9 +275,8 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
                         if (availability.error != null)
                           Text(
                             'Error: ${availability.error}',
-                            style: TextStyle(
-                              color: Theme.of(context).colorScheme.error,
-                              fontSize: 12,
+                            style: AppTextStyles.caption.copyWith(
+                              color: AppColors.danger,
                             ),
                           ),
                       ],

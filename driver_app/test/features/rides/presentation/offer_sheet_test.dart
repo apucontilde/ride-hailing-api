@@ -83,6 +83,9 @@ void main() {
     expect(find.text('Central Park'), findsOneWidget);
     expect(find.text('Airport'), findsOneWidget);
     expect(find.text('12.40'), findsOneWidget);
+    // The sheet surface and its two actions are the shared widgets.
+    expect(find.byType(AppBottomSheet), findsOneWidget);
+    expect(find.byType(AppButton), findsNWidgets(2));
 
     await drainModalTimers(tester);
   });
@@ -122,10 +125,10 @@ void main() {
     await tester.pump(const Duration(seconds: 31));
 
     expect(find.text('Offer expired'), findsOneWidget);
-    final accept = tester.widget<FilledButton>(
+    final accept = tester.widget<ElevatedButton>(
       find.ancestor(
         of: find.text('Accept'),
-        matching: find.byType(FilledButton),
+        matching: find.byType(ElevatedButton),
       ),
     );
     final decline = tester.widget<OutlinedButton>(

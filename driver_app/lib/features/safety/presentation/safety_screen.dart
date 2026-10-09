@@ -114,7 +114,7 @@ class SafetyScreen extends ConsumerWidget {
           Text(
             'Emergency SOS',
             textAlign: TextAlign.center,
-            style: Theme.of(context).textTheme.titleLarge,
+            style: AppTextStyles.title,
           ),
           const SizedBox(height: 8),
           const Text(
@@ -124,17 +124,18 @@ class SafetyScreen extends ConsumerWidget {
             textAlign: TextAlign.center,
           ),
           const SizedBox(height: 16),
-          FilledButton.icon(
+          AppButton(
             key: const Key('sos-button'),
+            label: 'Send SOS',
+            variant: AppButtonVariant.danger,
+            icon: Icons.sos_outlined,
             onPressed: () => _sendSos(context, ref),
-            icon: const Icon(Icons.sos_outlined),
-            label: const Text('Send SOS'),
           ),
           const SizedBox(height: 32),
           Text(
             'Feedback',
             textAlign: TextAlign.center,
-            style: Theme.of(context).textTheme.titleLarge,
+            style: AppTextStyles.title,
           ),
           const SizedBox(height: 8),
           const Text(
@@ -142,11 +143,12 @@ class SafetyScreen extends ConsumerWidget {
             textAlign: TextAlign.center,
           ),
           const SizedBox(height: 16),
-          OutlinedButton.icon(
+          AppButton(
             key: const Key('feedback-button'),
+            label: 'Send feedback',
+            variant: AppButtonVariant.secondary,
+            icon: Icons.feedback_outlined,
             onPressed: () => _openFeedback(context, ref),
-            icon: const Icon(Icons.feedback_outlined),
-            label: const Text('Send feedback'),
           ),
         ],
       ),

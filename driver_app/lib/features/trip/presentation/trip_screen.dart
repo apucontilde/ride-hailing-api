@@ -242,45 +242,17 @@ class _TripScreenState extends ConsumerState<TripScreen> {
             // failed load needs to be visible and recoverable here too —
             // otherwise the post-trip screen silently loses the rating step.
             if (ratedRides.hasError)
-              _RatingsLoadError(
-                onRetry: () => ref.read(ratedRidesProvider.notifier).refresh(),
+              Padding(
+                padding: const EdgeInsets.fromLTRB(16, 0, 16, 8),
+                child: AppErrorRow(
+                  key: const Key('trip-ratings-retry'),
+                  message: ratedRidesErrorMessage,
+                  onRetry: () =>
+                      ref.read(ratedRidesProvider.notifier).refresh(),
+                ),
               ),
           ],
         ),
-      ),
-    );
-  }
-}
-
-/// Why the "Rate the rider" prompt is missing, and how to get it back.
-class _RatingsLoadError extends StatelessWidget {
-  final VoidCallback onRetry;
-
-  const _RatingsLoadError({required this.onRetry});
-
-  @override
-  Widget build(BuildContext context) {
-    final theme = Theme.of(context);
-    return Padding(
-      padding: const EdgeInsets.fromLTRB(16, 0, 16, 8),
-      child: Row(
-        children: [
-          Icon(Icons.error_outline, size: 16, color: theme.colorScheme.error),
-          const SizedBox(width: 8),
-          Expanded(
-            child: Text(
-              ratedRidesErrorMessage,
-              style: theme.textTheme.bodySmall?.copyWith(
-                color: theme.colorScheme.error,
-              ),
-            ),
-          ),
-          TextButton(
-            key: const Key('trip-ratings-retry'),
-            onPressed: onRetry,
-            child: const Text('Retry'),
-          ),
-        ],
       ),
     );
   }
@@ -337,14 +309,14 @@ class _MapView extends ConsumerWidget {
         Polyline(
           points: straight,
           strokeWidth: 2,
-          color: Colors.grey,
+          color: AppColors.routeEstimate,
           pattern: StrokePattern.dashed(segments: const [12, 8]),
         ),
       if (!useFallback)
         Polyline(
           points: road,
           strokeWidth: 5,
-          color: Colors.blue,
+          color: AppColors.routeReady,
         ),
     ];
 
@@ -376,17 +348,17 @@ class _MapView extends ConsumerWidget {
             if (pickupPoint != null)
               Marker(
                 point: pickupPoint,
-                child: const Icon(Icons.location_pin, color: Colors.green),
+                child: const Icon(Icons.location_pin, color: AppColors.success),
               ),
             if (dropoffPoint != null)
               Marker(
                 point: dropoffPoint,
-                child: const Icon(Icons.flag, color: Colors.red),
+                child: const Icon(Icons.flag, color: AppColors.danger),
               ),
             if (driverPosition != null)
               Marker(
                 point: LatLng(driverPosition!.lat, driverPosition!.lng),
-                child: const Icon(Icons.navigation, color: Colors.blue),
+                child: const Icon(Icons.navigation, color: AppColors.info),
               ),
           ],
         ),
@@ -456,10 +428,10 @@ class _StageControls extends StatelessWidget {
               ),
             ),
           ),
-          FilledButton(
+          AppButton(
             key: const Key('trip-done-button'),
+            label: 'Back to home',
             onPressed: onFinish,
-            child: const Text('Back to home'),
           ),
         ],
       );
@@ -480,69 +452,68 @@ class _StageControls extends StatelessWidget {
                     style: Theme.of(context).textTheme.headlineSmall,
                   ),
                   const SizedBox(height: 12),
-                  Card(
-                    child: Padding(
-                      padding: const EdgeInsets.all(12),
-                      child: Column(
-                        children: [
-                          _fareRow(
+                  AppCard(
+                    padding: const EdgeInsets.all(AppSpacing.md),
+                    child: Column(
+                      children: [
+                        _fareRow(
+                          context,
+                          'Base fare',
+                          ride?.baseFare,
+                          currency: ride?.fareCurrency,
+                        ),
+                        _fareRow(
+                          context,
+                          'Distance',
+                          ride?.distanceFare,
+                          currency: ride?.fareCurrency,
+                          note: (ride?.gradeUpliftPct ?? 0) != 0
+                              ? 'climb +${(ride!.gradeUpliftPct! * 100).toStringAsFixed(1)}%'
+                              : null,
+                        ),
+                        _fareRow(
+                          context,
+                          'Time',
+                          ride?.timeFare,
+                          currency: ride?.fareCurrency,
+                        ),
+                        if ((ride?.surgeMultiplier ?? 0) > 0)
+                          _lineRow(
                             context,
-                            'Base fare',
-                            ride?.baseFare,
-                            currency: ride?.fareCurrency,
+                            'Conditions multiplier',
+                            '×${ride!.surgeMultiplier!.toStringAsFixed(2)}',
                           ),
-                          _fareRow(
-                            context,
-                            'Distance',
-                            ride?.distanceFare,
-                            currency: ride?.fareCurrency,
-                            note: (ride?.gradeUpliftPct ?? 0) != 0
-                                ? 'climb +${(ride!.gradeUpliftPct! * 100).toStringAsFixed(1)}%'
-                                : null,
-                          ),
-                          _fareRow(
-                            context,
-                            'Time',
-                            ride?.timeFare,
-                            currency: ride?.fareCurrency,
-                          ),
-                          if ((ride?.surgeMultiplier ?? 0) > 0)
-                            _lineRow(
-                              context,
-                              'Conditions multiplier',
-                              '×${ride!.surgeMultiplier!.toStringAsFixed(2)}',
-                            ),
-                          const Divider(height: 16),
-                          _fareRow(
-                            context,
-                            'Total',
-                            ride?.totalFare,
-                            bold: true,
-                            currency: ride?.fareCurrency,
-                          ),
-                        ],
-                      ),
+                        const Divider(height: 16),
+                        _fareRow(
+                          context,
+                          'Total',
+                          ride?.totalFare,
+                          bold: true,
+                          currency: ride?.fareCurrency,
+                        ),
+                      ],
                     ),
                   ),
                 ],
               ),
             ),
           ),
-          FilledButton(
+          AppButton(
             key: const Key('trip-done-button'),
+            label: 'Back to home',
             onPressed: onFinish,
-            child: const Text('Back to home'),
           ),
           if (onRate != null) ...[
             const SizedBox(height: 8),
             // US-D10: rate the rider while the trip is still on screen — the
             // ride is cleared by "Back to home", so this is the only moment
             // the driver has the fare in front of them.
-            OutlinedButton.icon(
+            AppButton(
               key: const Key('trip-rate-button'),
+              label: 'Rate the rider',
+              variant: AppButtonVariant.secondary,
+              icon: Icons.star_outline,
               onPressed: onRate,
-              icon: const Icon(Icons.star_outline),
-              label: const Text('Rate the rider'),
             ),
           ],
         ],
@@ -584,26 +555,7 @@ class _StageControls extends StatelessWidget {
                 ],
                 if (routeError != null && routeError!.isNotEmpty) ...[
                   const SizedBox(height: 4),
-                  Row(
-                    crossAxisAlignment: CrossAxisAlignment.center,
-                    children: [
-                      Icon(Icons.error_outline,
-                          size: 16,
-                          color: Theme.of(context).colorScheme.error),
-                      const SizedBox(width: 4),
-                      Expanded(
-                        child: Text(
-                          routeError!,
-                          style: Theme.of(context)
-                              .textTheme
-                              .bodySmall
-                              ?.copyWith(
-                                color: Theme.of(context).colorScheme.error,
-                              ),
-                        ),
-                      ),
-                    ],
-                  ),
+                  AppErrorRow(message: routeError!),
                 ],
               ],
             ),
@@ -612,39 +564,41 @@ class _StageControls extends StatelessWidget {
         const SizedBox(height: 8),
         // One primary button per stage, matching the server's transition map.
         switch (stage) {
-          TripStage.enrouteToPickup => FilledButton(
+          TripStage.enrouteToPickup => AppButton(
               key: const Key('trip-primary-button'),
+              label: 'Arrived at pickup',
               onPressed: onAdvance,
-              child: const Text('Arrived at pickup'),
             ),
-          TripStage.arrived => FilledButton(
+          TripStage.arrived => AppButton(
               key: const Key('trip-primary-button'),
+              label: 'Start trip',
               onPressed: onAdvance,
-              child: const Text('Start trip'),
             ),
-          TripStage.driving => FilledButton(
+          TripStage.driving => AppButton(
               key: const Key('trip-primary-button'),
+              label: 'Complete Trip',
               onPressed: onComplete,
-              child: const Text('Complete Trip'),
             ),
           // `pending` has no driver-side transition, and there is nothing to
           // drive at all without a ride.
           TripStage.pre => ride == null
               ? const SizedBox.shrink()
-              : OutlinedButton(
+              : AppButton(
                   key: const Key('trip-primary-button'),
+                  label: 'Accept the offer to start',
+                  variant: AppButtonVariant.secondary,
                   onPressed: null,
-                  child: const Text('Accept the offer to start'),
                 ),
           TripStage.post || TripStage.cancelled =>
             const SizedBox.shrink(),
         },
         const SizedBox(height: 8),
         if (canCancel)
-          OutlinedButton(
+          AppButton(
             key: const Key('trip-cancel-button'),
+            label: 'Cancel trip',
+            variant: AppButtonVariant.secondary,
             onPressed: onCancel,
-            child: const Text('Cancel trip'),
           )
         else if (ride != null)
           Padding(

@@ -80,7 +80,7 @@ class DriverShell extends ConsumerWidget {
         account: AppSidebarAccount(
           displayName: name,
           statusLabel: driver?.status,
-          statusColor: driver?.isOnline == true ? Colors.green : Colors.grey,
+          statusColor: driver?.isOnline == true ? AppColors.success : AppColors.muted,
           photoUrl: driver?.photoUrl,
           ratingLabel: ratingLabel,
         ),
