@@ -17,7 +17,9 @@ status: resolved
 > `[elevation]_elevation_column_and_repo_plumb.md` (**landed**), stage 03 =
 > `[elevation]_dem_ingest_and_noise_control.md` (**landed**), stage 04 =
 > `[elevation]_calibration_and_rollout_gate.md` (this file), stage 05 =
-> `[elevation]_duration_model.md` (Item B; Item C is now the unnumbered
+> `[elevation]_duration_model.md` (Item B; since split into the unnumbered chain head
+> `[elevation]_duration_calibration_data.md` and its dependent
+> `01_[elevation]_duration_model.md`). Item C is now the unnumbered
 > `[elevation]_pgrouting_parity.md`).
 > Translating that prose is a tracked follow-up; do not renumber it piecemeal.
 

@@ -438,7 +438,8 @@
 
 | File | Tag | Depends on | What remains |
 | --- | --- | --- | --- |
-| `[elevation]_duration_model.md` | elevation | landed elevation cost model + DEM ingest + default-on flip; blocked on a driver-trace dataset | Grade-aware `total_duration_s`; **blocked** — no driver-trace/drive-time dataset exists to calibrate the speed-vs-grade curve. Distance stays true meters and the flip changes no duration |
+| `[elevation]_duration_calibration_data.md` | elevation | landed elevation cost model + DEM ingest + default-on flip; landed `[tracking]` actuals (`ride_track_points`, migration 021) | **chain head** — derive + document the per-segment grade-vs-observed-speed calibration dataset from `ride_track_points` (read-only deterministic tool + artifact/schema + documented fit procedure + coverage report). Blocked only on the derivation meeting its acceptance bar, **not** on the absence of a trace — the trace table exists |
+| `01_[elevation]_duration_model.md` | elevation | open `[elevation]_duration_calibration_data.md` | Grade-aware `total_duration_s`; **blocked** on the calibration-data head. Distance stays true meters and the flip changes no duration |
 | `[elevation]_pgrouting_parity.md` | elevation | pgrouting engine + elevation columns (landed) | **deferred**; add `reverse_cost`/`cost_ascent` migration + elevation-aware edges SQL, backfilled by a script referenced from `import-osm` |
 | `[routing]_intercity.md` | routing | routing region resolution (STATUS.md) | **deferred**; holds the archived overlay-ports/planner design |
 | `[payout]_driver_earnings_and_withdraw.md` | payout | — | **deferred**: server half of driver-app bug #6 — `driver_earnings` ledger + credit-on-completion + real `GET /driver/me/earnings` and idempotent `POST /driver/earnings/withdraw` (pending debit, no external payout); design settled, no scheduling |
@@ -521,8 +522,10 @@ asks, preserving the single-summed-price semantics and the estimate `legs` contr
   below-`MinCoverage`) elevation data — the coverage gate degrades to flat. That stays a hard
   invariant after the flip.
 - **Duration is deliberately untouched.** Grade-aware `total_duration_s`
-  (`[elevation]_duration_model.md`) stays blocked on a driver-trace dataset — the flip does not
-  solve it and must not quietly change the time fare.
+  (`01_[elevation]_duration_model.md`) stays blocked on the open chain head
+  `[elevation]_duration_calibration_data.md`: the raw per-ride driver-fix trace now exists
+  (`ride_track_points`, migration 021), but the derived + documented grade-vs-speed calibration
+  dataset does not — the flip does not solve it and must not quietly change the time fare.
 
 ## Decisions already taken — [fare] (do not re-litigate)
 

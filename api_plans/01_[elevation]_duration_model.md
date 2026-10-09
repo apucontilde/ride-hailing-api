@@ -1,20 +1,20 @@
 ---
 tag: elevation
-depends_on: ["elevation directional cost model + DEM ingest + default-on flip (STATUS.md, landed)"]
+depends_on: ["[elevation]_duration_calibration_data.md"]
 status: open
 ---
 
 # Grade-aware `total_duration_s` (Item B of the retired duration/API-surface plan)
 
-> **Unnumbered.** Its only *plan* prerequisite (the calibration/flip chain) is resolved, so this
-> plan no longer names an open plan and does **not** earn an `NN_` prefix
-> (`.opencode/skills/plan-management/SKILL.md`). The real blocker is a dataset that does not exist
-> in this repo yet (see *Calibration data prerequisite*); `depends_on` names the landed elevation
-> capability it builds on. It replaces Item B of `01_[elevation]_duration_and_api_surface.md`,
-> whose Item A (additive response fields) **landed** and which has been deleted as a landed plan.
-> Item C is split out as the unnumbered `[elevation]_pgrouting_parity.md`.
+> **`01_` — dependent stage of the elevation-duration chain.** It `depends_on` the **open** chain
+> head `[elevation]_duration_calibration_data.md`, which is exactly what earns the `NN_` prefix
+> (`.opencode/skills/plan-management/SKILL.md`). The head produces the per-segment grade-vs-speed
+> dataset; **this** plan fits and ships `v(g)`. It replaces Item B of
+> `01_[elevation]_duration_and_api_surface.md`, whose Item A (additive response fields) **landed**
+> and which has been deleted as a landed plan. Item C is split out as the unnumbered
+> `[elevation]_pgrouting_parity.md`.
 
-**Status: OPEN — blocked on calibration data that does not exist in this repo yet.**
+**Status: OPEN — blocked on the calibration dataset head `[elevation]_duration_calibration_data.md`.**
 
 **User decision (recorded):** the duration model is its own plan and **calibration comes first**:
 fit a speed-vs-grade curve against real drive times *before* choosing constants. **The time fare
@@ -80,18 +80,24 @@ lesson (a provisional 3.0 shipped untested) is the precedent not to repeat.
 
 ## Calibration data prerequisite (the actual blocker)
 
-**The repo has no driver-trace / drive-time dataset today.** There is no table, script, or import
-of observed segment travel times; all durations in production are the flat `distance/11`. The
-first deliverable is therefore **to obtain or derive a calibration dataset** — e.g. matched
-GPS traces from completed rides, or an external speed-by-grade reference — and only then fit
-`v0/kUp/kDown/vFloor`. **If no such data is (or can be) obtained, this plan stays blocked and
+**The raw trace exists; the calibrated dataset does not.** Migration
+`internal/database/migrations/021_ride_actuals.up.sql:30` already writes an append-only
+per-ride driver-fix trace `ride_track_points(ride_id, lat, lng, recorded_at)` while a ride is
+`in_progress` (`internal/handler/geo.go:73-77`), and completion derives actual distance/duration
+from it (`internal/service/ride_tracking.go:58-89,94-103`; `internal/service/ride.go:437-453`).
+What is missing is the **derived, documented dataset** that joins those fixes to road-edge signed
+grades and yields observed speed by grade. That derivation — source, join, tool, schema,
+quality controls, coverage reporting and fallback — is the open chain head
+**`[elevation]_duration_calibration_data.md`**; this plan `depends_on` it and must not start
+fitting until it lands. Only then fit `v0/kUp/kDown/vFloor`. **If the head cannot meet its
+acceptance bar (or reconcile an external speed-by-grade reference), this plan stays blocked and
 must not choose constants from the literature and call it calibration.** A blocked plan that says
 so is more honest than a tuned guess.
 
-## Suggested sequence (once data exists)
+## Suggested sequence (once the head lands)
 
-1. Acquire/derive the calibration dataset; document its provenance, size, and grade coverage in
-   this file (or a companion measured block).
+1. Read the dataset artifact and its manifest from
+   `[elevation]_duration_calibration_data.md`; do not re-derive the data here.
 2. Fit `v(g)`; record the fitted constants, the residuals, and the sample split.
 3. Implement the model as above; keep the flat fallback.
 4. Re-run `make test` and grep the suite for `454` before/after — the count of assertions on the
