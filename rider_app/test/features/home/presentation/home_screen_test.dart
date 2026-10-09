@@ -127,6 +127,8 @@ void main() {
       overrides: [
         apiClientProvider.overrideWithValue(apiClient),
         locationServiceProvider.overrideWithValue(fakeLocation),
+        // No tiles: the map must not touch the network under flutter_test.
+        mapTileLayerProvider.overrideWith((ref, config) => null),
       ],
     );
     addTearDown(container.dispose);

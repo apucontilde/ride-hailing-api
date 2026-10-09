@@ -4,7 +4,20 @@ class ApiConfig {
     defaultValue: 'http://localhost:8080',
   );
 
-  /// App version shown in Settings. Kept as a const to avoid a hard dependency
-  /// on `package_info_plus` for a single read-only string.
-  static const String appVersion = '1.0.0';
+  /// Map tile source, read at build time (`--dart-define`/CI), never committed.
+  static const String mapTileUrl = String.fromEnvironment(
+    'MAP_TILE_URL',
+    defaultValue: 'https://tile.openstreetmap.org/{z}/{x}/{y}.png',
+  );
+
+  /// Hosted-provider API key seam. Unused on the OSM path; read at build time
+  /// so it never lands in source.
+  static const String mapTileApiKey = String.fromEnvironment('MAP_TILE_API_KEY');
+
+  /// UA version component: `'<app>/<appVersion> (+contact: ...)'`. Set from the
+  /// release version (build define / CI) so the UA tracks the shipped build.
+  static const String appVersion = String.fromEnvironment(
+    'APP_VERSION',
+    defaultValue: '1.0.0',
+  );
 }

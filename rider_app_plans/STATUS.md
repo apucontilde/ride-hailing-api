@@ -81,6 +81,11 @@
 
 ### [location]
 - Manual pickup fallback when the device fix is unavailable — injectable `LocationAvailability`/`LocationService`/`locationServiceProvider` (`features/home/data/location_service.dart:7,18,72`) plus the additive `LocationHelper.isLocationServiceEnabled`/`openAppSettings`/`openLocationSettings` wrappers (`shared/lib/src/utils/location_helper.dart:39-47`); `_defaultMapCenter` (`features/home/presentation/home_screen.dart:50`) + `_searchBias()` (`:249`) bias the pickup search (pickup → device fix → map center → default, never written as a location); the pickup field always opens `/location-search` with that bias and a `Use current location` clear (`:440-471`); the persistent notice offers `Open settings`/`Open location settings` + `Try again` (`:580-640`); `_createRide` remembers the pickup (`:801`). Tests `test/features/home/data/location_service_test.dart` (6), extended `home_screen_test.dart`, `location_search_screen_test.dart`.
+- Android location permission in the main manifest (bug #16) — `ACCESS_FINE_LOCATION` +
+  `ACCESS_COARSE_LOCATION` `rider_app/android/app/src/main/AndroidManifest.xml:3-4` and
+  `<uses-feature android:name="android.hardware.location.gps" android:required="true"/>` `:5`; no
+  `ACCESS_BACKGROUND_LOCATION`, no minSdk change. Manifests-only — the `deniedForever` deep-link UX is
+  the separate landed fallback above.
 
 ### [trip]
 - Pre-trip pickup recovery after a trip ends — global `pickupMemoryProvider` (`PickupMemory` with `remember`/`markReturning`/`consumeReturn`/`clear`) survives `HomeScreen` disposal `features/home/data/pickup_memory_provider.dart:6,26,34,43,50`, with the centralized `markTripReturn`/`resetRideState` exit helper `features/home/data/trip_return.dart:9,22`; Home consumes the return intent in `initState` and post-frame resets state / restores the manual `Place` / re-fits (`features/home/presentation/home_screen.dart:74-103`); cancel + no-driver exits mark `restore: true` (`driver_matching_screen.dart:61-65`, `active_ride_screen.dart:194,381-386,463`) and completion marks `restore: false` (`active_ride_screen.dart:372-375`); logout clears the memory (`core/auth/auth_provider.dart:79-81`). Tests `test/features/home/data/pickup_memory_provider_test.dart` (5), extended home/matching/active-ride suites.
@@ -119,6 +124,26 @@
   Tests `test/features/home/data/home_route_preview_test.dart` (9),
   `test/features/home/presentation/home_screen_test.dart` (9, incl. the 2 `[multi]` cases), plus
   `is_estimate` parsing in `test/features/home/data/home_provider_test.dart:299-319`.
+- Android tile access + one shared OSM-compliant tile path (bugs #14/#15; test-seam bug #25) —
+  `INTERNET` added to the main manifest `rider_app/android/app/src/main/AndroidManifest.xml:2` (a release
+  APK now has network); the single `TileLayer` construction moved to shared: `MapTileConfig.openStreetMap`
+  (truthful contact-bearing UA `'<appName>/<appVersion> (+contact: <contact>)'`, never a browser string;
+  placeholder `defaultContact = 'tiles@example.invalid'` for callers that do not override it)
+  `shared/lib/src/map/map_tile_config.dart:7,21,32,59,61`, `buildMapTileLayer` + nullable
+  `mapTileLayerProvider` `shared/lib/src/map/map_tile_layer.dart:10,21`, `MapTileAttribution`
+  `shared/lib/src/map/map_tile_attribution.dart:8`, barrel `shared/lib/ride_hailing_shared.dart:27-29`,
+  `shared/pubspec.yaml:19` (`flutter_map: ^7.0.2`). Rider builds only a config
+  (`rider_app/lib/core/map/rider_map_tile.dart:9-17`; real `com.example.rider_app`, UA
+  `rider_app/1.0.0 (+contact: ricardoapuch@gmail.com)`) from `rider_app/lib/config.dart:8,15,19`
+  (`MAP_TILE_URL`/`MAP_TILE_API_KEY`/`APP_VERSION`) and both maps render the shared factory + attribution
+  with **no** app `TileLayer` (`features/home/presentation/home_screen.dart:384-385,490`,
+  `features/home/presentation/active_ride_screen.dart:490-491,542`). Bug #25 resolved — the nullable seam
+  makes the map widget tests hermetic via `mapTileLayerProvider.overrideWith((ref, config) => null)`
+  (`test/features/home/presentation/home_screen_test.dart:131`,
+  `test/features/home/presentation/active_ride_screen_test.dart:300`,
+  `test/features/navigation/rider_sidebar_test.dart:84`). **Plan↔code drift:** the plan specified
+  `APP_VERSION` `defaultValue: 'dev'`; the landed code uses `'1.0.0'` (restores the Settings footer),
+  guarded by `test/features/settings/presentation/settings_screen_test.dart:59-69`.
 
 ### [home]
 - Resizable Home booking panel (drag/scroll + snap; the map really shrinks) —
@@ -345,9 +370,9 @@ unless they cross a package, in which case they are repo-relative
 | 11 | `riderRatedRideIdsProvider` seed walk is a **documented bound**: `ratedRideIdsMaxPages` = 20 × 50 = 1000 rated rides. A rider past that ceiling could be re-prompted for an ancient completed ride — **FIXED** by `01_[history]_rated_seed_past_cap.md`: the seed is `partial` when `total > 1000` and a ride outside it is resolved with the `ride_id` filter; a truncated / loading / failed seed is `unknown`, never `unrated` | pre-fix `features/home/data/ride_provider.dart:239,247-271`; post-fix `features/home/data/ride_provider.dart:26-40,272-380` | low | [history] |
 | 12 | Pre-booking estimate sheet showed the fixed `base_fare` instead of the computed `total`, and `RideEstimate` parsed a dead `price` JSON field the API never sends (always 0, unused) — **FIXED** by `[fare]_estimate_total_and_breakdown.md`: maps `total` + breakdown legs, removes `price`, renders the total with a receipt-style breakdown and API currency | post-fix `features/home/model/ride_estimate.dart:32-41,68-87,110`; `features/home/presentation/ride_estimate_sheet.dart:115-171`; pre-fix sheet `:108`, model `:26,58`; API sends `total`/`grade_uplift_pct` `internal/handler/responses.go:189,199` | medium | [fare] |
 | 13 | **API gap (not rider work):** there was no waypoint-aware fare — `POST /rides` priced `pickup → dropoff` only and ignored the `stops[]` itinerary, and `GET /estimates/price` took no stops, so a multi-stop trip was priced short; the rider UI stayed honest with the single-leg API number + `stops-fare-note`. — **FIXED** by the API half (coordinated API + rider wave; `api_plans/STATUS.md` → Landed `[fare]`): the API now prices the ordered itinerary (`RequestRide` → `CalculateItineraryEstimate`) and `POST /estimates/price` takes the same ordered `stops` body, and the rider switched to `POST` with stops and dropped the caveat (see Landed `[fare]`) | post-fix `internal/service/ride.go:264`; `internal/service/fare.go:158`; `internal/router/router.go:277`; `features/home/data/home_provider.dart:97-118`; pre-fix `internal/service/ride.go:234`; `features/home/presentation/home_screen.dart:474-499` | low | api_plans `[fare]` |
-| 14 | **Android release build has no network:** `android.permission.INTERNET` is declared only in the debug/profile manifests, so a release APK has no tiles, API or WS at all (stock Flutter template behaviour, but a shipping bug here). Fix locked (2026-10-06): add `INTERNET` to the main manifest | `rider_app/android/app/src/main/AndroidManifest.xml:1-45` (absent); `src/debug/AndroidManifest.xml:6`; `src/profile/AndroidManifest.xml:6` | high | [map] |
-| 15 | **Android maps show OSM "Access Blocked":** both maps send a hardcoded spoofed desktop Chrome `User-Agent`; because `NetworkTileProvider(headers:)` already carries that key, flutter_map's `tile_layer.dart:299-300` `putIfAbsent` never injects `userAgentPackageName`, so OSM blocks the browser-spoofed app traffic. `userAgentPackageName: 'com.rider.app'` also mismatches the real `applicationId` `com.example.rider_app`. Fix locked (2026-10-06): OSM-compliance now — drop the spoofed UA, send a truthful contact-bearing UA, use the real package id, and de-dup both maps through the **fully shared** tile factory + shared attribution widget | `features/home/presentation/home_screen.dart:196-205`; `features/home/presentation/active_ride_screen.dart:476-484`; `rider_app/android/app/build.gradle.kts:18`; flutter_map 7.0.2 `tile_layer.dart:299-300` | high | [map] |
-| 16 | **Android `geolocator` throws "No location permissions are defined in the manifest":** the main manifest declares neither `ACCESS_FINE_LOCATION` nor `ACCESS_COARSE_LOCATION`, so Home's `_initLocation`, the rider-location ping and the live-trip position stream all fail on Android. Fix locked (2026-10-06): add FINE+COARSE + `uses-feature gps required="true"`; no background location; no minSdk change; the `deniedForever` deep-link is handed to the `[location]` fallback (since landed — see Landed `[location]`) | `rider_app/android/app/src/main/AndroidManifest.xml:1-45`; `shared/lib/src/utils/location_helper.dart:4-23`; `features/home/presentation/home_screen.dart:147-172` | high | [location] |
+| 14 | **Android release build had no network:** `android.permission.INTERNET` was declared only in the debug/profile manifests, so a release APK had no tiles, API or WS at all (stock Flutter template behaviour, a shipping bug here). — **FIXED** by Landed `[map]`: `INTERNET` now sits in the main manifest and merges into every variant | post-fix `rider_app/android/app/src/main/AndroidManifest.xml:2`; pre-fix absent; `src/debug/AndroidManifest.xml:6`; `src/profile/AndroidManifest.xml:6` | high | [map] |
+| 15 | **Android maps showed OSM "Access Blocked":** both maps sent a hardcoded spoofed desktop Chrome `User-Agent`; because `NetworkTileProvider(headers:)` already carried that key, flutter_map's `putIfAbsent` never injected `userAgentPackageName`, so OSM blocked the browser-spoofed app traffic; `userAgentPackageName: 'com.rider.app'` also mismatched the real `applicationId` `com.example.rider_app`. — **FIXED** by Landed `[map]`: the spoofed UA is gone, the shared factory sends the truthful contact-bearing UA via `MapTileConfig.headers`, `userAgentPackageName` is `com.example.rider_app`, and both maps render through the shared factory + attribution | post-fix `shared/lib/src/map/map_tile_config.dart:21,32,61`; `rider_app/lib/core/map/rider_map_tile.dart:11`; pre-fix `features/home/presentation/home_screen.dart:196-205`; `features/home/presentation/active_ride_screen.dart:476-484`; `rider_app/android/app/build.gradle.kts:18` | high | [map] |
+| 16 | **Android `geolocator` threw "No location permissions are defined in the manifest":** the main manifest declared neither `ACCESS_FINE_LOCATION` nor `ACCESS_COARSE_LOCATION`, so Home's `_initLocation`, the rider-location ping and the live-trip position stream all failed on Android. — **FIXED** by Landed `[location]`: `ACCESS_FINE_LOCATION` + `ACCESS_COARSE_LOCATION` + `uses-feature gps required="true"` in the main manifest; no background location; no minSdk change | post-fix `rider_app/android/app/src/main/AndroidManifest.xml:3-5`; pre-fix absent; `shared/lib/src/utils/location_helper.dart:4-23` | high | [location] |
 | 17 | **Test gap (tracked, not a code defect):** `rider_app/test/features/home/presentation/ride_estimate_sheet_test.dart` has no case for the Landed `[fare]` `is_estimate` caption (`Estimated fare — not fully road-routed`) or the informational per-leg breakdown; both sheet/model paths are implemented but untested there | `features/home/presentation/ride_estimate_sheet.dart:106-111,154-180`; `features/home/model/ride_estimate.dart:7,46,50,81-91` | low | [fare] |
 | 18 | Comment/condition drift (not a runtime defect): `_showLocationNotice`'s doc claimed the persistent notice required the rider "has not chosen a pickup", but the condition omits `_pickupLocation == null` — **FIXED** by `[design]`: the doc now states the notice persists after a manual pickup and clears only when a device fix arrives, matching the condition | `features/home/presentation/home_screen.dart:567-569` (comment) vs `:570-573` (condition) | low | [location] |
 | 19 | **Test gap (tracked, not a code defect):** `[location]`/`[trip]` widget-coverage holes — the settings-action dispatch (`openAppSettings`/`openLocationSettings`) was never invoked from the widget, the restored pickup's route/estimate coordinates were not asserted, and the `remember(_pickupLocation)` call-site was untested — **FIXED** by `[design]`: three new cases add the settings-action dispatch, the restored-pickup route/estimate coordinates, and the `remember` call-site | `features/home/presentation/home_screen.dart:423,441,570-634,764`; tests `test/features/home/presentation/home_screen_test.dart:815-849,851-927,929-991` | low | [location]/[trip] |
@@ -356,10 +381,10 @@ unless they cross a package, in which case they are repo-relative
 | 22 | **Test gap (tracked, not a code defect):** the `findsNothing('Enable location to search nearby')` assertions are tautological wherever the test's `/location-search` route is a `SizedBox` stub — the string could never render there anyway; the real-screen guarantee rests on `location_search_screen_test.dart:61`, so these assertions should be strengthened later. Same defect class in both the Home suite and the new change-destination case | `test/features/home/presentation/home_screen_test.dart:1098` vs the stub route `:185-193`; `test/features/home/presentation/active_ride_screen_test.dart:1164` vs the stub route `:275-293`; real-screen coverage `test/features/home/presentation/location_search_screen_test.dart:61` | low | [location] |
 | 23 | **Test gap (tracked, not a code defect):** the `[home]` handle-toggle test only asserts the handle's `Semantics.onTap` is non-null — it never invokes the toggle, so it would not catch a regression where the tap stops changing the sheet size | `test/features/home/presentation/home_screen_test.dart:1301-1307`; toggle `features/home/presentation/home_screen.dart:342-352,677` | low | [home] |
 | 24 | **Note (test migration, not a defect):** the driver `rate_sheet_test.dart` finder moved from `FilledButton` to a descendant `ElevatedButton` of the `rate-submit` key, because the shared `AppRatingSheet` renders the shared `AppButton` (`ElevatedButton`) instead of the old local `FilledButton`; behavior unchanged | `driver_app/test/features/rides/presentation/rate_sheet_test.dart:35-37`; shared `shared/lib/src/components/app_button.dart:83` | low | [rating] |
-| 25 | **Test-audit follow-up (tracked, not a code defect):** rider widget tests pump the real `HomeScreen`/`ActiveRideScreen`, whose `FlutterMap` builds a live `NetworkTileProvider` against `tile.openstreetmap.org`, so the suite makes real network requests; there is no `HttpOverrides` or tile-layer override. A shared tile seam (or `HttpOverrides`) removes the dependency; the open `[map]_android_tile_access.md` adds the shared `mapTileLayerProvider` nullable test seam (`shared/lib/src/map/map_tile_layer.dart`; plan §3 + §5) and **should absorb this when it lands** | mounting tests `test/features/home/presentation/home_screen_test.dart:158`, `test/features/home/presentation/active_ride_screen_test.dart:247`, `test/features/navigation/rider_sidebar_test.dart:105`; live layer `features/home/presentation/home_screen.dart:412-420`, `features/home/presentation/active_ride_screen.dart:497-505`; audit `tests/AUDIT_REPORT.md:78-80` | low | [map] |
+| 25 | **Test-audit follow-up (tracked, not a code defect):** rider widget tests pumped the real `HomeScreen`/`ActiveRideScreen`, whose `FlutterMap` built a live `NetworkTileProvider` against `tile.openstreetmap.org`, so the suite made real network requests. — **RESOLVED (absorbed)** by Landed `[map]`: the shared nullable `mapTileLayerProvider` seam now exists and the three mounting suites override it to `null` | `shared/lib/src/map/map_tile_layer.dart:21`; overrides `test/features/home/presentation/home_screen_test.dart:131`, `test/features/home/presentation/active_ride_screen_test.dart:300`, `test/features/navigation/rider_sidebar_test.dart:84`; audit `tests/AUDIT_REPORT.md:78-80` | low | [map] |
 | 26 | **Test-audit follow-up — shared-owned (tracked, not a code defect):** `shared/test/network/websocket_service_test.dart` drives the heartbeat in real time (`waitFor` + fixed `Future.delayed`s) instead of `fakeAsync`; a `Timer`/clock seam in `WebSocketService` is the fix. `shared/` has no `STATUS.md`, so it is recorded here as a shared-owned follow-up | test delays `shared/test/network/websocket_service_test.dart:7-18,99,120-122,137-139,152-154`; service timers `shared/lib/src/network/websocket_service.dart:40-41,135,152`; audit `tests/AUDIT_REPORT.md:81-83` | low | shared |
 
-*Rows #25–#26 track `tests/AUDIT_REPORT.md` §5.2–§5.3. #25 is absorbed by the open `[map]_android_tile_access.md`; #26 is shared-owned (no shared `STATUS.md`).*
+*Rows #25–#26 track `tests/AUDIT_REPORT.md` §5.2–§5.3. #25 is resolved by Landed `[map]`; #26 is shared-owned (no shared `STATUS.md`).*
 
 ## Open plans
 
@@ -369,24 +394,23 @@ unless they cross a package, in which case they are repo-relative
 | `[auth]_web_session_persistence.md` | auth | `[]` | Web cold-start session survival: `checkAuth` recovers via the refresh token and clears only on a definitive 401/400 (transient network/timeout/5xx keeps tokens); `refreshToken` is single-flight and never server-revokes on a transient failure; storage errors never escape `login`/`checkAuth`/`refreshToken`; web `AuthStorage` uses a conditional-import `localStorage` backend. Shared change consumed by both apps (driver counterpart references it). Flutter-only, no API change. |
 | `[nav]_home_destination.md` | nav | `[]` | Home as a first-class shared destination: add `AppNavDestination.home` (`home`/`Home`/`Icons.home_outlined`) and a leading `AppNavSection.home('HOME')` (or first under `account`), prepend it to `buildRiderNavItems()` so the drawer **and** the profile `AppNavLinkCard` can reach `/home`; update the shared/rider parity suites. **CROSS-DOMAIN** — the driver plan adopts the same two shared symbols. No API change. |
 | `[nav]_back_navigation.md` | nav | `[]` | A back affordance on every screen: a shared router-free `AppBackButton` (`onPressed`/`onFallback`, `Icons.arrow_back`; reconciled with the parallel driver plan), a shell-level back on the five non-home sections (recommended `leading → /home`, hamburger to `actions`), explicit backs on `/register`+`/forgot-password` → `/login`, `/location-search` standardization, and arrow/guard decisions for `/driver-matching` + `/active-ride`; `/home`, `/login`, `/splash` stay roots. **CROSS-DOMAIN** — the driver plan adopts `AppBackButton`. No API change. |
-| `[map]_android_tile_access.md` | map | `[]` | **Android-only; LOCKED 2026-10-06.** Add `INTERNET` to the main manifest; OSM-compliance now — drop the spoofed desktop `User-Agent`, send a truthful UA in the exact form `<app>/<version> (+contact: <email>)` (rider `rider_app/…`, driver `driver_app/…`), use `userAgentPackageName` `com.example.rider_app` (finalized by `[release]`); **fully shared** tile factory (`shared/lib/src/map/map_tile_config.dart` + `map_tile_layer.dart` + `map_tile_attribution.dart`; `shared/` gains `flutter_map`) with a nullable provider test seam; render the **shared attribution widget** now; leave the optional `MAP_TILE_API_KEY` seam. UA contact ships as the placeholder `MapTileConfig.defaultContact = 'tiles@example.invalid'` — **must not ship** (Pre-release checklist). Defines the canonical shared contract the driver adopts (co-owned); records the shared-background-service handoff. |
-| `[map]_self_hosted_tile_host.md` | map | `[]` — **deferred; gated on `[map]_android_tile_access.md`** | **DEFERRED.** Stand up a self-hosted tile server and replace the OSM public host (values-only change to the shared `MapTileConfig`); removes third-party policy risk; infra + migration decisions recorded. Authored once in the rider domain; driver consumes. |
-| `[map]_runtime_remote_tile_config.md` | map | `[]` — **deferred; gated on `[map]_android_tile_access.md`** | **DEFERRED.** Fetch tile URL/key/attribution at runtime instead of compile-time `String.fromEnvironment`; shared factory unchanged; **compile-time default + last-good-cache fallback** so a config outage never blanks the map. The remote-config endpoint owner/shape is **UNSPECIFIED** (an open question to resolve only when scheduled, **not** an `api_plans` prerequisite). Authored once in the rider domain; driver consumes. |
+| `[map]_self_hosted_tile_host.md` | map | `[]` — **deferred; gate met by Landed `[map]`** | **DEFERRED.** Stand up a self-hosted tile server and replace the OSM public host (values-only change to the shared `MapTileConfig`); removes third-party policy risk; infra + migration decisions recorded. Authored once in the rider domain; driver consumes. |
+| `[map]_runtime_remote_tile_config.md` | map | `[]` — **deferred; gate met by Landed `[map]`** | **DEFERRED.** Fetch tile URL/key/attribution at runtime instead of compile-time `String.fromEnvironment`; shared factory unchanged; **compile-time default + last-good-cache fallback** so a config outage never blanks the map. The remote-config endpoint owner/shape is **UNSPECIFIED** (an open question to resolve only when scheduled, **not** an `api_plans` prerequisite). Authored once in the rider domain; driver consumes. |
 | `[release]_app_id_and_store_readiness.md` | release | `[]` | **DEFERRED.** Finalize the real reverse-DNS `applicationId` for **BOTH** apps; update Android/iOS build files; align `MapTileConfig.userAgentPackageName` (must match the chosen id) in the same commit; signing/build config; store metadata/data-safety. Canonical file — the driver domain references it, does not duplicate. Until it lands `userAgentPackageName` tracks the stock `com.example.rider_app`/`com.example.driver_app`. |
-| `[location]_android_location_permission.md` | location | `[]` | **Android-only; LOCKED 2026-10-06.** Add `ACCESS_FINE_LOCATION` + `ACCESS_COARSE_LOCATION` + `uses-feature android.hardware.location.gps required="true"` (accept that Play may hide the app from non-GPS devices) to the main manifest; **no** `ACCESS_BACKGROUND_LOCATION`; **no** minSdk change; manifests-only — the `deniedForever` settings deep-link is handed to the landed `[location]` fallback (see Landed `[location]`). Cross-domain: driver main manifest has the same gap plus a driver-specific background question. |
 
 The two `[map]` deferred plans are **siblings, not a chain**: both are alternatives/composables over
-the same shared `MapTileConfig`, gated behind the open `[map]_android_tile_access.md`. They stay
-unnumbered with `depends_on: []` and carry `status: deferred` (numbering is reserved for sequential
-stages; two same-tag branch heads cannot both be `01_`). Flip a plan's `status` to `open` and revisit
-its `depends_on` when the active map plan lands.
+the same shared `MapTileConfig`, gated behind the now-landed `[map]` work (STATUS.md → Landed `[map]`).
+They stay unnumbered with `depends_on: []` and carry `status: deferred` (numbering is reserved for
+sequential stages; two same-tag branch heads cannot both be `01_`). Their gate is met; flip a plan's
+`status` to `open` when its product trigger is chosen.
 
 Earlier wave plans — `[tracking]_ride_detail_receipt_rating.md` (LC-3 + LC-4) and
 `01_[ontrip]_live_route_and_eta.md` — landed, were condensed into Landed above, and were deleted
 (2026-10-03). The most recent open plan, `[multi]_rider_stop_list_ui.md`, landed, was condensed into
 Landed `[multi]` above, and was deleted (2026-10-06). `[home]_bottom_panel_resize.md` and
 `[rating]_unify_rating_ui.md` landed, were condensed into Landed `[home]`/`[rating]` above, and
-were deleted (2026-10-08).
+were deleted (2026-10-08). `[map]_android_tile_access.md` and `[location]_android_location_permission.md`
+landed, were condensed into Landed `[map]`/`[location]` above, and were deleted (2026-10-08).
 
 ## Invariants
 
@@ -413,7 +437,7 @@ were deleted (2026-10-08).
   `shared/lib/src/location/` and is barrel-exported for both apps, so the rider and driver cannot
   diverge. It is owned/designed by `driver_app_plans/[location]_background_tracking.md`; this domain
   only records the ownership/shared boundary and keeps rider behavior foreground-only (no
-  `ACCESS_BACKGROUND_LOCATION`). Not designed in `[map]_android_tile_access.md`, which only notes the
+  `ACCESS_BACKGROUND_LOCATION`). Not designed in the landed `[map]` work, which only notes the
   handoff.
 - **The shell owns the only `Scaffold` on the six section routes.** Section screens are body-only.
   In particular the rider settings screen composes the shared `AppSettingsSection`/`AppSettingsRow`
@@ -572,3 +596,32 @@ Melos 8). Bug #21 marked FIXED; bug #22 extended to the same-class tautological
 `active_ride_screen_test.dart:1164` `findsNothing`. **Docs-only change — no source or test
 edited here.** Dangling-`depends_on` check re-run: every rider plan's `depends_on` is `[]` — no
 dangling reference.
+
+`[map]` + `[location]` Android tile/location condensation (2026-10-08): static `file:line` evidence
+verified against the post-landing tree; both landing claims adversarially reviewed and
+**CONFIRMED-LANDED**. Gates re-run independently: `melos run analyze` clean; `melos run test` green —
+rider **373**, driver **302**, shared **182** (2026-10-08; Linux FVM SDK + native Melos 8; `melos`
+was not re-run by this condensation). Both landed plan files were deleted and their Open-plans rows
+removed. Known bugs #14/#15 (Android release network + OSM "Access Blocked") and #16 (Android location
+permission) are **FIXED**; test-audit bug #25 is **RESOLVED (absorbed)** by the shared nullable
+`mapTileLayerProvider` seam. Bugs #17/#22/#23 remain open (B5.2 test-hardening work).
+**Plan↔code drift:** `[map]` specified `APP_VERSION` `defaultValue: 'dev'`; the landed/fixed code uses
+`'1.0.0'` (restores the Settings footer version), guarded by
+`test/features/settings/presentation/settings_screen_test.dart:59-69`. The rider tile provider also
+passes a real ops contact (`ricardoapuch@gmail.com`) rather than shipping `MapTileConfig.defaultContact`
+(`tiles@example.invalid`), so the rider UA is contact-bearing now; the shared placeholder remains the
+default for callers that do not override it.
+**UNVERIFIABLE in this WSL tree:** the Android on-device/manifest symptoms. Close on an Android host
+with `flutter build apk --release` then inspect the **merged** manifest for
+`INTERNET`/`ACCESS_FINE_LOCATION`/`ACCESS_COARSE_LOCATION` +
+`uses-feature android.hardware.location.gps required="true"` (and the absence of
+`ACCESS_BACKGROUND_LOCATION`), install and confirm tiles render (not "Access Blocked") with visible
+attribution, the OS permission dialog appears and a fix is obtained, and a ride request reaches the
+API — and temporarily mock/capture the tile host to assert the outbound UA is exactly
+`rider_app/1.0.0 (+contact: ricardoapuch@gmail.com)` (never the desktop Chrome string), names
+`com.example.rider_app`, and contains no `tiles@example.invalid`. Dangling-`depends_on` check re-run:
+every remaining rider plan's `depends_on` is `[]` — no dangling reference. The two deferred `[map]`
+siblings' prose gates were re-pointed at Landed `[map]` (STATUS.md) instead of the deleted file.
+**Driver-domain drift (report only, not touched):** `driver_app_plans/[map]_android_tile_access.md`
+and `driver_app_plans/[location]_android_location_permission.md` still reference the deleted rider
+plan filenames; the driver domain must re-point those at Landed `[map]`/`[location]`.

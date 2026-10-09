@@ -6,7 +6,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
 import 'package:http_mock_adapter/http_mock_adapter.dart';
 import 'package:latlong2/latlong.dart';
-import 'package:rider_app/core/api/api_client.dart';
+import 'package:ride_hailing_shared/ride_hailing_shared.dart';
 import 'package:rider_app/core/auth/auth_provider.dart';
 import 'package:rider_app/features/home/data/driver_tracking_provider.dart';
 import 'package:rider_app/features/home/data/location_ping_service.dart';
@@ -296,6 +296,8 @@ void main() {
     container = ProviderContainer(
       overrides: [
         apiClientProvider.overrideWithValue(apiClient),
+        // No tiles: the map must not touch the network under flutter_test.
+        mapTileLayerProvider.overrideWith((ref, config) => null),
         rideStatusProvider.overrideWith((ref) => rideNotifier),
         driverTrackingProvider.overrideWith((ref) {
           // Production durations (5 s tick, 10 s silence window) so the test

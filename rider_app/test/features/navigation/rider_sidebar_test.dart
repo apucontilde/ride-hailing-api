@@ -80,6 +80,8 @@ void main() {
         authStorageProvider.overrideWithValue(mockStorage),
         apiClientProvider.overrideWithValue(mockApiClient),
         webSocketServiceProvider.overrideWithValue(mockWebSocketService),
+        // No tiles: the Home map must not touch the network under flutter_test.
+        mapTileLayerProvider.overrideWith((ref, config) => null),
       ],
     );
     addTearDown(container.dispose);

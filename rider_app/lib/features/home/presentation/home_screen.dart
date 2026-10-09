@@ -4,6 +4,7 @@ import 'package:go_router/go_router.dart';
 import 'package:flutter_map/flutter_map.dart';
 import 'package:latlong2/latlong.dart';
 import 'package:ride_hailing_shared/ride_hailing_shared.dart';
+import 'package:rider_app/core/map/rider_map_tile.dart';
 import '../data/home_provider.dart';
 import '../data/home_route_preview.dart';
 import '../data/location_ping_service.dart';
@@ -378,6 +379,11 @@ class _HomeScreenState extends ConsumerState<HomeScreen>
     // while the row still showed the stale distance).
     final preview = HomeRoutePreview.fromAsync(routeAsync);
 
+    // The shared tile factory owns the `TileLayer`; this screen only supplies
+    // the app's tile config and renders whatever it returns (null in tests).
+    final tileConfig = ref.watch(riderMapTileConfigProvider);
+    final tile = ref.watch(mapTileLayerProvider(tileConfig));
+
     // Body-only: the shell (`RiderShell`, wired in `core/router/app_router.dart`)
     // owns the single `Scaffold` + drawer. Keeping no `Scaffold` here is what
     // makes the overlay toggle's `Scaffold.of(context)` open the shell drawer.
@@ -409,16 +415,7 @@ class _HomeScreenState extends ConsumerState<HomeScreen>
                     initialZoom: 15.0,
                   ),
                   children: [
-            TileLayer(
-              urlTemplate: 'https://tile.openstreetmap.org/{z}/{x}/{y}.png',
-              userAgentPackageName: 'com.rider.app',
-              tileProvider: NetworkTileProvider(
-                headers: {
-                  'User-Agent':
-                      'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/150.0.0.0 Safari/537.36',
-                },
-              ),
-            ),
+            ?tile,
             // `[ontrip]` parity: only the API's own geometry is ever drawn. A
             // ready route is solid blue; an API-flagged estimate is grey +
             // dashed so it cannot read as road following; a failure draws
@@ -490,6 +487,7 @@ class _HomeScreenState extends ConsumerState<HomeScreen>
                     ),
                 ],
               ),
+            MapTileAttribution(config: tileConfig),
           ],
         ),
       ),

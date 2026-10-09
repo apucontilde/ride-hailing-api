@@ -3,6 +3,7 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:mocktail/mocktail.dart';
 import 'package:go_router/go_router.dart';
+import 'package:rider_app/config.dart';
 import 'package:rider_app/core/auth/auth_provider.dart';
 import 'package:rider_app/core/auth/auth_storage.dart';
 import 'package:rider_app/core/api/api_client.dart';
@@ -54,6 +55,18 @@ void main() {
       ),
     );
   }
+
+  testWidgets('renders the real release version in the footer',
+      (WidgetTester tester) async {
+    await tester.pumpWidget(createTestWidget());
+    await tester.pumpAndSettle();
+
+    expect(
+      find.text('v${ApiConfig.appVersion} \u00b7 companion to driver_app'),
+      findsOneWidget,
+    );
+    expect(find.text('v1.0.0 \u00b7 companion to driver_app'), findsOneWidget);
+  });
 
   testWidgets('cancelling the dialog keeps the session',
       (WidgetTester tester) async {

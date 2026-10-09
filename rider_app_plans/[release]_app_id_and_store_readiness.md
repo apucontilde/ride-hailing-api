@@ -15,9 +15,9 @@ status: deferred
 > gated on a product release decision — not a fix for a broken landed capability. It is independent
 > (`depends_on: []`) and unnumbered (no open-plan prerequisite).
 >
-> **CROSS-DOMAIN, authored once in the rider domain.** `[map]_android_tile_access.md` (§3) depends on
-> this plan for the final id value; the driver map plan adopts the same finalized id. `driver-planner`
-> should add an Open-plans row pointing at this file rather than re-authoring it.
+> **CROSS-DOMAIN, authored once in the rider domain.** Landed `[map]` (STATUS.md) uses this plan's
+> final id value; the driver map plan adopts the same finalized id. `driver-planner` should add an
+> Open-plans row pointing at this file rather than re-authoring it.
 
 ## Goal
 
@@ -35,9 +35,9 @@ tracks whatever the current stock id is.
   `com.example.riderApp` / `Runner`).
 - Driver counterpart: `driver_app/android/app/build.gradle.kts` `applicationId` →
   `com.example.driver_app` (stock).
-- `[map]_android_tile_access.md` §3 sets `userAgentPackageName: 'com.example.rider_app'` (driver:
-  `com.example.driver_app`) as the current truthful value; the shared tile factory has no other notion
-  of the app id.
+- Landed `[map]` (`shared/lib/src/map/map_tile_config.dart`) sets
+  `userAgentPackageName: 'com.example.rider_app'` (driver: `com.example.driver_app`) as the current
+  truthful value; the shared tile factory has no other notion of the app id.
 
 ## Scope
 
@@ -68,11 +68,11 @@ tracks whatever the current stock id is.
 - The shared `MapTileConfig.userAgentPackageName` (and the app-local `riderMapTileConfigProvider` /
   driver provider values) **must match the finalized `applicationId`** — an OSM-policy-compliant UA has
   to name the real package. Update both apps' providers in the same commit as the identity change.
-- The UA app label/version (`<app>/<version> (+contact: <email>)`, see
-  `[map]_android_tile_access.md` §2) does not change; only the package-name component follows the id.
+- The UA app label/version (`<app>/<version> (+contact: <email>)`, see Landed `[map]`) does not change;
+  only the package-name component follows the id.
 - **Until this plan lands**, `userAgentPackageName` tracks the current stock id
-  (`com.example.rider_app` / `com.example.driver_app`) — which is exactly what
-  `[map]_android_tile_access.md` specifies now. Do not block the map plan on this deferred plan.
+  (`com.example.rider_app` / `com.example.driver_app`) — which is exactly what Landed `[map]` shipped.
+  Do not block on this deferred plan.
 
 ### 4. Signing / build configuration
 
@@ -90,12 +90,12 @@ tracks whatever the current stock id is.
 - Play Console / App Store Connect listing records for **both** apps.
 - Cross-check policy declarations owned by feature plans: background location (driver,
   `driver_app_plans/[location]_background_tracking.md`) and the tile-provider attribution
-  (`[map]_android_tile_access.md`) must be reflected in the store data-safety forms before release.
+  (Landed `[map]`) must be reflected in the store data-safety forms before release.
 
 ## Out of scope
 
-- The actual permission/manifest changes (owned by `[map]_android_tile_access.md`,
-  `[location]_android_location_permission.md`, and the driver equivalents).
+- The actual permission/manifest changes (landed in `[map]`/`[location]` — STATUS.md — and the driver
+  equivalents).
 - The tile provider/attribution behavior itself.
 - Any API/Go change.
 
@@ -103,8 +103,9 @@ tracks whatever the current stock id is.
 
 - **Canonical here in the rider domain.** `driver-planner` references this file for the driver
   `applicationId` and store steps; the driver does not duplicate the plan.
-- `[map]_android_tile_access.md` depends on this plan for the final `userAgentPackageName` value and
-  records the pre-release "placeholder must not ship" checklist alongside it.
+- Landed `[map]` depends on this plan for the final `userAgentPackageName` value and recorded the
+  pre-release "placeholder must not ship" checklist alongside it (the rider provider already passes a
+  real contact).
 - Not a blocker for any open feature plan: until this lands, the stock ids remain the truthful values.
 
 ## Verification

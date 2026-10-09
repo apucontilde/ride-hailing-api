@@ -6,18 +6,19 @@ status: deferred
 
 # [map] Runtime-fetched remote tile config (deferred follow-up)
 
-> **DEFERRED** — do not start until `[map]_android_tile_access.md` has landed (the shared
-> `MapTileConfig` factory + `mapTileLayerProvider` seam must exist). Owner: `rider-planner`. Verify:
-> `melos run analyze` + `melos run test`.
+> **DEFERRED** — the gate has landed: Landed `[map]` (`rider_app_plans/STATUS.md`) ships the shared
+> `MapTileConfig` factory + `mapTileLayerProvider` seam. Owner: `rider-planner`. Verify:
+> `melos run analyze` + `melos run test`. Start only on the product trigger below.
 >
 > **CROSS-DOMAIN, authored once in the rider domain.** `driver_app_plans/[map]_android_tile_access.md`
 > consumes this plan; `driver-planner` should reference this file rather than re-author it. Canonical
-> shared symbols are defined in `[map]_android_tile_access.md` §3 and are **not** redefined here.
+> shared symbols are defined in Landed `[map]` (`rider_app_plans/STATUS.md`; `shared/lib/src/map/**`)
+> and are **not** redefined here.
 
 ## Gate / trigger
 
-- **Gate:** `[map]_android_tile_access.md` landed (shared tile factory + attribution widget; apps feed
-  a `MapTileConfig`).
+- **Gate (met):** Landed `[map]` (`rider_app_plans/STATUS.md`) — shared tile factory + attribution
+  widget; apps feed a `MapTileConfig`.
 - **Trigger:** the product wants to change the tile URL / provider / key **without rebuilding and
   re-releasing** the apps (e.g. switching hosted provider, rotating a key, or pointing at the
   self-hosted server).
@@ -71,7 +72,7 @@ only *where the config comes from* changes.
 
 ## Out of scope
 
-- The active Android tile-access fix and the shared contract (owner: `[map]_android_tile_access.md`).
+- The landed Android tile-access fix and the shared contract (STATUS.md → Landed `[map]`).
 - Standing up tile infrastructure (owner: `[map]_self_hosted_tile_host.md`); this plan can *serve* the
   self-hosted URL but does not create it.
 - Any remote-config API endpoint — owner and shape are UNSPECIFIED; an open question to raise only when

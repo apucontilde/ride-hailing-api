@@ -6,18 +6,19 @@ status: deferred
 
 # [map] Self-hosted tile server (deferred follow-up)
 
-> **DEFERRED** — do not start until `[map]_android_tile_access.md` has landed (the shared
-> `MapTileConfig` + `buildMapTileLayer`/`mapTileLayerProvider` seam must exist). Owner:
-> `rider-planner`. Verify: `melos run analyze` + `melos run test`.
+> **DEFERRED** — the gate has landed: Landed `[map]` (`rider_app_plans/STATUS.md`) ships the shared
+> `MapTileConfig` + `buildMapTileLayer`/`mapTileLayerProvider` seam. Owner: `rider-planner`. Verify:
+> `melos run analyze` + `melos run test`. Start only on the product trigger below.
 >
 > **CROSS-DOMAIN, authored once in the rider domain.** `driver_app_plans/[map]_android_tile_access.md`
 > consumes this plan; `driver-planner` should reference this file rather than re-author it. Canonical
-> shared symbols are defined in `[map]_android_tile_access.md` §3 and are **not** redefined here.
+> shared symbols are defined in Landed `[map]` (`rider_app_plans/STATUS.md`; `shared/lib/src/map/**`)
+> and are **not** redefined here.
 
 ## Gate / trigger
 
-- **Gate:** `[map]_android_tile_access.md` landed (shared tile factory + attribution widget in
-  `shared/lib/src/map/**`; both apps rendering through it).
+- **Gate (met):** Landed `[map]` (`rider_app_plans/STATUS.md`) — shared tile factory + attribution
+  widget in `shared/lib/src/map/**`; both apps render through it.
 - **Trigger:** the product chooses option (c) — own infrastructure — over the OSM public host and over
   a hosted provider key.
 
@@ -39,7 +40,7 @@ server, so the app no longer depends on a third party's tile-usage policy, rate 
 
 ### 2. Point the shared config at the new host (values only — no widget/code change)
 
-- The shared symbols from `[map]_android_tile_access.md` §3 stay exactly as they are; only values
+- The shared symbols from Landed `[map]` (`shared/lib/src/map/**`) stay exactly as they are; only values
   change:
   - `MapTileConfig.urlTemplate` → the self-hosted URL template.
   - `MapTileConfig.attribution` → the self-hosted attribution text (the shared `MapTileAttribution`
@@ -68,7 +69,7 @@ server, so the app no longer depends on a third party's tile-usage policy, rate 
 
 ## Out of scope
 
-- The active Android tile-access fix and the shared contract (owner: `[map]_android_tile_access.md`).
+- The landed Android tile-access fix and the shared contract (STATUS.md → Landed `[map]`).
 - Runtime-fetched config (owner: `[map]_runtime_remote_tile_config.md`) — although the two compose
   (a self-hosted URL can be served by the runtime config).
 - Vector styling, offline/caching tile layers, and API routing proxies.

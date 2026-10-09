@@ -5,6 +5,7 @@ import 'package:flutter_map/flutter_map.dart';
 import 'package:go_router/go_router.dart';
 import 'package:latlong2/latlong.dart';
 import 'package:ride_hailing_shared/ride_hailing_shared.dart';
+import 'package:rider_app/core/map/rider_map_tile.dart';
 import '../model/driver.dart';
 import '../model/fare.dart';
 import '../model/place.dart';
@@ -484,6 +485,11 @@ class _ActiveRideScreenState extends ConsumerState<ActiveRideScreen>
         ? null
         : LatLng(driverLocation.lat, driverLocation.lng);
 
+    // The shared tile factory owns the `TileLayer`; this screen only supplies
+    // the app's tile config and renders whatever it returns (null in tests).
+    final tileConfig = ref.watch(riderMapTileConfigProvider);
+    final tile = ref.watch(mapTileLayerProvider(tileConfig));
+
     return Scaffold(
       body: Stack(
         children: [
@@ -494,15 +500,7 @@ class _ActiveRideScreenState extends ConsumerState<ActiveRideScreen>
               initialZoom: 15.0,
             ),
             children: [
-              TileLayer(
-                urlTemplate: 'https://tile.openstreetmap.org/{z}/{x}/{y}.png',
-                userAgentPackageName: 'com.rider.app',
-                tileProvider: NetworkTileProvider(
-                  headers: {
-                    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/150.0.0.0 Safari/537.36',
-                  },
-                ),
-              ),
+              ?tile,
               // `[ontrip]`: the server's road route for the trip. A ready route
               // is solid; an `is_estimate` route is grey + dashed so it can
               // never read as road following. A failed route draws nothing —
@@ -541,6 +539,7 @@ class _ActiveRideScreenState extends ConsumerState<ActiveRideScreen>
                     ),
                 ],
               ),
+              MapTileAttribution(config: tileConfig),
             ],
           ),
           if (tripRoute.isEstimate || tripRoute.hasError)
