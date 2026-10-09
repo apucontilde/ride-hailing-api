@@ -210,6 +210,22 @@
   `rider_app/test/core/platform/enter_to_submit_test.dart` and
   `rider_app/test/features/auth/presentation/login_screen_test.dart:350-448` (desktop Enter once /
   mobile never / in-flight double never). App-local only — no `shared/`/API/driver change.
+- Web session persistence (stop clearing the session too eagerly) — shared `AppAuthController`:
+  `_isDefinitiveAuthFailure` treats only **400/401** as a dead session (timeout / connection
+  error / 5xx / 429 / parse stay transient) `shared/lib/src/auth/app_auth_controller.dart:135-144`;
+  `checkAuth` recovers a refresh-token-only cold start and retries `/me` once after a 401
+  (`:146-204`); `refreshToken()` is single-flight (`:397-398`) and never calls `logout()` on
+  failure — a definitive failure clears locally via `_clearLocalSession` (`:254-265`), a transient
+  one keeps the tokens (`:435-445`); a throwing storage read is `readFailed` and keeps the session
+  (`_RefreshOutcome` `:19-25`, `_doRefresh` `:403-410`, `_settleFailedRefresh` `:228-237`); `login`
+  hardens `saveTokens` (`:340-348`). Web `AuthStorage` picks `window.localStorage` at compile time
+  via a conditional import (`shared/lib/src/auth/auth_storage.dart:4-5`,
+  `auth_key_value_store_web.dart:11,33`) with reads returning `null` / writes swallowing
+  (`auth_storage.dart:59-81`); `shared/pubspec.yaml:17` adds `web: ^1.1.1`. Tests
+  `shared/test/auth/app_auth_controller_test.dart` (+13: single-flight, definitive/transient, the
+  throwing-read and `onLoggedOut`-once cases) and `shared/test/auth/auth_storage_test.dart`
+  (round-trip, failure swallowing, and the web-only `localStorage` test skipped on the VM at
+  `:93-104`, verified on Chrome). Dev port pinned `scripts/dev-all.sh:30,50-52,100-103`.
 
 ### [push]
 - Rider device-token registration seam (register on every authenticated transition, unregister
@@ -422,7 +438,6 @@ unless they cross a package, in which case they are repo-relative
 
 | File | Tag | Depends on | What remains |
 | --- | --- | --- | --- |
-| `[auth]_web_session_persistence.md` | auth | `[]` | Web cold-start session survival: `checkAuth` recovers via the refresh token and clears only on a definitive 401/400 (transient network/timeout/5xx keeps tokens); `refreshToken` is single-flight and never server-revokes on a transient failure; storage errors never escape `login`/`checkAuth`/`refreshToken`; web `AuthStorage` uses a conditional-import `localStorage` backend. Shared change consumed by both apps (driver counterpart references it). Flutter-only, no API change. |
 | `[map]_self_hosted_tile_host.md` | map | `[]` — **deferred; gate met by Landed `[map]`** | **DEFERRED.** Stand up a self-hosted tile server and replace the OSM public host (values-only change to the shared `MapTileConfig`); removes third-party policy risk; infra + migration decisions recorded. Authored once in the rider domain; driver consumes. |
 | `[map]_runtime_remote_tile_config.md` | map | `[]` — **deferred; gate met by Landed `[map]`** | **DEFERRED.** Fetch tile URL/key/attribution at runtime instead of compile-time `String.fromEnvironment`; shared factory unchanged; **compile-time default + last-good-cache fallback** so a config outage never blanks the map. The remote-config endpoint owner/shape is **UNSPECIFIED** (an open question to resolve only when scheduled, **not** an `api_plans` prerequisite). Authored once in the rider domain; driver consumes. |
 | `[release]_app_id_and_store_readiness.md` | release | `[]` | **DEFERRED.** Finalize the real reverse-DNS `applicationId` for **BOTH** apps; update Android/iOS build files; align `MapTileConfig.userAgentPackageName` (must match the chosen id) in the same commit; signing/build config; store metadata/data-safety. Canonical file — the driver domain references it, does not duplicate. Until it lands `userAgentPackageName` tracks the stock `com.example.rider_app`/`com.example.driver_app`. |
@@ -683,6 +698,25 @@ adversarially reviewed and **CONFIRMED-FIXED**; bug **#22** is **CONFIRMED-CLOSE
 — flipping the production guard makes the new negative-control assertion fail). Dangling-`depends_on`
 check re-run: every remaining rider plan's `depends_on` is `[]` — no dangling reference.
 **Citation drift (report only):** the landing brief put the #17 evidence at
-`ride_estimate_sheet_test.dart:224-274` and #23 at `home_screen_test.dart:1318-1351`; the verified
-ranges are `:225-263` (file ends at 264) and `:1315-1348` respectively, and those are what this file
-records.
+  `ride_estimate_sheet_test.dart:224-274` and #23 at `home_screen_test.dart:1318-1351`; the verified
+  ranges are `:225-263` (file ends at 264) and `:1315-1348` respectively, and those are what this file
+  records.
+
+`[auth]` web-session-persistence condensation (2026-10-08): static `file:line` evidence verified
+against the post-landing tree; the eight behavioral claims were adversarially reviewed and
+**CONFIRMED** (Chrome web test 4/4), after which two residual drifts were fixed (a storage-read-throw
++ 401 wipe vector, and the untested `onLoggedOut()` hook). Gates independently run:
+`melos run analyze` clean; `melos run test` green — rider **394**, driver **316**, shared
+**205 passed + 1 skipped** (2026-10-08; Linux FVM SDK + native Melos 8; `melos` was not re-run by this
+condensation). The one skip is the browser-only `window.localStorage` case
+(`shared/test/auth/auth_storage_test.dart:93-104`), so that specific claim is **verified on Chrome**
+via `flutter test --platform chrome` from `shared/` — not by the VM suite. The shared websocket suite
+has a pre-existing real-time flake (recorded as bug #26) and is unrelated to this batch. The landed
+plan file was deleted and its Open-plans row removed. Dangling-`depends_on` check re-run: every
+remaining rider plan's `depends_on` is `[]` — no dangling reference.
+**Citation drift (report only):** the landing brief's line numbers predate the two post-review fixes
+(`app_auth_controller.dart` was edited after the review), so the brief's `_isDefinitiveAuthFailure`
+`:128-137`, `checkAuth` `:139-196`, `refreshToken` `:387-388`, `_clearLocalSession` `:244-255` and
+`login` `:328-338` are stale; the verified ranges recorded in Landed `[auth]` above
+(`:135-144`, `:146-204`, `:397-398`, `:254-265`, `:340-348`) are current. The `readFailed` tuple
+`:22,403-409,228-236` also drifted by one to `:22,403-410,228-237`.

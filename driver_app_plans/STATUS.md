@@ -53,6 +53,9 @@
 - `SafetyScreen`: SOS sends `lastPositionProvider` (guards on a missing fix rather than sending `null` coords) and feedback opens a dialog; both surface an ack/error SnackBar and state plainly that SOS does **not** contact emergency services (backend is ack-only) — `driver_app/lib/features/safety/presentation/safety_screen.dart:16,35`; entry row via the shared `AppSettingsSection`/`AppSettingsRow` — `driver_app/lib/features/settings/presentation/settings_screen.dart:71-80`; `/safety` route (outside the shell, keeps its back arrow) — `driver_app/lib/core/router/app_router.dart:106-109`.
 - Tests: `driver_app/test/features/safety/data/safety_repository_test.dart` (2: real repository through a Dio mock adapter pins URL + body for both calls), `driver_app/test/features/safety/presentation/safety_screen_test.dart` (6: SOS body/ack, no-fix guard, SOS failure, feedback `app_issue` + close, empty message no-op, feedback failure).
 
+### [auth]
+- Driver inherits the shared web-session-robustness core (consumed, not re-implemented): **definitive** auth failures (400/401) clear the local session while **transient** ones (timeout/connection/5xx/malformed) preserve tokens, refresh is single-flight across `checkAuth` + the 401 interceptor, and storage reads/writes are best-effort — `shared/lib/src/auth/app_auth_controller.dart:19-25,135-144,228-249,340-348,397-398,424-431`; web `AuthStorage` (conditional-import `localStorage`) `shared/lib/src/auth/auth_storage.dart:4-5,59-81`. The driver provider keeps the default `onForbiddenProfile()` (keeps the session, non-driver role) so a 403 from `/driver/me` reaches onboarding, and its `logout()` override still unregisters the push token **before** the bearer clear — `driver_app/lib/core/auth/auth_provider.dart:77-90`; default hook `shared/lib/src/auth/app_auth_controller.dart:120-125`. Condensed from `01_[auth]_web_session_persistence.md` (landed/deleted); acceptance test `driver_app/test/core/auth/auth_provider_test.dart:100-114` (the `getRefreshToken → null` stub at `:105` makes "clears session when driver fetch fails" exercise the genuine no-refresh-token path).
+
 ### [session]
 - Driver login adopts the shared **guarded switch-account** flow: before delegating, `_submit()` asks `AuthNotifier.needsAccountSwitch(email)` and, when already authenticated as someone else, shows the shared "Sign out of <current> and sign in as <new>?" confirmation and calls `switchAccount()` (which revokes the prior refresh token first) instead of clobbering the session — `driver_app/lib/features/auth/presentation/login_screen.dart:52-75`; shared controller `shared/lib/src/auth/app_auth_controller.dart:135,171`. Tests `driver_app/test/features/auth/presentation/login_screen_test.dart` (8; switch/cancel at :214, confirm revokes-then-logs-in at :245).
 
@@ -113,7 +116,6 @@ unambiguous; Go and cross-package paths are repo-relative. Never cite a bare
 
 | File | Tag | Depends on | What remains |
 | --- | --- | --- | --- |
-| `01_[auth]_web_session_persistence.md` | auth | rider_app_plans `[auth]_web_session_persistence.md` (open) | Driver acceptance/verification of the shared web session-persistence fix (cold start on web, refresh/sign-out definitive-vs-transient) and driver-only tests; the implementation is owned by the rider/shared plan and is **not** duplicated here. |
 | `[location]_background_tracking.md` | location | landed `[location]` foreground permissions (`driver_app_plans/STATUS.md` → Landed `[location]`) | **DEFERRED.** Keep an online/on-trip driver dispatchable while backgrounded: owns the coupled `ACCESS_BACKGROUND_LOCATION` + `FOREGROUND_SERVICE`/`FOREGROUND_SERVICE_LOCATION` permissions, an Android foreground service + persistent notification (`geolocator` `foregroundNotificationConfig`, with the plugin's activity-tied caveat and a durable background-isolate fallback), online/offline lifecycle (not the unconditional Home start), guards against a bare-permission non-fix, the shared `LocationHelper` opt-in change (coordinate the rider plan), and the Play Store background-location declaration. Target: bug #18. |
 | `rider_app_plans/[map]_self_hosted_tile_host.md` | map | [] — **deferred; rider `[map]` landed** | **DEFERRED; rider-authored, consumed by reference (not re-authored here).** Replace the OSM public host with a self-hosted tile server; values-only change to the shared `MapTileConfig`. |
 | `rider_app_plans/[map]_runtime_remote_tile_config.md` | map | [] — **deferred; rider `[map]` landed** | **DEFERRED; rider-authored, consumed by reference (not re-authored here).** Fetch tile URL/key/attribution at runtime instead of compile-time `String.fromEnvironment`; shared factory unchanged; needs an `api_plans` contract. |
@@ -125,12 +127,13 @@ consumed by reference) stay unnumbered and carry `status: deferred`. The two `[m
 stays unnumbered because it does not depend on an *open* plan. Flip a deferred plan's `status` to `open`
 and revisit its `depends_on` when its gate lands.
 
-The latest landings (2026-10-08) — `[map]_android_tile_access.md`,
-`[location]_android_location_permission.md`, `[nav]_home_destination.md`, `[nav]_back_navigation.md`,
-`[design]_shared_style_adoption.md` — were condensed into Landed →
-`[map]`/`[location]`/`[nav]`/`[design]` and deleted (bugs #14–#17 closed). Earlier,
-`01_[history]_rated_pagination_past_cap.md` landed 2026-10-05 and was deleted (Landed → `[history]`;
-bug #10 closed).
+The latest landing (2026-10-09) is `01_[auth]_web_session_persistence.md` (driver acceptance of the
+now-landed shared session-robustness core), condensed into Landed → `[auth]` and deleted. The
+2026-10-08 landings — `[map]_android_tile_access.md`, `[location]_android_location_permission.md`,
+`[nav]_home_destination.md`, `[nav]_back_navigation.md`, `[design]_shared_style_adoption.md` — were
+condensed into Landed → `[map]`/`[location]`/`[nav]`/`[design]` and deleted (bugs #14–#17 closed).
+Earlier, `01_[history]_rated_pagination_past_cap.md` landed 2026-10-05 and was deleted (Landed →
+`[history]`; bug #10 closed).
 
 All earlier wave plans (`[profile]_profile_settings_tests.md`, `[safety]_sos_feedback.md`,
 `01_[session]_switch_and_cancel_session.md`, `[nav]_app_wide_drawer.md`,
@@ -176,19 +179,22 @@ export PATH=~/fvm/default/bin:$HOME/.pub-cache/bin:$PATH   # Linux FVM SDK (the 
 melos run analyze
 melos run test
 ```
-Last verified 2026-10-08: full-workspace `melos run analyze` → driver/shared/rider **SUCCESS** (clean); `melos run test` → **driver 316**, rider 394, shared 189 — all passed. The `[design]` driver adoption's added empty-state pull-to-refresh test is the +1 over the earlier 315 count. Re-count, don't trust old totals (the 2026-10-08 audit's dedup of duplicate/placeholder suites explains the earlier drift from 302/165/363; the deleted `[design]` plan's own stale baseline `driver_app 337` was never a `STATUS.md` number). The 2026-10-05 `[history]` suites and adversarial checks (the `truncated`⇒`unknown` type, the `FutureProvider.family` `ride_id` resolution, the exact `GET /driver/ratings?ride_id=` shape, no residual hardcoded `$`/`toStringAsFixed`, the sole-currency aggregate rule) remain **CONFIRMED**; the `[design]` migration is likewise **CONFIRMED**, including the two regressions it first surfaced (dropped empty-state copy; nested-scrollable pull-to-refresh dead zone) now fixed and mutation/reproduction-proven. **Android on-device behavior is UNVERIFIABLE in this WSL tree** (no emulator/Gradle); close on an Android host with `flutter build apk --release`, inspect the **merged** release manifest for `INTERNET` + `ACCESS_FINE_LOCATION`/`ACCESS_COARSE_LOCATION` + `uses-feature android.hardware.location.gps required="true"` and **no** `ACCESS_BACKGROUND_LOCATION`, then install and confirm tiles render (not "Access Blocked"), attribution is visible, a driver goes online/receives an offer, and the outbound tile `User-Agent` is `driver_app/<appVersion> (+contact: ricardoapuch@gmail.com)` — not a browser string and not `com.driver.app`. This pass is **docs-only** (no driver source, manifest or test edited).
+Last verified 2026-10-09: full-workspace `melos run analyze` → driver/shared/rider **SUCCESS** (clean); `melos run test` → **driver 316**, rider 394, shared **205 (+1 skipped)** — all passed. The `[design]` driver adoption's added empty-state pull-to-refresh test is the +1 over the earlier 315 count; the shared bump from 189 is the landed `[auth]` session-robustness suites (`shared/test/auth/app_auth_controller_test.dart`, `shared/test/auth/auth_storage_test.dart`, `shared/test/auth/web_platform_probe.dart`), with the web probe skipped on the non-web VM. Re-count, don't trust old totals (the 2026-10-08 audit's dedup of duplicate/placeholder suites explains the earlier drift from 302/165/363; the deleted `[design]` plan's own stale baseline `driver_app 337` was never a `STATUS.md` number). The 2026-10-05 `[history]` suites and adversarial checks (the `truncated`⇒`unknown` type, the `FutureProvider.family` `ride_id` resolution, the exact `GET /driver/ratings?ride_id=` shape, no residual hardcoded `$`/`toStringAsFixed`, the sole-currency aggregate rule) remain **CONFIRMED**; the `[design]` migration is likewise **CONFIRMED**, including the two regressions it first surfaced (dropped empty-state copy; nested-scrollable pull-to-refresh dead zone) now fixed and mutation/reproduction-proven. **Android on-device behavior is UNVERIFIABLE in this WSL tree** (no emulator/Gradle); close on an Android host with `flutter build apk --release`, inspect the **merged** release manifest for `INTERNET` + `ACCESS_FINE_LOCATION`/`ACCESS_COARSE_LOCATION` + `uses-feature android.hardware.location.gps required="true"` and **no** `ACCESS_BACKGROUND_LOCATION`, then install and confirm tiles render (not "Access Blocked"), attribution is visible, a driver goes online/receives an offer, and the outbound tile `User-Agent` is `driver_app/<appVersion> (+contact: ricardoapuch@gmail.com)` — not a browser string and not `com.driver.app`. This pass is **docs-only** (no driver source, manifest or test edited).
 
-Cross-domain map/location/nav/design (2026-10-08): the rider canonical `[map]` shared tile contract
-and `[location]` manifest fix landed; the driver `[map]_android_tile_access.md`,
+Cross-domain auth/map/location/nav/design (2026-10-09): the shared web-session-robustness core
+(`rider_app_plans/[auth]_web_session_persistence.md`) landed, so the driver `[auth]` acceptance
+(`01_[auth]_web_session_persistence.md`) is condensed into Landed `[auth]` above and deleted; the
+driver provider keeps the default `onForbiddenProfile()` and the `logout()` push-unregister seam is
+unchanged. Earlier (2026-10-08), the rider canonical `[map]` shared tile contract and `[location]`
+manifest fix landed, and the driver `[map]_android_tile_access.md`,
 `[location]_android_location_permission.md`, `[nav]_home_destination.md`,
-`[nav]_back_navigation.md` and `[design]_shared_style_adoption.md` plans are now landed and deleted,
-condensed above. `depends_on` re-checked 2026-10-08 — **no dangling targets**:
-`01_[auth]_web_session_persistence.md` names the still-open
-`rider_app_plans/[auth]_web_session_persistence.md`; `[location]_background_tracking.md` names landed
-`[location]` capability; the two rider-authored deferred `[map]` rows
-(`rider_app_plans/[map]_self_hosted_tile_host.md`,
-`rider_app_plans/[map]_runtime_remote_tile_config.md`) resolve to existing files. No drift remains:
-the stale `[design]` prose calling the landed rider `[rating]_unify_rating_ui.md` "(open)" lived only
-in the now-deleted `[design]` plan file (rider work landed — `rider_app_plans/STATUS.md` → Landed
-`[rating]`). No source, manifest or test edited; the counts above come from the supplied 2026-10-08
+`[nav]_back_navigation.md` and `[design]_shared_style_adoption.md` plans were landed and deleted,
+condensed above. `depends_on` re-checked 2026-10-09 — **no dangling targets**:
+`[location]_background_tracking.md` names landed `[location]` capability; the two rider-authored
+deferred `[map]` rows (`rider_app_plans/[map]_self_hosted_tile_host.md`,
+`rider_app_plans/[map]_runtime_remote_tile_config.md`) resolve to existing files. The consumed shared
+evidence is recorded in `rider_app_plans/STATUS.md` → Landed `[auth]`. No drift remains: the stale
+`[design]` prose calling the landed rider `[rating]_unify_rating_ui.md` "(open)" lived only in the
+now-deleted `[design]` plan file (rider work landed — `rider_app_plans/STATUS.md` → Landed `[rating]`).
+No source, manifest or test edited by this pass; the counts above come from the supplied 2026-10-09
 re-run.
