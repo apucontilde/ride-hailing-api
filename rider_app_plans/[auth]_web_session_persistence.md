@@ -347,6 +347,6 @@ run.
 - **Unnumbered, `tag: auth`, `depends_on: []`.** The work is Flutter-only and has no *open-plan*
   prerequisite. The concurrent API contract plan is a coordination note, not a dependency, so it is
   **not** listed in `depends_on` and this file earns no `NN_` prefix (skill: `depends_on` non-empty
-  ⟺ `NN_` prefix, read as an **open-plan** target). It is a second independent plan under the
-  `auth` tag alongside `[auth]_enter_to_login_desktop.md`; independent chains under the same tag do
-  not number.
+  ⟺ `NN_` prefix, read as an **open-plan** target). It is an independent plan under the
+  `auth` tag (the sibling Enter-to-submit plan landed and was condensed into `STATUS.md` → Landed
+  `[auth]`, 2026-10-08); independent chains under the same tag do not number.

@@ -15,6 +15,7 @@ import 'package:rider_app/features/home/data/ride_status_provider.dart';
 import 'package:rider_app/features/home/data/trip_route_provider.dart';
 import 'package:rider_app/features/home/model/place.dart';
 import 'package:rider_app/features/home/presentation/active_ride_screen.dart';
+import 'package:rider_app/features/home/presentation/location_search_screen.dart';
 
 import '../../../support/fake_websocket_service.dart';
 
@@ -50,29 +51,29 @@ Map<String, dynamic> acceptedEvent({
   int etaSeconds = 300,
   bool includePickup = true,
 }) => {
-      'type': 'ride.updated',
-      'data': {
-        'ride_id': rideId,
-        'status': 'accepted',
-        'eta_seconds': etaSeconds,
-        'driver': {
-          'id': driverId,
-          'first_name': 'Maria',
-          'photo_url': 'https://example.com/maria.jpg',
-          'rating': rating,
-          'vehicle': {
-            'make': 'Toyota',
-            'model': 'Corolla',
-            'color': 'White',
-            'plate_number': 'AB123CD',
-          },
-          'location': {'lat': 9.93, 'lng': -84.09, 'heading': 90},
-        },
-        if (includePickup)
-          'pickup': {'lat': 9.9281, 'lng': -84.0907, 'address': 'Main St'},
-        'dropoff': {'lat': 9.94, 'lng': -84.10, 'address': 'Airport Rd'},
+  'type': 'ride.updated',
+  'data': {
+    'ride_id': rideId,
+    'status': 'accepted',
+    'eta_seconds': etaSeconds,
+    'driver': {
+      'id': driverId,
+      'first_name': 'Maria',
+      'photo_url': 'https://example.com/maria.jpg',
+      'rating': rating,
+      'vehicle': {
+        'make': 'Toyota',
+        'model': 'Corolla',
+        'color': 'White',
+        'plate_number': 'AB123CD',
       },
-    };
+      'location': {'lat': 9.93, 'lng': -84.09, 'heading': 90},
+    },
+    if (includePickup)
+      'pickup': {'lat': 9.9281, 'lng': -84.0907, 'address': 'Main St'},
+    'dropoff': {'lat': 9.94, 'lng': -84.10, 'address': 'Airport Rd'},
+  },
+};
 
 /// `GET /rides/{id}` body (`internal/model/ride.go`).
 Map<String, dynamic> rideJson({
@@ -111,7 +112,10 @@ enum RouteMock { road, estimate, http422, http500 }
 
 /// A road-shaped answer that reflects the requested leg, so the concatenation
 /// of the itinerary is visible.
-Map<String, dynamic> routeBody(RequestOptions options, {required bool estimate}) {
+Map<String, dynamic> routeBody(
+  RequestOptions options, {
+  required bool estimate,
+}) {
   final fromLat = double.parse(options.queryParameters['from_lat'].toString());
   final fromLng = double.parse(options.queryParameters['from_lng'].toString());
   final toLat = double.parse(options.queryParameters['to_lat'].toString());
@@ -130,44 +134,49 @@ Map<String, dynamic> routeBody(RequestOptions options, {required bool estimate})
 
 /// `GET /rides/{id}/receipt` body.
 Map<String, dynamic> receiptJson({double total = 2800.0}) => {
-      'receipt': {
-        'base_fare': 1200.0,
-        'distance_fare': 900.0,
-        'time_fare': 700.0,
-        'surge_multiplier': 1.25,
-        'total': total,
-      },
-    };
+  'receipt': {
+    'base_fare': 1200.0,
+    'distance_fare': 900.0,
+    'time_fare': 700.0,
+    'surge_multiplier': 1.25,
+    'total': total,
+  },
+};
 
 /// The `driver.location` WS event shape (`tests/ride_lifecycle_test.go`).
 Map<String, dynamic> driverLocationEvent(double lat, double lng) => {
-      'type': 'driver.location',
-      'data': {
-        'ride_id': 'ride-1',
-        'driver_id': 'driver-1',
-        'lat': lat,
-        'lng': lng,
-        'heading': 45,
-        'speed': 12.5,
-      },
-    };
+  'type': 'driver.location',
+  'data': {
+    'ride_id': 'ride-1',
+    'driver_id': 'driver-1',
+    'lat': lat,
+    'lng': lng,
+    'heading': 45,
+    'speed': 12.5,
+  },
+};
 
 void main() {
   late FakeWebSocketService ws;
   late RideStatusNotifier rideNotifier;
   late ApiClient apiClient;
   late DioAdapter dioAdapter;
+
   /// Captured from the `driverTrackingProvider` override so a test can read the
   /// real notifier's poll counters and `isPolling`.
   late DriverTrackingNotifier tracker;
+
   /// Captured from the `tripRouteProvider` override so a test can assert the
   /// refresh tick is stopped.
   late TripRouteNotifier tripRoute;
+
   /// The mutable `GET /rides/{id}` answer, so a destination change is just a
   /// reassignment before the `ride.updated` that triggers the re-request.
   late Map<String, dynamic> rideResponse;
+
   /// Every `GET /navigation/route` query, in order, to prove re-requests.
   late List<Map<String, dynamic>> routeRequests;
+
   /// The scope the screen runs in, so a test can read the pickup-return intent.
   late ProviderContainer container;
 
@@ -218,11 +227,17 @@ void main() {
           RouteMock.road => routeBody(options, estimate: false),
           RouteMock.estimate => routeBody(options, estimate: true),
           RouteMock.http422 => {
-              'error': {'code': 'VALIDATION_ERROR', 'message': 'invalid coordinates'},
+            'error': {
+              'code': 'VALIDATION_ERROR',
+              'message': 'invalid coordinates',
             },
+          },
           RouteMock.http500 => {
-              'error': {'code': 'INTERNAL', 'message': 'failed to calculate route'},
+            'error': {
+              'code': 'INTERNAL',
+              'message': 'failed to calculate route',
             },
+          },
         };
       });
     });
@@ -269,16 +284,18 @@ void main() {
           ),
         ),
         // The destination-change round trip: production routes this to the real
-        // search screen; the test records the pushed bias `extra` and pops a
-        // fixed `Place`, so the push contract (a non-null center) is what is
-        // under test, not the search UI.
+        // search screen, so the **real** `LocationSearchScreen` is mounted with
+        // the pushed bias. The screen still records the pushed bias `extra` and
+        // pops a fixed `Place`, so the push contract (a non-null center) stays
+        // under test. The screen's own blocking branch is covered by the
+        // negative-control pair in `location_search_screen_test.dart`.
         if (changeDestinationResult != null || searchExtras != null)
           GoRoute(
             path: '/location-search',
             builder: (_, state) {
-              searchExtras?.add(
-                (state.extra as Map?)?.cast<String, dynamic>() ?? {},
-              );
+              final extra =
+                  (state.extra as Map?)?.cast<String, dynamic>() ?? {};
+              searchExtras?.add(extra);
               return Builder(
                 builder: (context) {
                   WidgetsBinding.instance.addPostFrameCallback((_) {
@@ -286,7 +303,11 @@ void main() {
                       context.pop<Place>(changeDestinationResult);
                     }
                   });
-                  return const Scaffold(body: SizedBox.shrink());
+                  return LocationSearchScreen(
+                    hint: extra['hint'] as String? ?? 'Search destinations...',
+                    lat: extra['lat'] as double?,
+                    lng: extra['lng'] as double?,
+                  );
                 },
               );
             },
@@ -302,8 +323,7 @@ void main() {
         driverTrackingProvider.overrideWith((ref) {
           // Production durations (5 s tick, 10 s silence window) so the test
           // asserts the real schedule; `tester.pump` is what elapses them.
-          return tracker =
-              DriverTrackingNotifier(apiClient, ref);
+          return tracker = DriverTrackingNotifier(apiClient, ref);
         }),
         tripRouteProvider.overrideWith((ref) {
           return tripRoute = TripRouteNotifier(
@@ -343,8 +363,11 @@ void main() {
   /// outside the test's fake-async zone, so the first `pump` returns before the
   /// state change lands and the second one draws it. `pumpAndSettle` is the
   /// alternative where no `Timer.periodic` or `SnackBar` is in play.
-  Future<void> emitAndSettle(WidgetTester tester, Map<String, dynamic> event,
-      {bool settle = false}) async {
+  Future<void> emitAndSettle(
+    WidgetTester tester,
+    Map<String, dynamic> event, {
+    bool settle = false,
+  }) async {
     emit(event);
     if (settle) {
       await tester.pumpAndSettle();
@@ -373,13 +396,16 @@ void main() {
     final layer = tester.widget<MarkerLayer>(find.byType(MarkerLayer));
     for (final marker in layer.markers) {
       final child = marker.child;
-      if (child is Icon && child.icon == Icons.directions_car) return marker.point;
+      if (child is Icon && child.icon == Icons.directions_car) {
+        return marker.point;
+      }
     }
     return null;
   }
 
-  testWidgets('accepting a ride shows the active ride screen',
-      (WidgetTester tester) async {
+  testWidgets('accepting a ride shows the active ride screen', (
+    WidgetTester tester,
+  ) async {
     fixture();
     emit(acceptedEvent());
 
@@ -397,8 +423,9 @@ void main() {
     await settleAndDispose(tester);
   });
 
-  testWidgets('a driver with no ratings reads as New driver',
-      (WidgetTester tester) async {
+  testWidgets('a driver with no ratings reads as New driver', (
+    WidgetTester tester,
+  ) async {
     fixture();
     emit(acceptedEvent(rating: 0.0));
 
@@ -411,38 +438,43 @@ void main() {
     await settleAndDispose(tester);
   });
 
-  testWidgets('pressed cancel shows confirmation and posts the cancel request',
-      (WidgetTester tester) async {
-    fixture();
-    dioAdapter.onPost(
-      '/api/v1/rides/ride-1/cancel',
-      (server) => server.reply(200, {'ride': {'id': 'ride-1', 'status': 'cancelled'}}),
-    );
-    emit(acceptedEvent());
+  testWidgets(
+    'pressed cancel shows confirmation and posts the cancel request',
+    (WidgetTester tester) async {
+      fixture();
+      dioAdapter.onPost(
+        '/api/v1/rides/ride-1/cancel',
+        (server) => server.reply(200, {
+          'ride': {'id': 'ride-1', 'status': 'cancelled'},
+        }),
+      );
+      emit(acceptedEvent());
 
-    await tester.pumpWidget(buildRouter());
-    await tester.pump();
+      await tester.pumpWidget(buildRouter());
+      await tester.pump();
 
-    await tester.tap(find.text('Cancel Ride'));
-    await tester.pump();
+      await tester.tap(find.text('Cancel Ride'));
+      await tester.pump();
 
-    expect(find.text('Cancel this ride?'), findsOneWidget);
+      expect(find.text('Cancel this ride?'), findsOneWidget);
 
-    await tester.tap(find.text('Yes, Cancel'));
-    await tester.pump();
-    await tester.pump(const Duration(milliseconds: 10));
-    await tester.pump();
+      await tester.tap(find.text('Yes, Cancel'));
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 10));
+      await tester.pump();
 
-    expect(find.text('Ride cancelled successfully'), findsOneWidget);
-    expect(find.text('Home'), findsOneWidget);
-    // A cancel keeps the pickup so the rider can retry immediately.
-    expect(container.read(pickupMemoryProvider).restoreOnHome, isTrue);
+      expect(find.text('Ride cancelled successfully'), findsOneWidget);
+      expect(find.text('Home'), findsOneWidget);
+      // A cancel keeps the pickup so the rider can retry immediately.
+      expect(container.read(pickupMemoryProvider).restoreOnHome, isTrue);
 
-    await settleAndDispose(tester);
-  });
+      await settleAndDispose(tester);
+    },
+  );
 
-  testWidgets('cancel confirmation negative keeps the ride active',
-      (WidgetTester tester) async {
+  testWidgets('cancel confirmation negative keeps the ride active', (
+    WidgetTester tester,
+  ) async {
     fixture();
     emit(acceptedEvent());
 
@@ -461,37 +493,41 @@ void main() {
     await settleAndDispose(tester);
   });
 
-  testWidgets('the overlay back arrow routes through the cancel path without popping',
-      (WidgetTester tester) async {
-    fixture();
-    dioAdapter.onPost(
-      '/api/v1/rides/ride-1/cancel',
-      (server) => server.reply(200, {'ride': {'id': 'ride-1', 'status': 'cancelled'}}),
-    );
-    emit(acceptedEvent());
+  testWidgets(
+    'the overlay back arrow routes through the cancel path without popping',
+    (WidgetTester tester) async {
+      fixture();
+      dioAdapter.onPost(
+        '/api/v1/rides/ride-1/cancel',
+        (server) => server.reply(200, {
+          'ride': {'id': 'ride-1', 'status': 'cancelled'},
+        }),
+      );
+      emit(acceptedEvent());
 
-    await tester.pumpWidget(buildRouter());
-    await tester.pump();
+      await tester.pumpWidget(buildRouter());
+      await tester.pump();
 
-    expect(find.byType(AppBackButton), findsOneWidget);
-    expect(find.byIcon(Icons.arrow_back), findsOneWidget);
+      expect(find.byType(AppBackButton), findsOneWidget);
+      expect(find.byIcon(Icons.arrow_back), findsOneWidget);
 
-    await tester.tap(find.byType(AppBackButton));
-    await tester.pump();
+      await tester.tap(find.byType(AppBackButton));
+      await tester.pump();
 
-    // A live trip reuses the same confirmation the `Cancel Ride` button shows.
-    expect(find.text('Cancel this ride?'), findsOneWidget);
+      // A live trip reuses the same confirmation the `Cancel Ride` button shows.
+      expect(find.text('Cancel this ride?'), findsOneWidget);
 
-    await tester.tap(find.text('Yes, Cancel'));
-    await tester.pump();
-    await tester.pump(const Duration(milliseconds: 10));
-    await tester.pump();
+      await tester.tap(find.text('Yes, Cancel'));
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 10));
+      await tester.pump();
 
-    expect(find.text('Home'), findsOneWidget);
-    expect(container.read(pickupMemoryProvider).restoreOnHome, isTrue);
+      expect(find.text('Home'), findsOneWidget);
+      expect(container.read(pickupMemoryProvider).restoreOnHome, isTrue);
 
-    await settleAndDispose(tester);
-  });
+      await settleAndDispose(tester);
+    },
+  );
 
   testWidgets('WS cancelled event routes home', (WidgetTester tester) async {
     fixture();
@@ -502,7 +538,11 @@ void main() {
 
     await emitAndSettle(tester, {
       'type': 'ride.updated',
-      'data': {'ride_id': 'ride-1', 'status': 'cancelled', 'cancelled_by': 'driver'},
+      'data': {
+        'ride_id': 'ride-1',
+        'status': 'cancelled',
+        'cancelled_by': 'driver',
+      },
     }, settle: true);
 
     expect(find.text('Home'), findsOneWidget);
@@ -512,46 +552,48 @@ void main() {
     await settleAndDispose(tester);
   });
 
-  testWidgets('holds the rider location ping lease while the trip is on screen', (
-    WidgetTester tester,
-  ) async {
-    fixture();
-    final ping = FakeLocationPingService(apiClient);
-    emit(acceptedEvent());
+  testWidgets(
+    'holds the rider location ping lease while the trip is on screen',
+    (WidgetTester tester) async {
+      fixture();
+      final ping = FakeLocationPingService(apiClient);
+      emit(acceptedEvent());
 
-    await tester.pumpWidget(buildRouter(ping: ping));
-    await tester.pump();
+      await tester.pumpWidget(buildRouter(ping: ping));
+      await tester.pump();
 
-    expect(ping.startCount, 1);
-    expect(ping.isActive, isTrue);
+      expect(ping.startCount, 1);
+      expect(ping.isActive, isTrue);
 
-    await settleAndDispose(tester);
-  });
+      await settleAndDispose(tester);
+    },
+  );
 
-  testWidgets('releases the location ping lease when the trip screen is disposed', (
-    WidgetTester tester,
-  ) async {
-    fixture();
-    final ping = FakeLocationPingService(apiClient);
-    emit(acceptedEvent());
+  testWidgets(
+    'releases the location ping lease when the trip screen is disposed',
+    (WidgetTester tester) async {
+      fixture();
+      final ping = FakeLocationPingService(apiClient);
+      emit(acceptedEvent());
 
-    await tester.pumpWidget(buildRouter(ping: ping));
-    await tester.pump();
-    // Let the two entry-path requests finish before the tree is torn down:
-    // Dio arms a per-request timer that only clears once the response has been
-    // processed, and a swap mid-flight leaves it pending.
-    await tester.pump(const Duration(milliseconds: 10));
-    await tester.pump();
-    expect(ping.isActive, isTrue);
+      await tester.pumpWidget(buildRouter(ping: ping));
+      await tester.pump();
+      // Let the two entry-path requests finish before the tree is torn down:
+      // Dio arms a per-request timer that only clears once the response has been
+      // processed, and a swap mid-flight leaves it pending.
+      await tester.pump(const Duration(milliseconds: 10));
+      await tester.pump();
+      expect(ping.isActive, isTrue);
 
-    // Leaving the flow route (completion, cancel, or `context.go('/home')`)
-    // disposes the screen; the service must not keep a lease behind.
-    await tester.pumpWidget(const SizedBox());
-    await tester.pump();
+      // Leaving the flow route (completion, cancel, or `context.go('/home')`)
+      // disposes the screen; the service must not keep a lease behind.
+      await tester.pumpWidget(const SizedBox());
+      await tester.pump();
 
-    expect(ping.stopCount, 1);
-    expect(ping.isActive, isFalse);
-  });
+      expect(ping.stopCount, 1);
+      expect(ping.isActive, isFalse);
+    },
+  );
 
   testWidgets('the driver marker moves when a driver.location event lands', (
     WidgetTester tester,
@@ -643,10 +685,15 @@ void main() {
       },
     }, settle: true);
 
-    expect(tracker.isPolling, isFalse,
-        reason: 'nothing left to track once the ride is over');
-    expect(find.byKey(const ValueKey<String>('ride-receipt-dialog')),
-        findsOneWidget);
+    expect(
+      tracker.isPolling,
+      isFalse,
+      reason: 'nothing left to track once the ride is over',
+    );
+    expect(
+      find.byKey(const ValueKey<String>('ride-receipt-dialog')),
+      findsOneWidget,
+    );
 
     await settleAndDispose(tester);
   });
@@ -718,8 +765,7 @@ void main() {
     await settleAndDispose(tester);
   });
 
-  testWidgets(
-      'rating one ride does not suppress the next ride prompt [FIX-C]', (
+  testWidgets('rating one ride does not suppress the next ride prompt [FIX-C]', (
     WidgetTester tester,
   ) async {
     fixture();
@@ -779,8 +825,11 @@ void main() {
     await tester.tap(find.text('Start next ride'));
     await tester.pumpAndSettle();
 
-    expect(find.text('Cancel Ride'), findsOneWidget,
-        reason: 'ride 2 must mount as a normal active trip');
+    expect(
+      find.text('Cancel Ride'),
+      findsOneWidget,
+      reason: 'ride 2 must mount as a normal active trip',
+    );
 
     await emitAndSettle(tester, {
       'type': 'ride.updated',
@@ -791,8 +840,11 @@ void main() {
     await tester.tap(find.text('Close'));
     await tester.pumpAndSettle();
 
-    expect(find.text('Rate your ride'), findsOneWidget,
-        reason: 'FIX-C: the earlier rating must not gate this ride');
+    expect(
+      find.text('Rate your ride'),
+      findsOneWidget,
+      reason: 'FIX-C: the earlier rating must not gate this ride',
+    );
     await tester.tap(find.byKey(const ValueKey<String>('rating-star-4')));
     await tester.pump();
     await tester.tap(find.byKey(const Key('rate-submit')));
@@ -946,83 +998,89 @@ void main() {
     // Three points from the mock API (from,road mid,to) — not a synthesized
     // two-point rider→driver straight line.
     expect(line!.points, hasLength(3));
-    expect(
-      line.points[1],
-      LatLng((9.9281 + 9.94) / 2, (-84.0907 - 84.10) / 2),
-    );
+    expect(line.points[1], LatLng((9.9281 + 9.94) / 2, (-84.0907 - 84.10) / 2));
     expect(line.pattern, const StrokePattern.solid());
     expect(line.color, Colors.blue);
     // No honest-fallback banner when the route is a real road route.
-    expect(find.byKey(const ValueKey<String>('trip-route-estimate')), findsNothing);
-    expect(find.byKey(const ValueKey<String>('trip-route-error')), findsNothing);
-
-    await settleAndDispose(tester);
-  });
-
-  testWidgets('an is_estimate route is labeled and drawn dashed, not as a road route', (
-    WidgetTester tester,
-  ) async {
-    fixture(route: RouteMock.estimate);
-    emit(acceptedEvent());
-
-    await tester.pumpWidget(buildRouter());
-    await pumpRoute(tester);
-
     expect(
       find.byKey(const ValueKey<String>('trip-route-estimate')),
-      findsOneWidget,
-    );
-    expect(find.text('Estimated route'), findsOneWidget);
-    final line = tripPolyline(tester);
-    expect(line, isNotNull);
-    expect(line!.color, Colors.grey);
-    expect(line.pattern, isNot(const StrokePattern.solid()));
-
-    await settleAndDispose(tester);
-  });
-
-  testWidgets('a 422 route response surfaces an error state, never a confident line', (
-    WidgetTester tester,
-  ) async {
-    fixture(route: RouteMock.http422);
-    emit(acceptedEvent());
-
-    await tester.pumpWidget(buildRouter());
-    await pumpRoute(tester);
-
-    expect(
-      find.byKey(const ValueKey<String>('trip-route-error')),
-      findsOneWidget,
-    );
-    expect(find.text('Route unavailable'), findsOneWidget);
-    expect(find.text('invalid coordinates'), findsOneWidget);
-    expect(
-      find.byType(PolylineLayer),
       findsNothing,
-      reason: 'a failed route must not draw any geometry at all',
     );
-
-    await settleAndDispose(tester);
-  });
-
-  testWidgets('a 500 route response surfaces an error state, never a confident line', (
-    WidgetTester tester,
-  ) async {
-    fixture(route: RouteMock.http500);
-    emit(acceptedEvent());
-
-    await tester.pumpWidget(buildRouter());
-    await pumpRoute(tester);
-
     expect(
       find.byKey(const ValueKey<String>('trip-route-error')),
-      findsOneWidget,
+      findsNothing,
     );
-    expect(find.text('failed to calculate route'), findsOneWidget);
-    expect(find.byType(PolylineLayer), findsNothing);
 
     await settleAndDispose(tester);
   });
+
+  testWidgets(
+    'an is_estimate route is labeled and drawn dashed, not as a road route',
+    (WidgetTester tester) async {
+      fixture(route: RouteMock.estimate);
+      emit(acceptedEvent());
+
+      await tester.pumpWidget(buildRouter());
+      await pumpRoute(tester);
+
+      expect(
+        find.byKey(const ValueKey<String>('trip-route-estimate')),
+        findsOneWidget,
+      );
+      expect(find.text('Estimated route'), findsOneWidget);
+      final line = tripPolyline(tester);
+      expect(line, isNotNull);
+      expect(line!.color, Colors.grey);
+      expect(line.pattern, isNot(const StrokePattern.solid()));
+
+      await settleAndDispose(tester);
+    },
+  );
+
+  testWidgets(
+    'a 422 route response surfaces an error state, never a confident line',
+    (WidgetTester tester) async {
+      fixture(route: RouteMock.http422);
+      emit(acceptedEvent());
+
+      await tester.pumpWidget(buildRouter());
+      await pumpRoute(tester);
+
+      expect(
+        find.byKey(const ValueKey<String>('trip-route-error')),
+        findsOneWidget,
+      );
+      expect(find.text('Route unavailable'), findsOneWidget);
+      expect(find.text('invalid coordinates'), findsOneWidget);
+      expect(
+        find.byType(PolylineLayer),
+        findsNothing,
+        reason: 'a failed route must not draw any geometry at all',
+      );
+
+      await settleAndDispose(tester);
+    },
+  );
+
+  testWidgets(
+    'a 500 route response surfaces an error state, never a confident line',
+    (WidgetTester tester) async {
+      fixture(route: RouteMock.http500);
+      emit(acceptedEvent());
+
+      await tester.pumpWidget(buildRouter());
+      await pumpRoute(tester);
+
+      expect(
+        find.byKey(const ValueKey<String>('trip-route-error')),
+        findsOneWidget,
+      );
+      expect(find.text('failed to calculate route'), findsOneWidget);
+      expect(find.byType(PolylineLayer), findsNothing);
+
+      await settleAndDispose(tester);
+    },
+  );
 
   testWidgets('the 300 s ETA placeholder renders as unknown, not "5 min"', (
     WidgetTester tester,
@@ -1073,7 +1131,11 @@ void main() {
     // The server now reports the changed destination; the client re-reads the
     // itinerary and re-routes rather than waiting for a server-side re-route.
     rideResponse = {
-      'ride': rideJson(status: 'in_progress', dropoffLat: 9.96, dropoffLng: -84.13),
+      'ride': rideJson(
+        status: 'in_progress',
+        dropoffLat: 9.96,
+        dropoffLng: -84.13,
+      ),
       'stops': <dynamic>[],
     };
     await emitAndSettle(tester, {
@@ -1093,8 +1155,9 @@ void main() {
     await settleAndDispose(tester);
   });
 
-  testWidgets('changing destination searches then PUTs the picked place',
-      (WidgetTester tester) async {
+  testWidgets('changing destination searches then PUTs the picked place', (
+    WidgetTester tester,
+  ) async {
     fixture();
     const newDestination = Place(
       id: 'new-dest',
@@ -1122,8 +1185,9 @@ void main() {
     );
     await tester.pump();
 
-    final button =
-        find.byKey(const ValueKey<String>('change-destination-button'));
+    final button = find.byKey(
+      const ValueKey<String>('change-destination-button'),
+    );
     expect(button, findsOneWidget, reason: 'accepted rides are changeable');
     await tester.tap(button);
     await tester.pump();
@@ -1132,11 +1196,7 @@ void main() {
     await tester.pump(const Duration(milliseconds: 10));
 
     expect(putBodies, hasLength(1));
-    expect(putBodies.single, {
-      'lat': 9.97,
-      'lng': -84.14,
-      'address': 'New Rd',
-    });
+    expect(putBodies.single, {'lat': 9.97, 'lng': -84.14, 'address': 'New Rd'});
     expect(find.text('Destination updated'), findsOneWidget);
 
     await settleAndDispose(tester);
@@ -1145,102 +1205,109 @@ void main() {
   // ---------------------------------------------------------------------------
   // Bug #21 — change-destination search with no origin. The `_searchBias()`
   // center biases the request only; it is never written into the booking or the
-  // destination, so the search can never hit the real screen's blocking
-  // `'Enable location to search nearby'` branch (`location_search_screen.dart:67`).
+  // destination, so the search opens with a non-null center. That the real
+  // screen's blocking branch requires a null center is covered by the
+  // negative-control pair in `location_search_screen_test.dart`.
   // ---------------------------------------------------------------------------
 
   testWidgets(
-      'no pickup: change-destination search opens with a bias and routes the picked place',
-      (WidgetTester tester) async {
-    fixture();
-    const newDestination = Place(
-      id: 'new-dest',
-      name: 'New Destination',
-      address: 'New Rd',
-      lat: 9.97,
-      lng: -84.14,
-    );
-    final searchExtras = <Map<String, dynamic>>[];
-    final putBodies = <Map<String, dynamic>>[];
-    dioAdapter.onPut(
-      '/api/v1/rides/ride-1/destination',
-      (server) => server.replyCallback(200, (options) {
-        putBodies.add(Map<String, dynamic>.from(options.data as Map));
-        return {'ride': rideJson(status: 'in_progress')};
-      }),
-      data: Matchers.any,
-    );
-    // No pickup on the accept payload and no device fix on the active trip.
-    emit(acceptedEvent(includePickup: false));
+    'no pickup: change-destination search opens with a bias and routes the picked place',
+    (WidgetTester tester) async {
+      fixture();
+      const newDestination = Place(
+        id: 'new-dest',
+        name: 'New Destination',
+        address: 'New Rd',
+        lat: 9.97,
+        lng: -84.14,
+      );
+      final searchExtras = <Map<String, dynamic>>[];
+      final putBodies = <Map<String, dynamic>>[];
+      dioAdapter.onPut(
+        '/api/v1/rides/ride-1/destination',
+        (server) => server.replyCallback(200, (options) {
+          putBodies.add(Map<String, dynamic>.from(options.data as Map));
+          return {'ride': rideJson(status: 'in_progress')};
+        }),
+        data: Matchers.any,
+      );
+      // No pickup on the accept payload and no device fix on the active trip.
+      emit(acceptedEvent(includePickup: false));
 
-    await tester.pumpWidget(
-      buildRouter(
-        changeDestinationResult: newDestination,
-        searchExtras: searchExtras,
-      ),
-    );
-    await tester.pump();
+      await tester.pumpWidget(
+        buildRouter(
+          changeDestinationResult: newDestination,
+          searchExtras: searchExtras,
+        ),
+      );
+      await tester.pump();
 
-    await tester.tap(
-      find.byKey(const ValueKey<String>('change-destination-button')),
-    );
-    await tester.pump();
-    await tester.pump();
-    await tester.pump();
-    await tester.pump(const Duration(milliseconds: 10));
+      await tester.tap(
+        find.byKey(const ValueKey<String>('change-destination-button')),
+      );
+      await tester.pump();
+      await tester.pump();
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 10));
 
-    // The search opened with a non-null bias (the fallback center), so the real
-    // screen's blocking branch is unreachable, and the picked place was PUT.
-    expect(searchExtras, hasLength(1));
-    expect(searchExtras.single['hint'], 'Where to?');
-    expect(searchExtras.single['lat'], isNotNull);
-    expect(searchExtras.single['lng'], isNotNull);
-    expect(find.text('Enable location to search nearby'), findsNothing);
-    expect(putBodies, hasLength(1));
-    expect(putBodies.single, {'lat': 9.97, 'lng': -84.14, 'address': 'New Rd'});
+      // The search opened with a non-null bias (the fallback center) and the
+      // picked place was PUT.
+      expect(searchExtras, hasLength(1));
+      expect(searchExtras.single['hint'], 'Where to?');
+      expect(searchExtras.single['lat'], isNotNull);
+      expect(searchExtras.single['lng'], isNotNull);
+      expect(putBodies, hasLength(1));
+      expect(putBodies.single, {
+        'lat': 9.97,
+        'lng': -84.14,
+        'address': 'New Rd',
+      });
 
-    // The server now reports the picked destination; the screen re-reads the
-    // itinerary and re-routes the new leg with the picked coordinates.
-    rideResponse = {
-      'ride': rideJson(
-        status: 'in_progress',
-        dropoffLat: 9.97,
-        dropoffLng: -84.14,
-      ),
-      'stops': <dynamic>[],
-    };
-    await emitAndSettle(tester, {
-      'type': 'ride.updated',
-      'data': {
-        'ride_id': 'ride-1',
-        'status': 'in_progress',
-        'dropoff': {'lat': 9.97, 'lng': -84.14},
-      },
-    });
-    await pumpRoute(tester);
+      // The server now reports the picked destination; the screen re-reads the
+      // itinerary and re-routes the new leg with the picked coordinates.
+      rideResponse = {
+        'ride': rideJson(
+          status: 'in_progress',
+          dropoffLat: 9.97,
+          dropoffLng: -84.14,
+        ),
+        'stops': <dynamic>[],
+      };
+      await emitAndSettle(tester, {
+        'type': 'ride.updated',
+        'data': {
+          'ride_id': 'ride-1',
+          'status': 'in_progress',
+          'dropoff': {'lat': 9.97, 'lng': -84.14},
+        },
+      });
+      await pumpRoute(tester);
 
-    expect(routeRequests, isNotEmpty);
-    expect(routeRequests.last['to_lat'], 9.97);
-    expect(routeRequests.last['to_lng'], -84.14);
+      expect(routeRequests, isNotEmpty);
+      expect(routeRequests.last['to_lat'], 9.97);
+      expect(routeRequests.last['to_lng'], -84.14);
 
-    await settleAndDispose(tester);
-  });
+      await settleAndDispose(tester);
+    },
+  );
 
-  testWidgets('the change-destination entry is absent outside changeable statuses',
-      (WidgetTester tester) async {
-    fixture();
+  testWidgets(
+    'the change-destination entry is absent outside changeable statuses',
+    (WidgetTester tester) async {
+      fixture();
 
-    await tester.pumpWidget(buildRouter());
-    await tester.pump();
+      await tester.pumpWidget(buildRouter());
+      await tester.pump();
 
-    // `idle` is not in the API's changeable set, so no entry is offered.
-    expect(
-      find.byKey(const ValueKey<String>('change-destination-button')),
-      findsNothing,
-    );
+      // `idle` is not in the API's changeable set, so no entry is offered.
+      expect(
+        find.byKey(const ValueKey<String>('change-destination-button')),
+        findsNothing,
+      );
 
-    await settleAndDispose(tester);
-  });
+      await settleAndDispose(tester);
+    },
+  );
 
   testWidgets('the refresh tick re-reads the route on its injected schedule', (
     WidgetTester tester,
@@ -1287,8 +1354,11 @@ void main() {
       },
     }, settle: true);
 
-    expect(tripRoute.isPolling, isFalse,
-        reason: 'nothing left to route once the ride is over');
+    expect(
+      tripRoute.isPolling,
+      isFalse,
+      reason: 'nothing left to route once the ride is over',
+    );
 
     await settleAndDispose(tester);
   });

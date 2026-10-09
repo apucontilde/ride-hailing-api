@@ -95,6 +95,29 @@ void main() {
     expect(requests, isEmpty);
   });
 
+  // Negative control (non-null half): a bias center keeps the screen on its
+  // search surface and clears the blocking branch.
+  testWidgets('with a non-null bias the blocking enable-location branch is absent',
+      (WidgetTester tester) async {
+    await tester.pumpWidget(createTestWidget());
+    await tester.pump();
+
+    expect(find.text('Enable location to search nearby'), findsNothing);
+    expect(find.byType(TextField), findsOneWidget);
+  });
+
+  // Negative control (null half): dropping the bias flips the same assertion,
+  // proving the blocking branch is reachable and the absence check above can
+  // actually fail.
+  testWidgets('with a null bias the blocking enable-location branch renders',
+      (WidgetTester tester) async {
+    await tester.pumpWidget(createTestWidget(lat: null, lng: null));
+    await tester.pump();
+
+    expect(find.text('Enable location to search nearby'), findsOneWidget);
+    expect(find.byType(TextField), findsOneWidget);
+  });
+
   testWidgets('the standardized leading AppBackButton pops the screen',
       (WidgetTester tester) async {
     await tester.pumpWidget(

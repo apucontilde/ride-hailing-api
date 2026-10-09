@@ -15,6 +15,7 @@ import 'package:rider_app/features/home/data/multi_leg_route_provider.dart';
 import 'package:rider_app/features/home/data/pickup_memory_provider.dart';
 import 'package:rider_app/features/home/model/place.dart';
 import 'package:rider_app/features/home/presentation/home_screen.dart';
+import 'package:rider_app/features/home/presentation/location_search_screen.dart';
 
 /// A configurable [LocationService] so the widget tests never touch the platform
 /// location channel (which never answers under `flutter_test`).
@@ -68,31 +69,31 @@ const stopPlace = Place(
 );
 
 Position testPosition(double lat, double lng) => Position(
-      longitude: lng,
-      latitude: lat,
-      timestamp: DateTime.utc(2026),
-      accuracy: 1,
-      altitude: 0,
-      altitudeAccuracy: 0,
-      heading: 0,
-      headingAccuracy: 0,
-      speed: 0,
-      speedAccuracy: 0,
-    );
+  longitude: lng,
+  latitude: lat,
+  timestamp: DateTime.utc(2026),
+  accuracy: 1,
+  altitude: 0,
+  altitudeAccuracy: 0,
+  heading: 0,
+  headingAccuracy: 0,
+  speed: 0,
+  speedAccuracy: 0,
+);
 
 /// A road-shaped answer with the API's three-point geometry (start, road
 /// mid-point, end) — deliberately not the straight two-point client line, so a
 /// test can tell which one the map drew.
 Map<String, dynamic> routeBody({required bool estimate}) => {
-      'polyline': [
-        {'lat': 9.9281, 'lng': -84.0907},
-        {'lat': 9.934, 'lng': -84.095},
-        {'lat': 9.94, 'lng': -84.10},
-      ],
-      'total_distance_m': 1500.0,
-      'total_duration_s': 180.0,
-      'is_estimate': estimate,
-    };
+  'polyline': [
+    {'lat': 9.9281, 'lng': -84.0907},
+    {'lat': 9.934, 'lng': -84.095},
+    {'lat': 9.94, 'lng': -84.10},
+  ],
+  'total_distance_m': 1500.0,
+  'total_duration_s': 180.0,
+  'is_estimate': estimate,
+};
 
 /// A road-shaped answer that reflects the requested leg, so a multi-leg
 /// preview is visibly built from its legs rather than one collapsed line.
@@ -165,9 +166,12 @@ void main() {
           ),
         ),
         // The destination / add-stop / pickup-search round trip. Production
-        // routes this to the real search screen; the test records the pushed
-        // bias `extra` and pops a fixed `Place` per hint, so the push contract
-        // (bias + which field) is what is under test, not the search UI.
+        // routes this to the real search screen, so the **real**
+        // `LocationSearchScreen` is mounted here with the pushed bias. The
+        // screen still records the pushed bias `extra` and pops a fixed `Place`
+        // per hint, so the push contract (bias + which field) stays under test.
+        // The screen's own blocking branch is covered by the negative-control
+        // pair in `location_search_screen_test.dart`.
         if (addStopResult != null ||
             pickupResult != null ||
             destinationResult != null)
@@ -181,15 +185,19 @@ void main() {
               final Place? result = hint == 'Add a stop'
                   ? addStopResult
                   : (hint == 'Pickup location' ||
-                          hint == 'Enter pickup location')
-                      ? pickupResult
-                      : destinationResult;
+                        hint == 'Enter pickup location')
+                  ? pickupResult
+                  : destinationResult;
               return Builder(
                 builder: (context) {
                   WidgetsBinding.instance.addPostFrameCallback((_) {
                     if (context.mounted) context.pop<Place>(result);
                   });
-                  return const Scaffold(body: SizedBox.shrink());
+                  return LocationSearchScreen(
+                    hint: hint ?? 'Search destinations...',
+                    lat: extra['lat'] as double?,
+                    lng: extra['lng'] as double?,
+                  );
                 },
               );
             },
@@ -236,15 +244,17 @@ void main() {
     addTearDown(tester.view.resetPhysicalSize);
     addTearDown(tester.view.resetDevicePixelRatio);
 
-    await tester.pumpWidget(buildApp(
-      pickup: pickup,
-      destination: destination,
-      addStopResult: addStopResult,
-      pickupResult: pickupResult,
-      destinationResult: destinationResult,
-      pickupMemory: pickupMemory,
-      searchPushes: searchPushes,
-    ));
+    await tester.pumpWidget(
+      buildApp(
+        pickup: pickup,
+        destination: destination,
+        addStopResult: addStopResult,
+        pickupResult: pickupResult,
+        destinationResult: destinationResult,
+        pickupMemory: pickupMemory,
+        searchPushes: searchPushes,
+      ),
+    );
     await pumpRoute(tester);
   }
 
@@ -275,10 +285,7 @@ void main() {
     // The destination field renders its placeholder and the request button is
     // the elevated action beneath the route info.
     expect(find.text('Where to?'), findsOneWidget);
-    expect(
-      find.widgetWithText(ElevatedButton, 'Request Trip'),
-      findsOneWidget,
-    );
+    expect(find.widgetWithText(ElevatedButton, 'Request Trip'), findsOneWidget);
   });
 
   // ---------------------------------------------------------------------------
@@ -293,11 +300,7 @@ void main() {
       (server) => server.reply(200, routeBody(estimate: false)),
     );
 
-    await pumpHome(
-      tester,
-      pickup: pickupPlace,
-      destination: destinationPlace,
-    );
+    await pumpHome(tester, pickup: pickupPlace, destination: destinationPlace);
 
     final line = drawnPolyline(tester);
     expect(line, isNotNull);
@@ -308,264 +311,282 @@ void main() {
     expect(line.points[1], const LatLng(9.934, -84.095));
     expect(find.textContaining('Estimated '), findsNothing);
     expect(find.text('Retry'), findsNothing);
-
   });
 
   testWidgets(
-      'a 200 is_estimate is dashed from the API geometry and labeled "Estimated "',
-      (WidgetTester tester) async {
-    dioAdapter.onGet(
-      ApiEndpoints.navigationRoute,
-      (server) => server.reply(200, routeBody(estimate: true)),
-    );
+    'a 200 is_estimate is dashed from the API geometry and labeled "Estimated "',
+    (WidgetTester tester) async {
+      dioAdapter.onGet(
+        ApiEndpoints.navigationRoute,
+        (server) => server.reply(200, routeBody(estimate: true)),
+      );
 
-    await pumpHome(
-      tester,
-      pickup: pickupPlace,
-      destination: destinationPlace,
-    );
+      await pumpHome(
+        tester,
+        pickup: pickupPlace,
+        destination: destinationPlace,
+      );
 
-    final line = drawnPolyline(tester);
-    expect(line, isNotNull);
-    expect(line!.color, Colors.grey);
-    expect(line.pattern, isNot(const StrokePattern.solid()));
-    // The estimate keeps the API's geometry — never the client straight line.
-    expect(line.points, hasLength(3));
-    expect(line.points[1], const LatLng(9.934, -84.095));
-    expect(find.textContaining('Estimated '), findsOneWidget);
-
-  });
-
-  testWidgets('a 500 route response draws nothing and surfaces message + Retry',
-      (WidgetTester tester) async {
-    dioAdapter.onGet(
-      ApiEndpoints.navigationRoute,
-      (server) => server.reply(500, {
-        'error': {'code': 'INTERNAL', 'message': 'failed to calculate route'},
-      }),
-    );
-
-    await pumpHome(
-      tester,
-      pickup: pickupPlace,
-      destination: destinationPlace,
-    );
-
-    expect(drawnPolyline(tester), isNull,
-        reason: 'an outage must not synthesize a straight line');
-    expect(find.text('failed to calculate route'), findsOneWidget);
-    expect(find.text('Retry'), findsOneWidget);
-
-  });
-
-  testWidgets('a 422 route response draws nothing and surfaces message + Retry',
-      (WidgetTester tester) async {
-    dioAdapter.onGet(
-      ApiEndpoints.navigationRoute,
-      (server) => server.reply(422, {
-        'error': {'code': 'VALIDATION_ERROR', 'message': 'invalid coordinates'},
-      }),
-    );
-
-    await pumpHome(
-      tester,
-      pickup: pickupPlace,
-      destination: destinationPlace,
-    );
-
-    expect(drawnPolyline(tester), isNull);
-    expect(find.text('invalid coordinates'), findsOneWidget);
-    expect(find.text('Retry'), findsOneWidget);
-
-  });
+      final line = drawnPolyline(tester);
+      expect(line, isNotNull);
+      expect(line!.color, Colors.grey);
+      expect(line.pattern, isNot(const StrokePattern.solid()));
+      // The estimate keeps the API's geometry — never the client straight line.
+      expect(line.points, hasLength(3));
+      expect(line.points[1], const LatLng(9.934, -84.095));
+      expect(find.textContaining('Estimated '), findsOneWidget);
+    },
+  );
 
   testWidgets(
-      'a failed refresh keeps the previous road route, never a straight swap',
-      (WidgetTester tester) async {
-    var calls = 0;
-    dioAdapter.onGet(
-      ApiEndpoints.navigationRoute,
-      (server) => server.replyCallback(200, (_) {
-        calls++;
-        if (calls == 1) return routeBody(estimate: false);
-        // The refresh answers malformed: a failure, not a route.
-        return {'polyline': <dynamic>[], 'is_estimate': false};
-      }),
-    );
+    'a 500 route response draws nothing and surfaces message + Retry',
+    (WidgetTester tester) async {
+      dioAdapter.onGet(
+        ApiEndpoints.navigationRoute,
+        (server) => server.reply(500, {
+          'error': {'code': 'INTERNAL', 'message': 'failed to calculate route'},
+        }),
+      );
 
-    await pumpHome(
-      tester,
-      pickup: pickupPlace,
-      destination: destinationPlace,
-    );
+      await pumpHome(
+        tester,
+        pickup: pickupPlace,
+        destination: destinationPlace,
+      );
 
-    final before = drawnPolyline(tester);
-    expect(before!.color, Colors.blue);
-    expect(before.points, hasLength(3));
+      expect(
+        drawnPolyline(tester),
+        isNull,
+        reason: 'an outage must not synthesize a straight line',
+      );
+      expect(find.text('failed to calculate route'), findsOneWidget);
+      expect(find.text('Retry'), findsOneWidget);
+    },
+  );
 
-    // Refresh the same family instance; Riverpod keeps the previous value on
-    // the resulting error (`copyWithPrevious`).
-    container.invalidate(multiLegRouteProvider(const RoutePlan(
-      fromLat: 9.9281,
-      fromLng: -84.0907,
-      toLat: 9.94,
-      toLng: -84.10,
-    )));
-    await pumpRoute(tester);
+  testWidgets(
+    'a 422 route response draws nothing and surfaces message + Retry',
+    (WidgetTester tester) async {
+      dioAdapter.onGet(
+        ApiEndpoints.navigationRoute,
+        (server) => server.reply(422, {
+          'error': {
+            'code': 'VALIDATION_ERROR',
+            'message': 'invalid coordinates',
+          },
+        }),
+      );
 
-    final after = drawnPolyline(tester);
-    expect(after, isNotNull, reason: 'the previous road route is retained');
-    expect(after!.color, Colors.blue);
-    expect(after.points, hasLength(3),
-        reason: 'never a two-point straight-line swap');
-    expect(after.points[1], const LatLng(9.934, -84.095));
-    expect(find.text('Retry'), findsOneWidget);
-    expect(find.textContaining('No road route is available'), findsOneWidget);
+      await pumpHome(
+        tester,
+        pickup: pickupPlace,
+        destination: destinationPlace,
+      );
 
-  });
+      expect(drawnPolyline(tester), isNull);
+      expect(find.text('invalid coordinates'), findsOneWidget);
+      expect(find.text('Retry'), findsOneWidget);
+    },
+  );
+
+  testWidgets(
+    'a failed refresh keeps the previous road route, never a straight swap',
+    (WidgetTester tester) async {
+      var calls = 0;
+      dioAdapter.onGet(
+        ApiEndpoints.navigationRoute,
+        (server) => server.replyCallback(200, (_) {
+          calls++;
+          if (calls == 1) return routeBody(estimate: false);
+          // The refresh answers malformed: a failure, not a route.
+          return {'polyline': <dynamic>[], 'is_estimate': false};
+        }),
+      );
+
+      await pumpHome(
+        tester,
+        pickup: pickupPlace,
+        destination: destinationPlace,
+      );
+
+      final before = drawnPolyline(tester);
+      expect(before!.color, Colors.blue);
+      expect(before.points, hasLength(3));
+
+      // Refresh the same family instance; Riverpod keeps the previous value on
+      // the resulting error (`copyWithPrevious`).
+      container.invalidate(
+        multiLegRouteProvider(
+          const RoutePlan(
+            fromLat: 9.9281,
+            fromLng: -84.0907,
+            toLat: 9.94,
+            toLng: -84.10,
+          ),
+        ),
+      );
+      await pumpRoute(tester);
+
+      final after = drawnPolyline(tester);
+      expect(after, isNotNull, reason: 'the previous road route is retained');
+      expect(after!.color, Colors.blue);
+      expect(
+        after.points,
+        hasLength(3),
+        reason: 'never a two-point straight-line swap',
+      );
+      expect(after.points[1], const LatLng(9.934, -84.095));
+      expect(find.text('Retry'), findsOneWidget);
+      expect(find.textContaining('No road route is available'), findsOneWidget);
+    },
+  );
 
   // ---------------------------------------------------------------------------
   // [multi] pre-booking stop list + fare honesty.
   // ---------------------------------------------------------------------------
 
   testWidgets(
-      'adding a stop routes through /location-search and previews every leg',
-      (WidgetTester tester) async {
-    dioAdapter.onGet(
-      ApiEndpoints.navigationRoute,
-      (server) => server.replyCallback(200, legRouteBody),
-    );
+    'adding a stop routes through /location-search and previews every leg',
+    (WidgetTester tester) async {
+      dioAdapter.onGet(
+        ApiEndpoints.navigationRoute,
+        (server) => server.replyCallback(200, legRouteBody),
+      );
 
-    await pumpHome(
-      tester,
-      pickup: pickupPlace,
-      destination: destinationPlace,
-      addStopResult: stopPlace,
-    );
+      await pumpHome(
+        tester,
+        pickup: pickupPlace,
+        destination: destinationPlace,
+        addStopResult: stopPlace,
+      );
 
-    // Before any stop: one pickup→destination leg.
-    expect(drawnPolyline(tester)!.points, hasLength(3));
+      // Before any stop: one pickup→destination leg.
+      expect(drawnPolyline(tester)!.points, hasLength(3));
 
-    await tester.tap(find.byKey(const ValueKey<String>('add-stop-button')));
-    await tester.pump();
-    await tester.pump();
-    await tester.pump();
-    await pumpRoute(tester);
+      await tester.tap(find.byKey(const ValueKey<String>('add-stop-button')));
+      await tester.pump();
+      await tester.pump();
+      await tester.pump();
+      await pumpRoute(tester);
 
-    // The picked place lands in the ordered stop list.
-    expect(find.text('Coffee Shop'), findsOneWidget);
-    // pickup → stop → destination: two legs concatenated, sharing the stop.
-    final line = drawnPolyline(tester);
-    expect(line, isNotNull);
-    expect(line!.points, hasLength(5));
-    expect(line.points[2], const LatLng(9.934, -84.095));
-    expect(line.points.last, const LatLng(9.94, -84.10));
-
-  });
+      // The picked place lands in the ordered stop list.
+      expect(find.text('Coffee Shop'), findsOneWidget);
+      // pickup → stop → destination: two legs concatenated, sharing the stop.
+      final line = drawnPolyline(tester);
+      expect(line, isNotNull);
+      expect(line!.points, hasLength(5));
+      expect(line.points[2], const LatLng(9.934, -84.095));
+      expect(line.points.last, const LatLng(9.94, -84.10));
+    },
+  );
 
   testWidgets(
-      'the waypoint trip POSTs the ordered stops for the fare estimate',
-      (WidgetTester tester) async {
-    dioAdapter.onGet(
-      ApiEndpoints.navigationRoute,
-      (server) => server.replyCallback(200, legRouteBody),
-    );
-    final estimateRequests = <Map<String, dynamic>>[];
-    dioAdapter.onPost(
-      ApiEndpoints.priceEstimate,
-      (server) => server.replyCallback(200, (options) {
-        estimateRequests.add(Map<String, dynamic>.from(options.data as Map));
-        return {
-          'estimates': [
+    'the waypoint trip POSTs the ordered stops for the fare estimate',
+    (WidgetTester tester) async {
+      dioAdapter.onGet(
+        ApiEndpoints.navigationRoute,
+        (server) => server.replyCallback(200, legRouteBody),
+      );
+      final estimateRequests = <Map<String, dynamic>>[];
+      dioAdapter.onPost(
+        ApiEndpoints.priceEstimate,
+        (server) => server.replyCallback(200, (options) {
+          estimateRequests.add(Map<String, dynamic>.from(options.data as Map));
+          return {
+            'estimates': [
+              {
+                'vehicle_type': 'sedan',
+                'base_fare': 2.5,
+                'distance_fare': 4.0,
+                'time_fare': 1.1,
+                'surge_multiplier': 1.0,
+                'total': 8.5,
+                'currency': 'USD',
+                'demand_multiplier': 1.0,
+                'supply_multiplier': 1.0,
+                'grade_uplift_pct': 0.0,
+                'is_estimate': false,
+                'legs': [
+                  {
+                    'distance_m': 1650,
+                    'duration_s': 150,
+                    'distance_fare': 2.47,
+                    'time_fare': 0.60,
+                  },
+                  {
+                    'distance_m': 820,
+                    'duration_s': 75,
+                    'distance_fare': 1.24,
+                    'time_fare': 0.30,
+                  },
+                ],
+              },
+            ],
+          };
+        }),
+        data: {
+          'pickup_lat': pickupPlace.lat,
+          'pickup_lng': pickupPlace.lng,
+          'dropoff_lat': destinationPlace.lat,
+          'dropoff_lng': destinationPlace.lng,
+          'stops': [
             {
-              'vehicle_type': 'sedan',
-              'base_fare': 2.5,
-              'distance_fare': 4.0,
-              'time_fare': 1.1,
-              'surge_multiplier': 1.0,
-              'total': 8.5,
-              'currency': 'USD',
-              'demand_multiplier': 1.0,
-              'supply_multiplier': 1.0,
-              'grade_uplift_pct': 0.0,
-              'is_estimate': false,
-              'legs': [
-                {
-                  'distance_m': 1650,
-                  'duration_s': 150,
-                  'distance_fare': 2.47,
-                  'time_fare': 0.60,
-                },
-                {
-                  'distance_m': 820,
-                  'duration_s': 75,
-                  'distance_fare': 1.24,
-                  'time_fare': 0.30,
-                },
-              ],
-            }
+              'lat': stopPlace.lat,
+              'lng': stopPlace.lng,
+              'address': stopPlace.address,
+            },
           ],
-        };
-      }),
-      data: {
-        'pickup_lat': pickupPlace.lat,
-        'pickup_lng': pickupPlace.lng,
-        'dropoff_lat': destinationPlace.lat,
-        'dropoff_lng': destinationPlace.lng,
-        'stops': [
-          {
-            'lat': stopPlace.lat,
-            'lng': stopPlace.lng,
-            'address': stopPlace.address,
-          },
-        ],
-      },
-    );
+        },
+      );
 
-    await pumpHome(
-      tester,
-      pickup: pickupPlace,
-      destination: destinationPlace,
-      addStopResult: stopPlace,
-    );
+      await pumpHome(
+        tester,
+        pickup: pickupPlace,
+        destination: destinationPlace,
+        addStopResult: stopPlace,
+      );
 
-    await tester.tap(find.byKey(const ValueKey<String>('add-stop-button')));
-    await tester.pump();
-    await tester.pump();
-    await tester.pump();
-    await pumpRoute(tester);
+      await tester.tap(find.byKey(const ValueKey<String>('add-stop-button')));
+      await tester.pump();
+      await tester.pump();
+      await tester.pump();
+      await pumpRoute(tester);
 
-    // The API is waypoint-aware now, so the obsolete fare caveat is gone.
-    expect(find.byKey(const ValueKey<String>('stops-fare-note')), findsNothing);
+      // The API is waypoint-aware now, so the obsolete fare caveat is gone.
+      expect(
+        find.byKey(const ValueKey<String>('stops-fare-note')),
+        findsNothing,
+      );
 
-    await tester.ensureVisible(find.text('Request Trip'));
-    await tester.pump();
-    await tester.tap(find.text('Request Trip'));
-    await pumpRoute(tester);
+      await tester.ensureVisible(find.text('Request Trip'));
+      await tester.pump();
+      await tester.tap(find.text('Request Trip'));
+      await pumpRoute(tester);
 
-    // The priced request carries the ordered stop, so the API — never the
-    // client — prices the whole itinerary and the total is larger than the
-    // pickup→destination-only request.
-    expect(estimateRequests, hasLength(1));
-    final request = estimateRequests.single;
-    expect(request['pickup_lat'], pickupPlace.lat);
-    expect(request['dropoff_lat'], destinationPlace.lat);
-    expect(request['stops'], [
-      {
-        'lat': stopPlace.lat,
-        'lng': stopPlace.lng,
-        'address': stopPlace.address,
-      },
-    ]);
-
-  });
+      // The priced request carries the ordered stop, so the API — never the
+      // client — prices the whole itinerary and the total is larger than the
+      // pickup→destination-only request.
+      expect(estimateRequests, hasLength(1));
+      final request = estimateRequests.single;
+      expect(request['pickup_lat'], pickupPlace.lat);
+      expect(request['dropoff_lat'], destinationPlace.lat);
+      expect(request['stops'], [
+        {
+          'lat': stopPlace.lat,
+          'lng': stopPlace.lng,
+          'address': stopPlace.address,
+        },
+      ]);
+    },
+  );
 
   // ---------------------------------------------------------------------------
   // [location] manual pickup fallback.
   // ---------------------------------------------------------------------------
 
-  testWidgets('denied location shows the notice and opens the manual search',
-      (WidgetTester tester) async {
+  testWidgets('denied location shows the notice and opens the manual search', (
+    WidgetTester tester,
+  ) async {
     fakeLocation
       ..availability = LocationAvailability.denied
       ..position = null;
@@ -580,7 +601,9 @@ void main() {
     await pumpHome(tester, pickupResult: manual);
 
     expect(
-      find.text('Location is off. Enter a pickup location, or enable location.'),
+      find.text(
+        'Location is off. Enter a pickup location, or enable location.',
+      ),
       findsOneWidget,
     );
     expect(find.text('Try again'), findsOneWidget);
@@ -595,11 +618,11 @@ void main() {
     await tester.pump(const Duration(milliseconds: 10));
 
     expect(find.text('Manual Pickup'), findsOneWidget);
-
   });
 
-  testWidgets('services off offers the location-settings action',
-      (WidgetTester tester) async {
+  testWidgets('services off offers the location-settings action', (
+    WidgetTester tester,
+  ) async {
     fakeLocation
       ..availability = LocationAvailability.servicesDisabled
       ..position = null;
@@ -610,8 +633,9 @@ void main() {
     expect(find.text('Try again'), findsOneWidget);
   });
 
-  testWidgets('a permanent denial offers the app-settings action',
-      (WidgetTester tester) async {
+  testWidgets('a permanent denial offers the app-settings action', (
+    WidgetTester tester,
+  ) async {
     fakeLocation
       ..availability = LocationAvailability.deniedPermanently
       ..position = null;
@@ -621,8 +645,9 @@ void main() {
     expect(find.text('Open settings'), findsOneWidget);
   });
 
-  testWidgets('a manual pickup drives the route leg and the fare estimate',
-      (WidgetTester tester) async {
+  testWidgets('a manual pickup drives the route leg and the fare estimate', (
+    WidgetTester tester,
+  ) async {
     fakeLocation
       ..availability = LocationAvailability.granted
       ..position = testPosition(9.92, -84.08);
@@ -657,7 +682,7 @@ void main() {
               'surge_multiplier': 1.0,
               'total': 8.5,
               'currency': 'USD',
-            }
+            },
           ],
         };
       }),
@@ -669,11 +694,7 @@ void main() {
       },
     );
 
-    await pumpHome(
-      tester,
-      destination: destinationPlace,
-      pickupResult: manual,
-    );
+    await pumpHome(tester, destination: destinationPlace, pickupResult: manual);
 
     // The device fix is the initial origin.
     expect(routeRequests.last['from_lat'], 9.92);
@@ -697,11 +718,11 @@ void main() {
     expect(estimateRequests, hasLength(1));
     expect(estimateRequests.single['pickup_lat'], manual.lat);
     expect(estimateRequests.single['pickup_lng'], manual.lng);
-
   });
 
-  testWidgets('no device fix and no pickup fabricates nothing',
-      (WidgetTester tester) async {
+  testWidgets('no device fix and no pickup fabricates nothing', (
+    WidgetTester tester,
+  ) async {
     fakeLocation
       ..availability = LocationAvailability.denied
       ..position = null;
@@ -726,20 +747,16 @@ void main() {
       find.widgetWithText(ElevatedButton, 'Request Trip'),
     );
     expect(button.onPressed, isNull);
-
   });
 
-  testWidgets('Use current location clears the manual pickup',
-      (WidgetTester tester) async {
+  testWidgets('Use current location clears the manual pickup', (
+    WidgetTester tester,
+  ) async {
     fakeLocation
       ..availability = LocationAvailability.granted
       ..position = testPosition(9.92, -84.08);
 
-    await pumpHome(
-      tester,
-      pickup: pickupPlace,
-      destination: destinationPlace,
-    );
+    await pumpHome(tester, pickup: pickupPlace, destination: destinationPlace);
 
     expect(find.text('Pickup Point'), findsOneWidget);
     expect(find.text('Use current location'), findsOneWidget);
@@ -750,15 +767,15 @@ void main() {
     expect(find.text('Current location'), findsOneWidget);
     expect(find.text('Pickup Point'), findsNothing);
     expect(find.text('Use current location'), findsNothing);
-
   });
 
   // ---------------------------------------------------------------------------
   // [trip] pickup recovery after a trip ends.
   // ---------------------------------------------------------------------------
 
-  testWidgets('a cancelled trip restores the remembered pickup',
-      (WidgetTester tester) async {
+  testWidgets('a cancelled trip restores the remembered pickup', (
+    WidgetTester tester,
+  ) async {
     fakeLocation
       ..availability = LocationAvailability.denied
       ..position = null;
@@ -778,11 +795,11 @@ void main() {
     expect(find.text('Restored Pickup'), findsOneWidget);
     // The pending intent is consumed exactly once.
     expect(container.read(pickupMemoryProvider).restoreOnHome, isNull);
-
   });
 
-  testWidgets('a completed trip does not restore and clears the pickup',
-      (WidgetTester tester) async {
+  testWidgets('a completed trip does not restore and clears the pickup', (
+    WidgetTester tester,
+  ) async {
     fakeLocation
       ..availability = LocationAvailability.denied
       ..position = null;
@@ -805,8 +822,9 @@ void main() {
     expect(container.read(pickupMemoryProvider).restoreOnHome, isNull);
   });
 
-  testWidgets('the constructor pickupMemory override drives a restore',
-      (WidgetTester tester) async {
+  testWidgets('the constructor pickupMemory override drives a restore', (
+    WidgetTester tester,
+  ) async {
     fakeLocation
       ..availability = LocationAvailability.granted
       ..position = null;
@@ -835,44 +853,49 @@ void main() {
   // Bug #19 — the widget-coverage holes the [location]/[trip] plans recorded.
   // ---------------------------------------------------------------------------
 
-  testWidgets('the permanent-denial Open settings action dispatches to the service',
-      (WidgetTester tester) async {
-    fakeLocation
-      ..availability = LocationAvailability.deniedPermanently
-      ..position = null;
+  testWidgets(
+    'the permanent-denial Open settings action dispatches to the service',
+    (WidgetTester tester) async {
+      fakeLocation
+        ..availability = LocationAvailability.deniedPermanently
+        ..position = null;
 
-    await pumpHome(tester);
+      await pumpHome(tester);
 
-    expect(find.text('Open settings'), findsOneWidget);
-    await tester.tap(find.text('Open settings'));
-    await tester.pump();
+      expect(find.text('Open settings'), findsOneWidget);
+      await tester.tap(find.text('Open settings'));
+      await tester.pump();
 
-    expect(fakeLocation.openAppSettingsCalls, 1);
-    expect(fakeLocation.openLocationSettingsCalls, 0);
+      expect(fakeLocation.openAppSettingsCalls, 1);
+      expect(fakeLocation.openLocationSettingsCalls, 0);
 
-    await tester.pumpWidget(const SizedBox());
-  });
+      await tester.pumpWidget(const SizedBox());
+    },
+  );
 
-  testWidgets('the services-off action dispatches to the location-settings service',
-      (WidgetTester tester) async {
-    fakeLocation
-      ..availability = LocationAvailability.servicesDisabled
-      ..position = null;
+  testWidgets(
+    'the services-off action dispatches to the location-settings service',
+    (WidgetTester tester) async {
+      fakeLocation
+        ..availability = LocationAvailability.servicesDisabled
+        ..position = null;
 
-    await pumpHome(tester);
+      await pumpHome(tester);
 
-    expect(find.text('Open location settings'), findsOneWidget);
-    await tester.tap(find.text('Open location settings'));
-    await tester.pump();
+      expect(find.text('Open location settings'), findsOneWidget);
+      await tester.tap(find.text('Open location settings'));
+      await tester.pump();
 
-    expect(fakeLocation.openLocationSettingsCalls, 1);
-    expect(fakeLocation.openAppSettingsCalls, 0);
+      expect(fakeLocation.openLocationSettingsCalls, 1);
+      expect(fakeLocation.openAppSettingsCalls, 0);
 
-    await tester.pumpWidget(const SizedBox());
-  });
+      await tester.pumpWidget(const SizedBox());
+    },
+  );
 
-  testWidgets('a restored pickup drives the route leg with its own coordinates',
-      (WidgetTester tester) async {
+  testWidgets('a restored pickup drives the route leg with its own coordinates', (
+    WidgetTester tester,
+  ) async {
     // The restore path re-fits the camera, which makes flutter_map fetch tiles;
     // under `flutter_test` every HTTP request answers 400, so the image codec
     // reports a load failure. Those are unrelated to the route/estimate
@@ -949,8 +972,9 @@ void main() {
     await tester.pumpWidget(const SizedBox());
   });
 
-  testWidgets('booking a trip remembers the pickup used (remember call-site)',
-      (WidgetTester tester) async {
+  testWidgets('booking a trip remembers the pickup used (remember call-site)', (
+    WidgetTester tester,
+  ) async {
     fakeLocation
       ..availability = LocationAvailability.granted
       ..position = testPosition(9.92, -84.08);
@@ -987,11 +1011,7 @@ void main() {
       data: Matchers.any,
     );
 
-    await pumpHome(
-      tester,
-      destination: destinationPlace,
-      pickupResult: manual,
-    );
+    await pumpHome(tester, destination: destinationPlace, pickupResult: manual);
 
     // Choose the manual pickup, replacing the device fix.
     await tester.tap(find.text('Current location'));
@@ -1023,140 +1043,140 @@ void main() {
   // ---------------------------------------------------------------------------
 
   testWidgets(
-      'no fix and no pickup: the destination field opens the search with a bias',
-      (WidgetTester tester) async {
-    fakeLocation
-      ..availability = LocationAvailability.denied
-      ..position = null;
-    final pushes = <Map<String, dynamic>>[];
+    'no fix and no pickup: the destination field opens the search with a bias',
+    (WidgetTester tester) async {
+      fakeLocation
+        ..availability = LocationAvailability.denied
+        ..position = null;
+      final pushes = <Map<String, dynamic>>[];
 
-    await pumpHome(
-      tester,
-      destinationResult: destinationPlace,
-      searchPushes: pushes,
-    );
+      await pumpHome(
+        tester,
+        destinationResult: destinationPlace,
+        searchPushes: pushes,
+      );
 
-    // The field starts empty and the old blocking guard's snackbar is gone.
-    expect(find.text('Where to?'), findsOneWidget);
-    expect(find.text('Could not determine your location'), findsNothing);
+      // The field starts empty and the old blocking guard's snackbar is gone.
+      expect(find.text('Where to?'), findsOneWidget);
+      expect(find.text('Could not determine your location'), findsNothing);
 
-    await tester.tap(find.text('Where to?'));
-    await tester.pump();
-    await tester.pump();
-    await tester.pump();
-    await tester.pump(const Duration(milliseconds: 10));
+      await tester.tap(find.text('Where to?'));
+      await tester.pump();
+      await tester.pump();
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 10));
 
-    // The search opened (not the old early-return) with a non-null bias, and
-    // the picked place landed in the destination field.
-    expect(pushes, hasLength(1));
-    expect(pushes.single['hint'], 'Enter destination');
-    expect(pushes.single['lat'], isNotNull);
-    expect(pushes.single['lng'], isNotNull);
-    expect(find.text('Dropoff Point'), findsOneWidget);
+      // The search opened (not the old early-return) with a non-null bias, and
+      // the picked place landed in the destination field.
+      expect(pushes, hasLength(1));
+      expect(pushes.single['hint'], 'Enter destination');
+      expect(pushes.single['lat'], isNotNull);
+      expect(pushes.single['lng'], isNotNull);
+      expect(find.text('Dropoff Point'), findsOneWidget);
 
-    // The bias is a search center only: no pickup was fabricated, so the
-    // booking action stays disabled.
-    final button = tester.widget<ElevatedButton>(
-      find.widgetWithText(ElevatedButton, 'Request Trip'),
-    );
-    expect(button.onPressed, isNull);
-  });
-
-  testWidgets(
-      'no fix and no pickup: adding a stop opens the search with a bias',
-      (WidgetTester tester) async {
-    fakeLocation
-      ..availability = LocationAvailability.denied
-      ..position = null;
-    final pushes = <Map<String, dynamic>>[];
-
-    // A destination alone exposes the stop editor, even with no origin.
-    await pumpHome(
-      tester,
-      destination: destinationPlace,
-      addStopResult: stopPlace,
-      searchPushes: pushes,
-    );
-
-    expect(
-      find.byKey(const ValueKey<String>('add-stop-button')),
-      findsOneWidget,
-    );
-
-    await tester.tap(find.byKey(const ValueKey<String>('add-stop-button')));
-    await tester.pump();
-    await tester.pump();
-    await tester.pump();
-    await tester.pump(const Duration(milliseconds: 10));
-
-    // The stop search opened with a real bias — the contract that keeps the
-    // real screen out of its blocking branch
-    // (`location_search_screen_test.dart:61`) — and the picked stop landed in
-    // the itinerary.
-    expect(pushes, hasLength(1));
-    expect(pushes.single['hint'], 'Add a stop');
-    expect(pushes.single['lat'], isNotNull);
-    expect(pushes.single['lng'], isNotNull);
-    expect(find.text('Enable location to search nearby'), findsNothing);
-    expect(find.text('Coffee Shop'), findsOneWidget);
-  });
+      // The bias is a search center only: no pickup was fabricated, so the
+      // booking action stays disabled.
+      final button = tester.widget<ElevatedButton>(
+        find.widgetWithText(ElevatedButton, 'Request Trip'),
+      );
+      expect(button.onPressed, isNull);
+    },
+  );
 
   testWidgets(
-      'selecting a destination with a device fix drives the route and estimate',
-      (WidgetTester tester) async {
-    fakeLocation
-      ..availability = LocationAvailability.granted
-      ..position = testPosition(9.92, -84.08);
-    final routeRequests = <Map<String, dynamic>>[];
-    dioAdapter.onGet(
-      ApiEndpoints.navigationRoute,
-      (server) => server.replyCallback(200, (options) {
-        routeRequests.add(Map<String, dynamic>.from(options.queryParameters));
-        return legRouteBody(options);
-      }),
-    );
-    final estimateRequests = <Map<String, dynamic>>[];
-    dioAdapter.onPost(
-      ApiEndpoints.priceEstimate,
-      (server) => server.replyCallback(200, (options) {
-        estimateRequests.add(Map<String, dynamic>.from(options.data as Map));
-        return {
-          'estimates': [
-            {
-              'vehicle_type': 'sedan',
-              'base_fare': 2.5,
-              'total': 8.5,
-              'currency': 'USD',
-            },
-          ],
-        };
-      }),
-      data: Matchers.any,
-    );
+    'no fix and no pickup: adding a stop opens the search with a bias',
+    (WidgetTester tester) async {
+      fakeLocation
+        ..availability = LocationAvailability.denied
+        ..position = null;
+      final pushes = <Map<String, dynamic>>[];
 
-    await pumpHome(tester, destinationResult: destinationPlace);
+      // A destination alone exposes the stop editor, even with no origin.
+      await pumpHome(
+        tester,
+        destination: destinationPlace,
+        addStopResult: stopPlace,
+        searchPushes: pushes,
+      );
 
-    await tester.tap(find.text('Where to?'));
-    await tester.pump();
-    await tester.pump();
-    await tester.pump();
-    await pumpRoute(tester);
+      expect(
+        find.byKey(const ValueKey<String>('add-stop-button')),
+        findsOneWidget,
+      );
 
-    // The picked destination is set and the preview leg ends at its coords.
-    expect(find.text('Dropoff Point'), findsOneWidget);
-    expect(routeRequests, isNotEmpty);
-    expect(routeRequests.last['to_lat'], destinationPlace.lat);
-    expect(routeRequests.last['to_lng'], destinationPlace.lng);
+      await tester.tap(find.byKey(const ValueKey<String>('add-stop-button')));
+      await tester.pump();
+      await tester.pump();
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 10));
 
-    await tester.ensureVisible(find.text('Request Trip'));
-    await tester.pump();
-    await tester.tap(find.text('Request Trip'));
-    await pumpRoute(tester);
+      // The stop search opened with a real bias and the picked stop landed in
+      // the itinerary.
+      expect(pushes, hasLength(1));
+      expect(pushes.single['hint'], 'Add a stop');
+      expect(pushes.single['lat'], isNotNull);
+      expect(pushes.single['lng'], isNotNull);
+      expect(find.text('Coffee Shop'), findsOneWidget);
+    },
+  );
 
-    expect(estimateRequests, hasLength(1));
-    expect(estimateRequests.single['dropoff_lat'], destinationPlace.lat);
-    expect(estimateRequests.single['dropoff_lng'], destinationPlace.lng);
-  });
+  testWidgets(
+    'selecting a destination with a device fix drives the route and estimate',
+    (WidgetTester tester) async {
+      fakeLocation
+        ..availability = LocationAvailability.granted
+        ..position = testPosition(9.92, -84.08);
+      final routeRequests = <Map<String, dynamic>>[];
+      dioAdapter.onGet(
+        ApiEndpoints.navigationRoute,
+        (server) => server.replyCallback(200, (options) {
+          routeRequests.add(Map<String, dynamic>.from(options.queryParameters));
+          return legRouteBody(options);
+        }),
+      );
+      final estimateRequests = <Map<String, dynamic>>[];
+      dioAdapter.onPost(
+        ApiEndpoints.priceEstimate,
+        (server) => server.replyCallback(200, (options) {
+          estimateRequests.add(Map<String, dynamic>.from(options.data as Map));
+          return {
+            'estimates': [
+              {
+                'vehicle_type': 'sedan',
+                'base_fare': 2.5,
+                'total': 8.5,
+                'currency': 'USD',
+              },
+            ],
+          };
+        }),
+        data: Matchers.any,
+      );
+
+      await pumpHome(tester, destinationResult: destinationPlace);
+
+      await tester.tap(find.text('Where to?'));
+      await tester.pump();
+      await tester.pump();
+      await tester.pump();
+      await pumpRoute(tester);
+
+      // The picked destination is set and the preview leg ends at its coords.
+      expect(find.text('Dropoff Point'), findsOneWidget);
+      expect(routeRequests, isNotEmpty);
+      expect(routeRequests.last['to_lat'], destinationPlace.lat);
+      expect(routeRequests.last['to_lng'], destinationPlace.lng);
+
+      await tester.ensureVisible(find.text('Request Trip'));
+      await tester.pump();
+      await tester.tap(find.text('Request Trip'));
+      await pumpRoute(tester);
+
+      expect(estimateRequests, hasLength(1));
+      expect(estimateRequests.single['dropoff_lat'], destinationPlace.lat);
+      expect(estimateRequests.single['dropoff_lng'], destinationPlace.lng);
+    },
+  );
 
   // ---------------------------------------------------------------------------
   // [home] resizable bottom panel (drag + scroll).
@@ -1166,82 +1186,85 @@ void main() {
   // actually above the initial 0.25 and the panel has room to grow.
   const resizeSurface = Size(800, 600);
 
-  DraggableScrollableSheet sheetWidget(WidgetTester tester) =>
-      tester.widget<DraggableScrollableSheet>(
-        find.byType(DraggableScrollableSheet),
-      );
+  DraggableScrollableSheet sheetWidget(WidgetTester tester) => tester
+      .widget<DraggableScrollableSheet>(find.byType(DraggableScrollableSheet));
 
   /// The sheet's current size as a fraction of the viewport.
   double sheetSize(WidgetTester tester) => tester
-      .widget<FractionallySizedBox>(find.descendant(
-        of: find.byType(DraggableScrollableSheet),
-        matching: find.byType(FractionallySizedBox),
-      ))
+      .widget<FractionallySizedBox>(
+        find.descendant(
+          of: find.byType(DraggableScrollableSheet),
+          matching: find.byType(FractionallySizedBox),
+        ),
+      )
       .heightFactor!;
 
   double mapHeight(WidgetTester tester) =>
       tester.getSize(find.byKey(const ValueKey<String>('home-map'))).height;
 
   testWidgets(
-      'scrolling the panel up reaches the content-driven max and shrinks the map',
-      (WidgetTester tester) async {
-    await pumpHome(
-      tester,
-      pickup: pickupPlace,
-      destination: destinationPlace,
-      surface: resizeSurface,
-    );
+    'scrolling the panel up reaches the content-driven max and shrinks the map',
+    (WidgetTester tester) async {
+      await pumpHome(
+        tester,
+        pickup: pickupPlace,
+        destination: destinationPlace,
+        surface: resizeSurface,
+      );
 
-    final sheet = sheetWidget(tester);
-    expect(sheet.snap, isTrue);
-    expect(sheet.maxChildSize, greaterThan(sheet.initialChildSize));
-    expect(sheet.minChildSize, lessThan(sheet.initialChildSize));
-    expect(sheetSize(tester), closeTo(sheet.initialChildSize, 0.001));
+      final sheet = sheetWidget(tester);
+      expect(sheet.snap, isTrue);
+      expect(sheet.maxChildSize, greaterThan(sheet.initialChildSize));
+      expect(sheet.minChildSize, lessThan(sheet.initialChildSize));
+      expect(sheetSize(tester), closeTo(sheet.initialChildSize, 0.001));
 
-    final beforeMap = mapHeight(tester);
-    expect(beforeMap, closeTo(600 * (1 - sheet.initialChildSize), 1));
+      final beforeMap = mapHeight(tester);
+      expect(beforeMap, closeTo(600 * (1 - sheet.initialChildSize), 1));
 
-    await tester.drag(
-      find.byType(SingleChildScrollView),
-      const Offset(0, -600),
-    );
-    await tester.pumpAndSettle();
+      await tester.drag(
+        find.byType(SingleChildScrollView),
+        const Offset(0, -600),
+      );
+      await tester.pumpAndSettle();
 
-    final maxSheet = sheetWidget(tester).maxChildSize;
-    expect(sheetSize(tester), closeTo(maxSheet, 0.01));
-    expect(mapHeight(tester), lessThan(beforeMap));
-    expect(mapHeight(tester), closeTo(600 * (1 - maxSheet), 2));
-  });
+      final maxSheet = sheetWidget(tester).maxChildSize;
+      expect(sheetSize(tester), closeTo(maxSheet, 0.01));
+      expect(mapHeight(tester), lessThan(beforeMap));
+      expect(mapHeight(tester), closeTo(600 * (1 - maxSheet), 2));
+    },
+  );
 
   testWidgets(
-      'scrolling the panel down reaches handle-only min and lifts the FAB',
-      (WidgetTester tester) async {
-    await pumpHome(
-      tester,
-      pickup: pickupPlace,
-      destination: destinationPlace,
-      surface: resizeSurface,
-    );
+    'scrolling the panel down reaches handle-only min and lifts the FAB',
+    (WidgetTester tester) async {
+      await pumpHome(
+        tester,
+        pickup: pickupPlace,
+        destination: destinationPlace,
+        surface: resizeSurface,
+      );
 
-    await tester.drag(
-      find.byType(SingleChildScrollView),
-      const Offset(0, 600),
-    );
-    await tester.pumpAndSettle();
+      await tester.drag(
+        find.byType(SingleChildScrollView),
+        const Offset(0, 600),
+      );
+      await tester.pumpAndSettle();
 
-    final minSheet = sheetWidget(tester).minChildSize;
-    expect(sheetSize(tester), closeTo(minSheet, 0.01));
-    expect(mapHeight(tester), closeTo(600 * (1 - minSheet), 2));
+      final minSheet = sheetWidget(tester).minChildSize;
+      expect(sheetSize(tester), closeTo(minSheet, 0.01));
+      expect(mapHeight(tester), closeTo(600 * (1 - minSheet), 2));
 
-    // The my-location control rides above the collapsed panel: its bottom edge
-    // never dips below the panel's top.
-    final fab = tester.getRect(find.byType(FloatingActionButton));
-    final panel = tester.getRect(find.byType(AppBottomSheet));
-    expect(fab.bottom, lessThanOrEqualTo(panel.top));
-  });
+      // The my-location control rides above the collapsed panel: its bottom edge
+      // never dips below the panel's top.
+      final fab = tester.getRect(find.byType(FloatingActionButton));
+      final panel = tester.getRect(find.byType(AppBottomSheet));
+      expect(fab.bottom, lessThanOrEqualTo(panel.top));
+    },
+  );
 
-  testWidgets('a released drag snaps to the nearest snap point',
-      (WidgetTester tester) async {
+  testWidgets('a released drag snaps to the nearest snap point', (
+    WidgetTester tester,
+  ) async {
     await pumpHome(
       tester,
       pickup: pickupPlace,
@@ -1252,10 +1275,7 @@ void main() {
 
     // A small upward drag with no velocity settles back to `initial` (the
     // offset clears the touch slop so it is a scroll, not a tap on a field).
-    await tester.drag(
-      find.byType(SingleChildScrollView),
-      const Offset(0, -40),
-    );
+    await tester.drag(find.byType(SingleChildScrollView), const Offset(0, -40));
     await tester.pumpAndSettle();
     expect(sheetSize(tester), closeTo(sheet.initialChildSize, 0.01));
 
@@ -1269,8 +1289,9 @@ void main() {
     expect(sheetSize(tester), closeTo(maxSheet, 0.01));
   });
 
-  testWidgets('the keyboard inset pads the sheet without collapsing it',
-      (WidgetTester tester) async {
+  testWidgets('the keyboard inset pads the sheet without collapsing it', (
+    WidgetTester tester,
+  ) async {
     await pumpHome(
       tester,
       pickup: pickupPlace,
@@ -1291,8 +1312,9 @@ void main() {
     expect(find.text('Request Trip'), findsOneWidget);
   });
 
-  testWidgets('the handle is a labeled accessibility resize toggle',
-      (WidgetTester tester) async {
+  testWidgets('the handle toggles the panel between min and opening size', (
+    WidgetTester tester,
+  ) async {
     await pumpHome(
       tester,
       pickup: pickupPlace,
@@ -1300,12 +1322,28 @@ void main() {
       surface: resizeSurface,
     );
 
-    final semantics = tester
+    Semantics handle() => tester
         .widgetList<Semantics>(find.byType(Semantics))
         .firstWhere(
-          (widget) =>
-              widget.properties.label == 'Drag to resize booking panel',
+          (widget) => widget.properties.label == 'Drag to resize booking panel',
         );
-    expect(semantics.properties.onTap, isNotNull);
+
+    final sheet = sheetWidget(tester);
+    expect(handle().properties.onTap, isNotNull);
+    expect(handle().properties.value, 'Expanded');
+    expect(sheetSize(tester), closeTo(sheet.initialChildSize, 0.001));
+
+    // Invoking the handle's accessible action collapses the panel to its
+    // handle-only minimum.
+    handle().properties.onTap!();
+    await tester.pumpAndSettle();
+    expect(handle().properties.value, 'Collapsed');
+    expect(sheetSize(tester), closeTo(sheet.minChildSize, 0.01));
+
+    // Invoking it again expands back to the opening size.
+    handle().properties.onTap!();
+    await tester.pumpAndSettle();
+    expect(handle().properties.value, 'Expanded');
+    expect(sheetSize(tester), closeTo(sheet.initialChildSize, 0.01));
   });
 }
