@@ -1,28 +1,29 @@
 ---
 tag: location
-depends_on: []
+depends_on: ["landed [location] Android foreground permissions (driver_app_plans/STATUS.md)"]
 status: deferred
 ---
 
 # [location] Background tracking — keep an online driver positioned when backgrounded
 
-> **DEFERRED** — a future product feature, not a bug-fix prerequisite. Do **not** start until the
-> manifest fix `[location]_android_location_permission.md` has landed (foreground permissions +
-> `uses-feature` must exist first) **and** the product has decided screen-off dispatchability is worth
-> the Play Store review and battery cost. Owner: `driver-planner`. Verify: `melos run analyze` +
-> `melos run test` (Linux FVM SDK — see STATUS.md Verification); the Android behavior is
-> **UNVERIFIABLE in this WSL tree** and must be closed on an Android host (see Verification).
+> **DEFERRED** — a future product feature, not a bug-fix prerequisite. Its prerequisite has landed: the
+> foreground permission work (`ACCESS_FINE_LOCATION`/`COARSE` + `uses-feature`) is now in the driver main
+> manifest (`driver_app_plans/STATUS.md` → Landed `[location]`). Do **not** start until the product has
+> decided screen-off dispatchability is worth the Play Store review and battery cost. Owner:
+> `driver-planner`. Verify: `melos run analyze` + `melos run test` (Linux FVM SDK — see STATUS.md
+> Verification); the Android behavior is **UNVERIFIABLE in this WSL tree** and must be closed on an
+> Android host (see Verification).
 >
 > **OWNERSHIP:** this plan owns the coupled `ACCESS_BACKGROUND_LOCATION` permission and the
-> `FOREGROUND_SERVICE`/`FOREGROUND_SERVICE_LOCATION` permissions. `[location]_android_location_permission.md`
-> deliberately does **not** add them; a bare background-location permission is useless without the
-> service described here.
+> `FOREGROUND_SERVICE`/`FOREGROUND_SERVICE_LOCATION` permissions. The landed foreground `[location]`
+> capability deliberately does **not** add them; a bare background-location permission is useless without
+> the service described here.
 >
 > **Why deferred (per the skill):** the skill reserves `status: deferred` for a plan whose work is gated
 > on a product decision and a landed prerequisite; this is a new feature (foreground service, persistent
 > notification, Play Store declaration, battery/lifecycle design), not a fix for a broken landed
-> capability. It is independent (`depends_on: []`, matching the rider deferred-plan convention) and
-> unnumbered — its only prerequisite is a gate, not an open plan it must extend.
+> capability. It is unnumbered — its `depends_on` names landed capability, not an open plan it must
+> extend.
 
 ## Goal
 
@@ -53,7 +54,7 @@ declaration that requires.
 On Android 10+, a bare `ACCESS_BACKGROUND_LOCATION` grant does not keep the Dart isolate emitting fixes:
 the app process can still be frozen/killed in the background, so no stream events arrive. The permission
 is necessary but **insufficient**. The isolate must be kept alive by a foreground service with an ongoing
-notification. The manifest plan's §3 records this and leaves the permission to this plan.
+notification. The landed foreground `[location]` work records this and leaves the permission to this plan.
 
 ## Scope
 
@@ -132,8 +133,8 @@ Add to `driver_app/android/app/src/main/AndroidManifest.xml`:
   "Allow all the time" path on Android 11+.
 - Handle denial/degradation: if background location is not granted, fall back to foreground-only and
   surface the limitation honestly (the existing `appPermissionProvider` banner is the seam). This plan
-  can also absorb the deferred `deniedForever` affordance from
-  `[location]_android_location_permission.md` §5, since it owns the richer permission UX.
+  can also absorb the deferred `deniedForever` affordance from the landed `[location]` capability
+  (`driver_app_plans/STATUS.md` → Landed `[location]`), since it owns the richer permission UX.
 
 ### 6. Tests
 
@@ -159,9 +160,9 @@ Add to `driver_app/android/app/src/main/AndroidManifest.xml`:
 
 ## Out of scope
 
-- The manifest prerequisite itself (`ACCESS_FINE_LOCATION`/`COARSE`, `uses-feature`) — owner:
-  `[location]_android_location_permission.md`.
-- The tile/OSM work (`[map]_android_tile_access.md`) and any API/Go change.
+- The foreground permission prerequisite itself (`ACCESS_FINE_LOCATION`/`COARSE`, `uses-feature`) —
+  landed; see `driver_app_plans/STATUS.md` → Landed `[location]`.
+- The tile/OSM work (landed; `driver_app_plans/STATUS.md` → Landed `[map]`) and any API/Go change.
 - iOS background modes (the rider may get its own iOS work; this plan is Android-first).
 - Fleet tracking of a driver who is **offline** (privacy): the service must not run when offline.
 
