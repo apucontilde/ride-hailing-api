@@ -1,8 +1,10 @@
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
 import 'package:ride_hailing_shared/ride_hailing_shared.dart';
 import '../../../core/auth/auth_provider.dart';
+import '../../../core/platform/enter_to_submit.dart';
 
 class LoginScreen extends ConsumerStatefulWidget {
   const LoginScreen({super.key});
@@ -17,6 +19,7 @@ class _LoginScreenState extends ConsumerState<LoginScreen> {
   final _passwordController = TextEditingController();
   bool _obscurePassword = true;
   bool _rememberMe = false;
+  bool _isSubmitting = false;
 
   @override
   void initState() {
@@ -42,53 +45,64 @@ class _LoginScreenState extends ConsumerState<LoginScreen> {
   }
 
   Future<void> _submit() async {
+    if (_isSubmitting || ref.read(authProvider).isLoading) return;
     if (!_formKey.currentState!.validate()) return;
 
-    final email = _emailController.text.trim();
-    final password = _passwordController.text;
-    final notifier = ref.read(authProvider.notifier);
+    _isSubmitting = true;
+    try {
+      final email = _emailController.text.trim();
+      final password = _passwordController.text;
+      final notifier = ref.read(authProvider.notifier);
 
-    if (notifier.needsAccountSwitch(email)) {
-      final currentEmail = ref.read(authProvider).user?.email ?? 'your account';
-      final confirmed = await showDialog<bool>(
-        context: context,
-        builder: (dialogContext) => AlertDialog(
-          title: const Text('Switch account?'),
-          content: Text('Sign out of $currentEmail and sign in as $email?'),
-          actions: [
-            TextButton(
-              onPressed: () => Navigator.of(dialogContext).pop(false),
-              child: const Text('Cancel'),
-            ),
-            FilledButton(
-              onPressed: () => Navigator.of(dialogContext).pop(true),
-              child: const Text('Switch account'),
-            ),
-          ],
-        ),
-      );
-      if (confirmed != true) return;
-      await notifier.switchAccount(email, password);
-    } else {
-      await notifier.login(email, password);
-    }
+      if (notifier.needsAccountSwitch(email)) {
+        final currentEmail =
+            ref.read(authProvider).user?.email ?? 'your account';
+        final confirmed = await showDialog<bool>(
+          context: context,
+          builder: (dialogContext) => AlertDialog(
+            title: const Text('Switch account?'),
+            content: Text('Sign out of $currentEmail and sign in as $email?'),
+            actions: [
+              TextButton(
+                onPressed: () => Navigator.of(dialogContext).pop(false),
+                child: const Text('Cancel'),
+              ),
+              FilledButton(
+                onPressed: () => Navigator.of(dialogContext).pop(true),
+                child: const Text('Switch account'),
+              ),
+            ],
+          ),
+        );
+        if (confirmed != true) return;
+        await notifier.switchAccount(email, password);
+      } else {
+        await notifier.login(email, password);
+      }
 
-    if (_rememberMe) {
-      await ref.read(authProvider.notifier).setRememberedEmail(email);
-    } else {
-      await ref.read(authProvider.notifier).setRememberedEmail(null);
-    }
+      if (_rememberMe) {
+        await ref.read(authProvider.notifier).setRememberedEmail(email);
+      } else {
+        await ref.read(authProvider.notifier).setRememberedEmail(null);
+      }
 
-    if (!mounted) return;
-    final authState = ref.read(authProvider);
-    if (authState.isAuthenticated) {
-      context.go('/home');
+      if (!mounted) return;
+      final authState = ref.read(authProvider);
+      if (authState.isAuthenticated) {
+        context.go('/home');
+      }
+    } finally {
+      _isSubmitting = false;
     }
   }
 
   @override
   Widget build(BuildContext context) {
     final authState = ref.watch(authProvider);
+    final enterSubmits = shouldSubmitOnEnter(
+      isWeb: kIsWeb,
+      platform: defaultTargetPlatform,
+    );
 
     return Scaffold(
       appBar: AppBar(title: const Text('Log In')),
@@ -106,9 +120,13 @@ class _LoginScreenState extends ConsumerState<LoginScreen> {
                   label: 'Email',
                   hint: 'Enter your email',
                   keyboardType: TextInputType.emailAddress,
-                  autofillHints: const [AutofillHints.email, AutofillHints.username],
+                  autofillHints: const [
+                    AutofillHints.email,
+                    AutofillHints.username,
+                  ],
                   prefixIcon: const Icon(Icons.email_outlined),
                   validator: Validators.validateEmail,
+                  textInputAction: enterSubmits ? TextInputAction.next : null,
                 ),
                 const SizedBox(height: 16),
                 AppTextField(
@@ -119,50 +137,56 @@ class _LoginScreenState extends ConsumerState<LoginScreen> {
                   autofillHints: const [AutofillHints.password],
                   prefixIcon: const Icon(Icons.lock_outlined),
                   suffixIcon: IconButton(
-                    icon: Icon(_obscurePassword
-                        ? Icons.visibility_off
-                        : Icons.visibility),
+                    icon: Icon(
+                      _obscurePassword
+                          ? Icons.visibility_off
+                          : Icons.visibility,
+                    ),
                     onPressed: () =>
                         setState(() => _obscurePassword = !_obscurePassword),
                   ),
-                  validator: (value) => Validators.validateRequired(value, 'Password'),
+                  validator: (value) =>
+                      Validators.validateRequired(value, 'Password'),
+                  textInputAction: enterSubmits ? TextInputAction.done : null,
+                  onFieldSubmitted: enterSubmits ? (_) => _submit() : null,
                 ),
-              const SizedBox(height: 8),
-              Row(
-                children: [
-                  Checkbox(
-                    value: _rememberMe,
-                    onChanged: (value) => setState(() => _rememberMe = value ?? false),
+                const SizedBox(height: 8),
+                Row(
+                  children: [
+                    Checkbox(
+                      value: _rememberMe,
+                      onChanged: (value) =>
+                          setState(() => _rememberMe = value ?? false),
+                    ),
+                    const Text('Remember me'),
+                  ],
+                ),
+                if (authState.error != null) ...[
+                  const SizedBox(height: 12),
+                  Text(
+                    authState.error!,
+                    style: AppTextStyles.body.copyWith(
+                      color: Theme.of(context).colorScheme.error,
+                    ),
                   ),
-                  const Text('Remember me'),
                 ],
-              ),
-              if (authState.error != null) ...[
-                const SizedBox(height: 12),
-                Text(
-                  authState.error!,
-                  style: AppTextStyles.body.copyWith(
-                    color: Theme.of(context).colorScheme.error,
-                  ),
+                const SizedBox(height: 24),
+                AppButton(
+                  label: 'Log In',
+                  onPressed: _submit,
+                  isLoading: authState.isLoading,
+                ),
+                const SizedBox(height: 16),
+                TextButton(
+                  onPressed: () => context.go('/forgot-password'),
+                  child: const Text('Forgot password?'),
+                ),
+                TextButton(
+                  onPressed: () => context.go('/register'),
+                  child: const Text("Don't have an account? Sign up"),
                 ),
               ],
-              const SizedBox(height: 24),
-              AppButton(
-                label: 'Log In',
-                onPressed: _submit,
-                isLoading: authState.isLoading,
-              ),
-              const SizedBox(height: 16),
-              TextButton(
-                onPressed: () => context.go('/forgot-password'),
-                child: const Text('Forgot password?'),
-              ),
-              TextButton(
-                onPressed: () => context.go('/register'),
-                child: const Text("Don't have an account? Sign up"),
-              ),
-            ],
-          ),
+            ),
           ),
         ),
       ),

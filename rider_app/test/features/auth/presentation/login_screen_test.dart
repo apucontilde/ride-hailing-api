@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
@@ -13,8 +14,11 @@ import 'package:rider_app/core/network/websocket_service.dart';
 import 'package:rider_app/features/auth/presentation/login_screen.dart';
 
 class MockAuthStorage extends Mock implements AuthStorage {}
+
 class MockApiClient extends Mock implements ApiClient {}
+
 class MockDio extends Mock implements Dio {}
+
 class MockWebSocketService extends Mock implements WebSocketService {}
 
 void main() {
@@ -29,17 +33,22 @@ void main() {
     mockDio = MockDio();
     mockWebSocketService = MockWebSocketService();
     when(() => mockApiClient.dio).thenReturn(mockDio);
-    when(() => mockStorage.saveTokens(
-      accessToken: any(named: 'accessToken'),
-      refreshToken: any(named: 'refreshToken'),
-    )).thenAnswer((_) async {});
+    when(
+      () => mockStorage.saveTokens(
+        accessToken: any(named: 'accessToken'),
+        refreshToken: any(named: 'refreshToken'),
+      ),
+    ).thenAnswer((_) async {});
     when(() => mockStorage.clearTokens()).thenAnswer((_) async {});
     when(() => mockStorage.getAccessToken()).thenAnswer((_) async => null);
-    when(() => mockStorage.getRefreshToken()).thenAnswer((_) async => 'refresh');
+    when(
+      () => mockStorage.getRefreshToken(),
+    ).thenAnswer((_) async => 'refresh');
     when(() => mockStorage.getRememberedEmail()).thenAnswer((_) async => null);
     when(() => mockStorage.saveRememberedEmail(any())).thenAnswer((_) async {});
-    when(() => mockWebSocketService.connect(token: any(named: 'token')))
-        .thenAnswer((_) async {});
+    when(
+      () => mockWebSocketService.connect(token: any(named: 'token')),
+    ).thenAnswer((_) async {});
     when(() => mockWebSocketService.disconnect()).thenAnswer((_) async {});
   });
 
@@ -60,21 +69,17 @@ void main() {
             ),
             GoRoute(
               path: '/home',
-              builder: (context, state) => const Scaffold(
-                body: Text('Home'),
-              ),
+              builder: (context, state) => const Scaffold(body: Text('Home')),
             ),
             GoRoute(
               path: '/register',
-              builder: (context, state) => const Scaffold(
-                body: Text('Register'),
-              ),
+              builder: (context, state) =>
+                  const Scaffold(body: Text('Register')),
             ),
             GoRoute(
               path: '/forgot-password',
-              builder: (context, state) => const Scaffold(
-                body: Text('Forgot Password'),
-              ),
+              builder: (context, state) =>
+                  const Scaffold(body: Text('Forgot Password')),
             ),
           ],
         ),
@@ -91,8 +96,9 @@ void main() {
     expect(find.widgetWithText(ElevatedButton, 'Log In'), findsOneWidget);
   });
 
-  testWidgets('shows validation errors for empty fields',
-      (WidgetTester tester) async {
+  testWidgets('shows validation errors for empty fields', (
+    WidgetTester tester,
+  ) async {
     await tester.pumpWidget(createApp());
     await tester.pump();
 
@@ -104,35 +110,46 @@ void main() {
   });
 
   testWidgets('shows error on failed login', (WidgetTester tester) async {
-    when(() => mockDio.post(
-      any(),
-      data: any(named: 'data'),
-    )).thenThrow(ApiException('Invalid credentials', statusCode: 401));
+    when(
+      () => mockDio.post(any(), data: any(named: 'data')),
+    ).thenThrow(ApiException('Invalid credentials', statusCode: 401));
 
     await tester.pumpWidget(createApp());
     await tester.pump();
 
-    await tester.enterText(find.widgetWithText(TextFormField, 'Email'), 'test@test.com');
-    await tester.enterText(find.widgetWithText(TextFormField, 'Password'), 'Password1');
+    await tester.enterText(
+      find.widgetWithText(TextFormField, 'Email'),
+      'test@test.com',
+    );
+    await tester.enterText(
+      find.widgetWithText(TextFormField, 'Password'),
+      'Password1',
+    );
     await tester.tap(find.widgetWithText(ElevatedButton, 'Log In'));
     await tester.pumpAndSettle();
 
     expect(find.text('Invalid credentials'), findsOneWidget);
   });
 
-  testWidgets('shows loading state while logging in',
-      (WidgetTester tester) async {
+  testWidgets('shows loading state while logging in', (
+    WidgetTester tester,
+  ) async {
     final completer = Completer<Response>();
-    when(() => mockDio.post(
-      any(),
-      data: any(named: 'data'),
-    )).thenAnswer((_) => completer.future);
+    when(
+      () => mockDio.post(any(), data: any(named: 'data')),
+    ).thenAnswer((_) => completer.future);
 
     await tester.pumpWidget(createApp());
     await tester.pump();
 
-    await tester.enterText(find.widgetWithText(TextFormField, 'Email'), 'test@test.com');
-    await tester.enterText(find.widgetWithText(TextFormField, 'Password'), 'Password1');
+    await tester.enterText(
+      find.widgetWithText(TextFormField, 'Email'),
+      'test@test.com',
+    );
+    await tester.enterText(
+      find.widgetWithText(TextFormField, 'Password'),
+      'Password1',
+    );
     await tester.tap(find.widgetWithText(ElevatedButton, 'Log In'));
     await tester.pump();
 
@@ -142,15 +159,17 @@ void main() {
       isNull,
     );
 
-    completer.complete(Response(
-      requestOptions: RequestOptions(path: '/auth/login'),
-      statusCode: 200,
-      data: {
-        'access_token': 'token',
-        'refresh_token': 'refresh',
-        'user': {'id': '1', 'email': 'test@test.com'},
-      },
-    ));
+    completer.complete(
+      Response(
+        requestOptions: RequestOptions(path: '/auth/login'),
+        statusCode: 200,
+        data: {
+          'access_token': 'token',
+          'refresh_token': 'refresh',
+          'user': {'id': '1', 'email': 'test@test.com'},
+        },
+      ),
+    );
     await tester.pumpAndSettle();
 
     // A successful login lands on the authenticated home route.
@@ -167,8 +186,9 @@ void main() {
     expect(find.text('Register'), findsOneWidget);
   });
 
-  testWidgets('navigates to forgot password screen',
-      (WidgetTester tester) async {
+  testWidgets('navigates to forgot password screen', (
+    WidgetTester tester,
+  ) async {
     await tester.pumpWidget(createApp());
     await tester.pump();
 
@@ -178,39 +198,42 @@ void main() {
     expect(find.text('Forgot Password'), findsOneWidget);
   });
 
-  testWidgets('is a root screen with no back arrow', (WidgetTester tester) async {
+  testWidgets('is a root screen with no back arrow', (
+    WidgetTester tester,
+  ) async {
     await tester.pumpWidget(createApp());
     await tester.pump();
 
     expect(find.byIcon(Icons.arrow_back), findsNothing);
   });
 
-  testWidgets('asks to switch when logging in as another account',
-      (WidgetTester tester) async {
+  testWidgets('asks to switch when logging in as another account', (
+    WidgetTester tester,
+  ) async {
     final postPaths = <String>[];
-    when(() => mockDio.post(any(), data: any(named: 'data'))).thenAnswer(
-      (invocation) async {
-        final path = invocation.positionalArguments.first as String;
-        postPaths.add(path);
-        if (path.contains('logout')) {
-          return Response(
-            requestOptions: RequestOptions(path: path),
-            statusCode: 200,
-          );
-        }
-        final data = invocation.namedArguments[#data] as Map<String, dynamic>;
-        final email = data['email'] as String;
+    when(() => mockDio.post(any(), data: any(named: 'data'))).thenAnswer((
+      invocation,
+    ) async {
+      final path = invocation.positionalArguments.first as String;
+      postPaths.add(path);
+      if (path.contains('logout')) {
         return Response(
           requestOptions: RequestOptions(path: path),
           statusCode: 200,
-          data: {
-            'access_token': 'access-$email',
-            'refresh_token': 'refresh-$email',
-            'user': {'id': email, 'email': email},
-          },
         );
-      },
-    );
+      }
+      final data = invocation.namedArguments[#data] as Map<String, dynamic>;
+      final email = data['email'] as String;
+      return Response(
+        requestOptions: RequestOptions(path: path),
+        statusCode: 200,
+        data: {
+          'access_token': 'access-$email',
+          'refresh_token': 'refresh-$email',
+          'user': {'id': email, 'email': email},
+        },
+      );
+    });
 
     await tester.pumpWidget(createApp());
     await tester.pump();
@@ -222,8 +245,14 @@ void main() {
     await container.read(authProvider.notifier).login('current@test.com', 'pw');
     await tester.pumpAndSettle();
 
-    await tester.enterText(find.widgetWithText(TextFormField, 'Email'), 'other@test.com');
-    await tester.enterText(find.widgetWithText(TextFormField, 'Password'), 'Password1');
+    await tester.enterText(
+      find.widgetWithText(TextFormField, 'Email'),
+      'other@test.com',
+    );
+    await tester.enterText(
+      find.widgetWithText(TextFormField, 'Password'),
+      'Password1',
+    );
     await tester.tap(find.widgetWithText(ElevatedButton, 'Log In'));
     await tester.pumpAndSettle();
 
@@ -239,32 +268,33 @@ void main() {
     expect(postPaths.where((path) => path.contains('logout')), isEmpty);
   });
 
-  testWidgets('confirming the switch cancels the session then logs in',
-      (WidgetTester tester) async {
+  testWidgets('confirming the switch cancels the session then logs in', (
+    WidgetTester tester,
+  ) async {
     final postPaths = <String>[];
-    when(() => mockDio.post(any(), data: any(named: 'data'))).thenAnswer(
-      (invocation) async {
-        final path = invocation.positionalArguments.first as String;
-        postPaths.add(path);
-        if (path.contains('logout')) {
-          return Response(
-            requestOptions: RequestOptions(path: path),
-            statusCode: 200,
-          );
-        }
-        final data = invocation.namedArguments[#data] as Map<String, dynamic>;
-        final email = data['email'] as String;
+    when(() => mockDio.post(any(), data: any(named: 'data'))).thenAnswer((
+      invocation,
+    ) async {
+      final path = invocation.positionalArguments.first as String;
+      postPaths.add(path);
+      if (path.contains('logout')) {
         return Response(
           requestOptions: RequestOptions(path: path),
           statusCode: 200,
-          data: {
-            'access_token': 'access-$email',
-            'refresh_token': 'refresh-$email',
-            'user': {'id': email, 'email': email},
-          },
         );
-      },
-    );
+      }
+      final data = invocation.namedArguments[#data] as Map<String, dynamic>;
+      final email = data['email'] as String;
+      return Response(
+        requestOptions: RequestOptions(path: path),
+        statusCode: 200,
+        data: {
+          'access_token': 'access-$email',
+          'refresh_token': 'refresh-$email',
+          'user': {'id': email, 'email': email},
+        },
+      );
+    });
 
     await tester.pumpWidget(createApp());
     await tester.pump();
@@ -276,8 +306,14 @@ void main() {
     await container.read(authProvider.notifier).login('current@test.com', 'pw');
     await tester.pumpAndSettle();
 
-    await tester.enterText(find.widgetWithText(TextFormField, 'Email'), 'other@test.com');
-    await tester.enterText(find.widgetWithText(TextFormField, 'Password'), 'Password1');
+    await tester.enterText(
+      find.widgetWithText(TextFormField, 'Email'),
+      'other@test.com',
+    );
+    await tester.enterText(
+      find.widgetWithText(TextFormField, 'Password'),
+      'Password1',
+    );
     await tester.tap(find.widgetWithText(ElevatedButton, 'Log In'));
     await tester.pumpAndSettle();
 
@@ -285,11 +321,134 @@ void main() {
     await tester.pumpAndSettle();
 
     final logoutIndex = postPaths.indexWhere((path) => path.contains('logout'));
-    final switchLoginIndex =
-        postPaths.lastIndexWhere((path) => path.contains('login'));
+    final switchLoginIndex = postPaths.lastIndexWhere(
+      (path) => path.contains('login'),
+    );
     expect(logoutIndex, isNonNegative);
     expect(switchLoginIndex, greaterThan(logoutIndex));
     expect(container.read(authProvider).user?.email, 'other@test.com');
     expect(find.text('Home'), findsOneWidget);
+  });
+
+  // ---------------------------------------------------------------------------
+  // [auth] Enter-to-submit on web/desktop only. The email field is not tested
+  // here: it uses `TextInputAction.next`, which only advances focus and never
+  // reaches `_submit` (the predicate unit suite covers the web branch, which
+  // `kIsWeb` cannot exercise in a widget test).
+  // ---------------------------------------------------------------------------
+
+  Response loginResponse() => Response(
+    requestOptions: RequestOptions(path: '/auth/login'),
+    statusCode: 200,
+    data: {
+      'access_token': 'token',
+      'refresh_token': 'refresh',
+      'user': {'id': '1', 'email': 'test@test.com'},
+    },
+  );
+
+  testWidgets('desktop Enter submits the password field exactly once', (
+    WidgetTester tester,
+  ) async {
+    debugDefaultTargetPlatformOverride = TargetPlatform.linux;
+    addTearDown(() => debugDefaultTargetPlatformOverride = null);
+    when(
+      () => mockDio.post(any(), data: any(named: 'data')),
+    ).thenAnswer((_) async => loginResponse());
+
+    await tester.pumpWidget(createApp());
+    await tester.pump();
+
+    await tester.enterText(
+      find.widgetWithText(TextFormField, 'Email'),
+      'test@test.com',
+    );
+    await tester.enterText(
+      find.widgetWithText(TextFormField, 'Password'),
+      'Password1',
+    );
+    await tester.tap(find.widgetWithText(TextFormField, 'Password'));
+    await tester.pump();
+
+    await tester.testTextInput.receiveAction(TextInputAction.done);
+    await tester.pumpAndSettle();
+
+    verify(() => mockDio.post(any(), data: any(named: 'data'))).called(1);
+    expect(find.text('Home'), findsOneWidget);
+
+    debugDefaultTargetPlatformOverride = null;
+  });
+
+  testWidgets('mobile Enter does not submit the password field', (
+    WidgetTester tester,
+  ) async {
+    debugDefaultTargetPlatformOverride = TargetPlatform.android;
+    addTearDown(() => debugDefaultTargetPlatformOverride = null);
+
+    await tester.pumpWidget(createApp());
+    await tester.pump();
+
+    await tester.enterText(
+      find.widgetWithText(TextFormField, 'Email'),
+      'test@test.com',
+    );
+    await tester.enterText(
+      find.widgetWithText(TextFormField, 'Password'),
+      'Password1',
+    );
+    await tester.tap(find.widgetWithText(TextFormField, 'Password'));
+    await tester.pump();
+
+    await tester.testTextInput.receiveAction(TextInputAction.done);
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 10));
+
+    verifyNever(() => mockDio.post(any(), data: any(named: 'data')));
+    expect(find.byType(LoginScreen), findsOneWidget);
+    expect(find.text('Home'), findsNothing);
+
+    debugDefaultTargetPlatformOverride = null;
+  });
+
+  testWidgets('Enter cannot double-submit while a request is in flight', (
+    WidgetTester tester,
+  ) async {
+    debugDefaultTargetPlatformOverride = TargetPlatform.linux;
+    addTearDown(() => debugDefaultTargetPlatformOverride = null);
+    final completer = Completer<Response>();
+    when(
+      () => mockDio.post(any(), data: any(named: 'data')),
+    ).thenAnswer((_) => completer.future);
+
+    await tester.pumpWidget(createApp());
+    await tester.pump();
+
+    await tester.enterText(
+      find.widgetWithText(TextFormField, 'Email'),
+      'test@test.com',
+    );
+    await tester.enterText(
+      find.widgetWithText(TextFormField, 'Password'),
+      'Password1',
+    );
+    await tester.tap(find.widgetWithText(TextFormField, 'Password'));
+    await tester.pump();
+
+    await tester.testTextInput.receiveAction(TextInputAction.done);
+    await tester.pump();
+
+    // `done` unfocuses the field, so re-focus before the second press to prove
+    // the guard — not a lost input connection — is what blocks the repeat.
+    await tester.tap(find.widgetWithText(TextFormField, 'Password'));
+    await tester.pump();
+    await tester.testTextInput.receiveAction(TextInputAction.done);
+    await tester.pump();
+
+    verify(() => mockDio.post(any(), data: any(named: 'data'))).called(1);
+
+    completer.complete(loginResponse());
+    await tester.pumpAndSettle();
+
+    debugDefaultTargetPlatformOverride = null;
   });
 }
