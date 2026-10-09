@@ -170,8 +170,9 @@ Add to `driver_app/android/app/src/main/AndroidManifest.xml`:
 - `ACCESS_BACKGROUND_LOCATION` and the foreground-service permissions are **owned here**, not by the
   manifest plan — do not add them twice.
 - The `shared/lib/src/utils/location_helper.dart` change (if chosen) is a cross-app shared change and
-  must be coordinated with `rider_app_plans/[location]_android_location_permission.md`; the rider does
-  **not** need background location and its behavior must stay foreground-only.
+  must be coordinated with the landed rider `[location]` fix
+  (`rider_app_plans/STATUS.md` → Landed `[location]`); the rider does **not** need background location
+  and its behavior must stay foreground-only.
 - Driver bug #18 in `driver_app_plans/STATUS.md` is this plan's target.
 
 ## Verification

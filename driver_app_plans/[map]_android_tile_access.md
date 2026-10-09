@@ -1,6 +1,6 @@
 ---
 tag: map
-depends_on: []
+depends_on: ["landed [map] shared tile contract (rider_app_plans/STATUS.md)"]
 status: open
 ---
 
@@ -10,12 +10,14 @@ status: open
 > (Linux FVM SDK — see STATUS.md Verification); the Android manifest/device symptoms are
 > **UNVERIFIABLE** in this WSL tree and must be closed on an Android host (see Verification).
 >
-> **CROSS-DOMAIN, co-owned.** The canonical shared contract is defined in
-> `rider_app_plans/[map]_android_tile_access.md` §3 and is adopted here **verbatim**; this plan does
-> not re-specify it and does not keep a driver-only tile factory. The four product-owner locks
-> (2026-10-06) apply to both apps: OSM-compliance now, truthful UA, fully shared tile factory
+> **CROSS-DOMAIN, co-owned.** The canonical shared tile contract is now **landed** as the `[map]`
+> capability — canonical owner: `rider_app_plans/STATUS.md` → Landed `[map]`; code
+> `shared/lib/src/map/map_tile_config.dart:21`, `shared/lib/src/map/map_tile_layer.dart:10,21`,
+> `shared/lib/src/map/map_tile_attribution.dart:8`. This plan adopts it **verbatim**; it does not
+> re-specify the shared symbols and does not keep a driver-only tile factory. The four product-owner
+> locks (2026-10-06) apply to both apps: OSM-compliance now, truthful UA, fully shared tile factory
 > (`shared/` gains `flutter_map`), shared attribution widget now. Tile source beyond OSM is the two
-> rider deferred plans (self-host, runtime-remote) referenced below — not re-authored here.
+> deferred rider plans (self-host, runtime-remote) referenced below — not re-authored here.
 
 ## Goal
 
@@ -42,11 +44,14 @@ final tripMapTileProvider = Provider<TileLayer?>((ref) {
 ```
 
 `grep -rn "TileLayer|tileProvider|tile.openstreetmap|userAgentPackageName|NetworkTileProvider" driver_app/lib driver_app/test`
-returns only this block (plus its consumption at `trip_screen.dart:366` and the test overrides at
-`trip_screen_test.dart:97`, `home_screen_test.dart:79,294`). The driver has **no** booking map and
-**no** second map — this is the whole surface. `shared/lib/src/map/` and
-`driver_app/lib/core/map/` are both **absent** today (verified), so the shared symbols do not exist
-yet: whichever of the two co-owned plans lands first creates them.
+returns only this block (plus its consumption at
+`trip_screen.dart:366` and the test overrides at
+`trip_screen_test.dart:99`, `home_screen_test.dart:79,294`). The driver has **no** booking map and
+**no** second map — this is the whole surface. The shared contract now exists in code
+(`shared/lib/src/map/map_tile_config.dart`, `map_tile_layer.dart`, `map_tile_attribution.dart`; barrel
+exports `shared/lib/ride_hailing_shared.dart:27-29`; `shared/pubspec.yaml:19`), so only
+`driver_app/lib/core/map/` is still absent: this plan adds the driver-local config and rewires the
+trip map.
 
 ### Root cause 1 — `userAgentPackageName` does not match the real application id
 
@@ -80,55 +85,66 @@ entirely network-driven. Required regardless of the tile-source choice.
   `driver_app/lib/config.dart:2-5` (`API_BASE_URL`), so the tile key/URL follows the same precedent.
 - The driver already has the nullable-provider test seam the shared factory keeps
   (`tripMapTileProvider` is a `Provider<TileLayer?>` overridden with `null` in tests so no test touches
-  the network — overrides at `trip_screen_test.dart:97`, `home_screen_test.dart:79,294`).
+  the network — overrides at `trip_screen_test.dart:99`, `home_screen_test.dart:79,294`).
 
-## Canonical shared contract (adopted verbatim from `rider_app_plans/[map]_android_tile_access.md` §3)
+## Canonical shared contract (landed `[map]` capability — `rider_app_plans/STATUS.md` → Landed `[map]`)
 
-Co-owned by the two `[map]` plans; whichever lands first creates these symbols, the other adopts them.
-If any path/name/signature changes, both domains change together. **Do not re-specify or fork these.**
+Already landed in `shared/`; the driver **consumes** it — do not re-create or fork it. If any
+path/name/signature changes, both domains change together. **Do not re-specify these symbols.**
 
-- **`shared/lib/src/map/map_tile_config.dart`** — pure value object, **no `flutter_map` import**:
-  `class MapTileConfig`, const ctor `urlTemplate`, `userAgentPackageName`, `userAgent`,
-  `attribution?`, `subdomains`, `apiKey?`; `Map<String, String> get headers;`; and
-  `factory MapTileConfig.openStreetMap({required String userAgentPackageName, String urlTemplate =
-  'https://tile.openstreetmap.org/{z}/{x}/{y}.png', String contact = MapTileConfig.defaultContact})`.
+- **`shared/lib/src/map/map_tile_config.dart`** — pure value object, **no `flutter_map` import**
+  (`class MapTileConfig` `:7`): const ctor `urlTemplate`, `userAgentPackageName`, `userAgent`,
+  `attribution?`, `subdomains = const <String>[]`, `apiKey?`; `Map<String, String> get headers`
+  (`:61`); `static const String defaultContact = 'tiles@example.invalid'` (`:59`); and the OSM
+  factory (`:21`) `MapTileConfig.openStreetMap({required String userAgentPackageName, required String
+  appName, required String appVersion, String urlTemplate =
+  'https://tile.openstreetmap.org/{z}/{x}/{y}.png', String contact = MapTileConfig.defaultContact,
+  String? apiKey})` — composing `userAgent = '<appName>/<appVersion> (+contact: <contact>)'` and
+  `attribution = '© OpenStreetMap contributors'`.
 - **`shared/lib/src/map/map_tile_layer.dart`** — **FULLY SHARED** (imports `flutter_map`):
-  `TileLayer buildMapTileLayer(MapTileConfig config);` and
+  `TileLayer buildMapTileLayer(MapTileConfig config)` (`:10`; passes
+  `NetworkTileProvider(headers: config.headers)` so the config's truthful UA wins over flutter_map's
+  `putIfAbsent` default) and
   `final mapTileLayerProvider = Provider.family<TileLayer?, MapTileConfig>((ref, config) => buildMapTileLayer(config));`
-  (nullable test seam).
+  (`:21`; nullable test seam).
 - **`shared/lib/src/map/map_tile_attribution.dart`** — `class MapTileAttribution extends StatelessWidget`
-  (`config`, `alignment = Alignment.bottomRight`).
-- **Barrel** `shared/lib/ride_hailing_shared.dart` — three `export` lines, one per new file, no shims:
+  (`:8`; `config`, `alignment = Alignment.bottomRight`; renders nothing when `attribution == null`).
+- **Barrel** `shared/lib/ride_hailing_shared.dart:27-29` — three `export` lines, one per new file, no shims:
   ```dart
   export 'src/map/map_tile_config.dart';
   export 'src/map/map_tile_layer.dart';
   export 'src/map/map_tile_attribution.dart';
   ```
-- **`shared/pubspec.yaml`** — add `flutter_map: ^7.0.2` to `dependencies`. `shared/` is **no longer
-  `flutter_map`-free** (owner decision). This is an explicit exception to "shared is dependency-light";
-  it does **not** relax the re-export rule (import these symbols from the barrel directly, never a shim).
+- **`shared/pubspec.yaml:19`** — `flutter_map: ^7.0.2`. `shared/` is **no longer `flutter_map`-free**
+  (owner decision). This is an explicit exception to "shared is dependency-light"; it does **not**
+  relax the re-export rule (import these symbols from the barrel directly, never a shim).
 
 ### Driver-local mirror (config only — no `TileLayer` construction)
 
-- **New** `driver_app/lib/core/map/driver_map_tile.dart`:
+- **New** `driver_app/lib/core/map/driver_map_tile.dart` (mirrors the landed rider
+  `rider_app/lib/core/map/rider_map_tile.dart`):
 
   ```dart
   final driverMapTileConfigProvider = Provider<MapTileConfig>((ref) {
     return MapTileConfig.openStreetMap(
       userAgentPackageName: 'com.example.driver_app', // real applicationId
+      appName: 'driver_app',
+      appVersion: ApiConfig.appVersion,               // '1.0.0' default / APP_VERSION define
       urlTemplate: ApiConfig.mapTileUrl,
-      // contact: <real contact>   // owner input (defaultContact empty)
+      contact: 'ricardoapuch@gmail.com',
+      apiKey: ApiConfig.mapTileApiKey.isEmpty ? null : ApiConfig.mapTileApiKey,
     );
   });
   ```
 
-  This is the **only** driver-local map symbol. `MapTileConfig.apiKey` stays `null` on the OSM path; the
-  two deferred plans supply it later. Do **not** re-introduce `buildDriverMapTileLayer` or
-  `driverMapTileProvider` — the construction and the test seam are the shared
-  `buildMapTileLayer`/`mapTileLayerProvider`.
+  This is the **only** driver-local map symbol. The composed UA is
+  `driver_app/<appVersion> (+contact: ricardoapuch@gmail.com)`, sent via the shared factory's
+  `NetworkTileProvider(headers:)`. `MapTileConfig.apiKey` is `null` on the OSM path; the two deferred
+  plans supply it later. Do **not** add a driver-local `TileLayer` factory or tile provider — the
+  construction and the test seam are the shared `buildMapTileLayer`/`mapTileLayerProvider`.
 
 - **Config plumbing** in `driver_app/lib/config.dart`, mirroring the rider exactly (precedent
-  `API_BASE_URL` at `:2-5`):
+  `API_BASE_URL` at `:2-5`; the existing `appVersion` at `:16` becomes the `APP_VERSION` define):
 
   ```dart
   static const String mapTileUrl = String.fromEnvironment(
@@ -136,10 +152,15 @@ If any path/name/signature changes, both domains change together. **Do not re-sp
     defaultValue: 'https://tile.openstreetmap.org/{z}/{x}/{y}.png',
   );
   static const String mapTileApiKey = String.fromEnvironment('MAP_TILE_API_KEY');
+  static const String appVersion = String.fromEnvironment(
+    'APP_VERSION',
+    defaultValue: '1.0.0',
+  );
   ```
 
-  The key is supplied at build time (CI secret / `--dart-define`), never committed and never hardcoded in
-  `trip_screen.dart`; it is unused in the OSM path and is only the seam for the deferred plans.
+  `mapTileApiKey` and `appVersion` are supplied at build time (CI secret / `--dart-define`), never
+  committed and never hardcoded in `trip_screen.dart`; the key is unused on the OSM path and is only the
+  seam for the deferred plans.
 
 ## Scope
 
@@ -153,12 +174,13 @@ If any path/name/signature changes, both domains change together. **Do not re-sp
 
 ### 2. Tile source — LOCKED: OSM-compliance now (one decision across both apps)
 
-Reuse the rider's locked decision; the driver gets no separate vote. From
-`rider_app_plans/[map]_android_tile_access.md` §2:
+Reuse the rider's locked decision; the driver gets no separate vote. From the landed `[map]`
+capability (`rider_app_plans/STATUS.md` → Landed `[map]`):
 
 - **Keep** `https://tile.openstreetmap.org/{z}/{x}/{y}.png` for now. **No API key.**
-- **Sent UA must be truthful and contact-bearing:** `flutter_map` renders `flutter_map (com.example.driver_app)`
-  from the shared config (the shared factory is the single construction path). Never a browser string.
+- **Sent UA must be truthful and contact-bearing:** the shared factory sends
+  `driver_app/<appVersion> (+contact: ricardoapuch@gmail.com)` via `NetworkTileProvider(headers:)`
+  (the shared factory is the single construction path). Never a browser string.
 - **Respect OSM usage limits:** no bulk/offline downloading, honour rate limiting / `Retry-After`, keep
   the default (non-aggressive) `TileLayer` concurrency, do not proxy/prefetch tiles.
 - OSM attribution is mandatory — see §4.
@@ -171,24 +193,28 @@ Reuse the rider's locked decision; the driver gets no separate vote. From
 
 ### 3. Adopt the shared factory + driver-local config (ADD-only)
 
-- **Shared (co-owned):** create/adopt `shared/lib/src/map/map_tile_config.dart`,
-  `map_tile_layer.dart`, `map_tile_attribution.dart`, the three barrel `export` lines, and the
-  `shared/pubspec.yaml` `flutter_map` dependency, exactly as specified in the rider plan §3.
+- **Shared (already landed):** `shared/lib/src/map/map_tile_config.dart`, `map_tile_layer.dart`,
+  `map_tile_attribution.dart`, the three barrel `export` lines (`shared/lib/ride_hailing_shared.dart:27-29`),
+  and the `shared/pubspec.yaml:19` `flutter_map` dependency are all present — **consume, do not create**.
 - **Driver-local:** new `driver_app/lib/core/map/driver_map_tile.dart` with only
-  `driverMapTileConfigProvider`, parameterised by the driver's real `applicationId` (`com.example.driver_app`).
+  `driverMapTileConfigProvider`, parameterised by the driver's real `applicationId`
+  (`com.example.driver_app`), `appName: 'driver_app'`, `appVersion: ApiConfig.appVersion`,
+  `contact: 'ricardoapuch@gmail.com'`.
 - **Rewire** `trip_screen.dart:16-21` to delete the inline `TileLayer` literal and `:366` to render
   `ref.watch(mapTileLayerProvider(ref.watch(driverMapTileConfigProvider)))`; the screen no longer names a
   tile host, `userAgentPackageName`, or UA.
 - **Seam rename (explicit):** the old driver-local `tripMapTileProvider` is **removed** rather than
   aliased; the seam becomes the shared `mapTileLayerProvider`. Update the three override sites
-  (`trip_screen_test.dart:97`, `home_screen_test.dart:79,294`) to
+  (`trip_screen_test.dart:99`, `home_screen_test.dart:79,294`) to
   `mapTileLayerProvider.overrideWith((ref, config) => null)`. One vocabulary across both apps.
 
 ### 4. Shared attribution widget (LOCKED: add now)
 
 - Render the shared `MapTileAttribution(config: ...)` on the driver trip map (it already renders on
-  both rider maps). Fed by `MapTileConfig.attribution`; the OSM factory populates `© OpenStreetMap
-  contributors`. `attribution` is nullable so a future provider with no attribution renders nothing.
+  both rider maps — `rider_app/lib/features/home/presentation/home_screen.dart:490` and
+  `active_ride_screen.dart:542`). Fed by `MapTileConfig.attribution`; the OSM factory populates
+  `© OpenStreetMap contributors`. `attribution` is nullable so a future provider with no attribution
+  renders nothing.
 
 ### 5. Tests
 
@@ -207,17 +233,18 @@ Reuse the rider's locked decision; the driver gets no separate vote. From
 2. **Identity:** truthful, contact-bearing UA; real `userAgentPackageName` `com.example.driver_app`.
 3. **Attribution:** shared `MapTileAttribution` added now.
 4. **Tile factory:** **fully shared** in `shared/lib/**`; `shared/` gains `flutter_map`; the nullable
-   `mapTileLayerProvider` test seam lives in shared. No driver-only `buildDriverMapTileLayer`.
-5. **Config:** compile-time `MAP_TILE_URL`/`MAP_TILE_API_KEY` via `String.fromEnvironment` in
-   `driver_app/lib/config.dart`; only `driverMapTileConfigProvider` is driver-local.
+   `mapTileLayerProvider` test seam lives in shared. No driver-local `TileLayer` factory.
+5. **Config:** compile-time `MAP_TILE_URL`/`MAP_TILE_API_KEY`/`APP_VERSION` via `String.fromEnvironment`
+   in `driver_app/lib/config.dart`; only `driverMapTileConfigProvider` is driver-local.
 6. **API key:** deferred until a hosted provider is chosen; only the `MapTileConfig.apiKey` seam lands.
 7. **Deferred follow-ups:** `rider_app_plans/[map]_self_hosted_tile_host.md` and
    `rider_app_plans/[map]_runtime_remote_tile_config.md` (rider-authored, driver consumes).
 
 ## Residual questions (not blockers)
 
-- **Real contact for the UA** (`MapTileConfig.defaultContact` is empty): the owner must supply the ops
-  contact string before landing. Until then the UA is truthful but contact-less.
+- **Contact string:** the driver passes the owner-supplied `'ricardoapuch@gmail.com'`. The shared
+  `MapTileConfig.defaultContact` is the placeholder `'tiles@example.invalid'`
+  (`shared/lib/src/map/map_tile_config.dart:59`) and must not ship.
 - **Is `applicationId` final?** `com.example.driver_app` is the stock template value. If renamed before
   release, the driver `driverMapTileConfigProvider` value and the rider's equivalent must change in the
   same shared-config commit.
@@ -227,19 +254,18 @@ Reuse the rider's locked decision; the driver gets no separate vote. From
 ## Out of scope
 
 - The rider tile fix itself (`rider_app/**`), rider plans, and Go code.
-- Creating or editing `shared/lib/**` and the Android manifest in this task — those are **proposed
-  steps**, not edits performed here.
+- Editing the now-landed `shared/lib/**` contract, and the Android manifest in this task — the manifest
+  edit is a **proposed step**, not an edit performed here; the shared contract is consumed as-is.
 - Standing up tile infrastructure or fetching tile config at runtime — the two deferred rider plans.
 - A caching/offline tile layer, vector tiles, or a routing-style tile proxy through the API.
 - Any driver map beyond `TripScreen` — there is no other `TileLayer` in the driver.
 
 ## Cross-domain
 
-- Canonical contract and tile-source decision: `rider_app_plans/[map]_android_tile_access.md` §2–§4.
-  Driver drift to reconcile (this rewrite): the old plan (a) said `shared/` must **not** gain
-  `flutter_map`, (b) kept the `TileLayer` construction app-local
-  (`buildDriverMapTileLayer`/`driverMapTileProvider`), and (c) had no shared attribution widget — all
-  three are now replaced by the canonical contract.
+- Canonical contract and tile-source decision: the landed `[map]` capability
+  (`rider_app_plans/STATUS.md` → Landed `[map]`; code `shared/lib/src/map/`). The earlier driver plan
+  said `shared/` must **not** gain `flutter_map`, kept the `TileLayer` construction app-local, and had
+  no shared attribution widget — all three are superseded by the now-landed shared contract.
 - The two deferred plans are authored once in the rider domain and consumed by reference.
 - `driver_app/android/app/src/main/AndroidManifest.xml` also lacks location permissions — see the
   sibling `[location]_android_location_permission.md`.
@@ -262,8 +288,8 @@ melos run test
   - install the release APK and confirm the trip map renders (not "Access Blocked"), attribution is
     visible, and a driver can go online / receive an offer;
   - temporarily point the tile URL at a local capture endpoint or a mock to assert the outbound
-    `User-Agent` is the truthful one (and carries `com.example.driver_app`), **not** a browser string and
-    not `com.driver.app`.
+    `User-Agent` is the truthful `driver_app/<appVersion> (+contact: ricardoapuch@gmail.com)`, **not** a
+    browser string and not `com.driver.app`.
 
 ## Open questions
 

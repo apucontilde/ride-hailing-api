@@ -10,8 +10,9 @@ status: open
 > (Linux FVM SDK — see STATUS.md Verification); the Android manifest/device symptom is
 > **UNVERIFIABLE** in this WSL tree and must be closed on an Android host (see Verification).
 >
-> **CROSS-DOMAIN:** mirrors `rider_app_plans/[location]_android_location_permission.md`; the manifest
-> fix and the shared `LocationHelper` are the same in both apps.
+> **CROSS-DOMAIN:** mirrors the landed rider `[location]` manifest fix
+> (`rider_app_plans/STATUS.md` → Landed `[location]`); the manifest fix and the shared `LocationHelper`
+> are the same in both apps.
 >
 > **LOCKED (product owner, 2026-10-06):** add `ACCESS_FINE_LOCATION` + `ACCESS_COARSE_LOCATION` to the
 > **main** manifest; add `<uses-feature android:name="android.hardware.location.gps"
@@ -106,8 +107,8 @@ Add under `<manifest>`:
 <uses-feature android:name="android.hardware.location.gps" android:required="true"/>
 ```
 
-**Parity decision (explicit):** the rider locked `required="true"`
-(`rider_app_plans/[location]_android_location_permission.md` §2). The driver adopts `required="true"`
+**Parity decision (explicit):** the rider locked `required="true"` and it has landed
+(`rider_app_plans/STATUS.md` → Landed `[location]`). The driver adopts `required="true"`
 as well. The justification is *stronger* for the driver than for the rider: the entire online loop is
 GPS-driven (`LocationService.start()` streams `geolocator`), so a device without GPS cannot be
 positioned for dispatch at all. Matching `required="true"` keeps the two manifests consistent; no
@@ -138,8 +139,9 @@ revisit to `required="false"` together.
   denial handling. The driver already distinguishes `deniedPermanently` and renders a banner; the
   missing affordance is an "Open settings" action calling `Geolocator.openAppSettings()` /
   `openLocationSettings()` (`geolocator` 13.0.4 exposes both).
-- **Owner:** deferred alongside the rider's manual-pickup handoff. The rider hands its `deniedForever`
-  deep-link to `rider_app_plans/[location]_manual_pickup_fallback.md`; the driver has no separate
+- **Owner:** deferred alongside the rider's manual-pickup handoff. The rider's `deniedForever`
+  deep-link landed with its manual-pickup fallback (`rider_app_plans/STATUS.md` → Landed `[location]` —
+  the `[location]_manual_pickup_fallback.md` plan was condensed and deleted); the driver has no separate
   manual-pickup plan, so the driver's own denied-forever affordance stays unowned until either (a) the
   background-tracking plan picks it up as part of its notification/permission UX, or (b) a small
   follow-up plan is opened. Record the handoff explicitly rather than silently shipping a message-only
@@ -159,10 +161,11 @@ revisit to `required="false"` together.
 
 ## Coordination
 
-- Cross-app: `rider_app_plans/[location]_android_location_permission.md` fixes the identical manifest
-  gap in the rider app; the shared `LocationHelper` is common. Any change to `LocationHelper` (e.g. a
-  `foregroundNotificationConfig` for background tracking) is a **shared** change that must coordinate
-  the rider plan, `[location]_background_tracking.md`, and this plan — do not make it here.
+- Cross-app: the landed rider `[location]` fix (`rider_app_plans/STATUS.md` → Landed `[location]`)
+  covers the identical manifest gap in the rider app; the shared `LocationHelper` is common. Any change
+  to `LocationHelper` (e.g. a `foregroundNotificationConfig` for background tracking) is a **shared**
+  change that must coordinate the rider plan, `[location]_background_tracking.md`, and this plan — do
+  not make it here.
 - The driver `[online]` permission-state wiring is already landed (driver `STATUS.md` §Landed `[online]`,
   bug #1); this plan only makes it reachable on Android.
 - Bug #18 (online driver goes dark when backgrounded) is owned by `[location]_background_tracking.md`.
