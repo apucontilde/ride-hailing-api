@@ -5,6 +5,7 @@ library;
 
 export 'src/api/api_client.dart';
 export 'src/api/api_exceptions.dart';
+export 'src/auth/auth_key_value_store.dart';
 export 'src/auth/auth_storage.dart';
 export 'src/auth/app_auth_controller.dart';
 export 'src/network/websocket_service.dart';

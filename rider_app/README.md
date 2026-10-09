@@ -18,7 +18,9 @@ flutter pub get
 ### Web
 
 ```bash
-flutter run -d chrome
+# Pin the origin so the signed-in session in window.localStorage survives
+# dev-server restarts.
+flutter run -d chrome --web-port 5173
 ```
 
 ### Android (emulator)

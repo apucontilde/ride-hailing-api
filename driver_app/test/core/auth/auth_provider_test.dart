@@ -100,6 +100,9 @@ void main() {
       test('clears session when driver fetch fails', () async {
         when(() => mockStorage.getAccessToken())
             .thenAnswer((_) async => 'existing-token');
+        // Genuinely absent refresh token (not a throwing read): the dead access
+        // token has nothing to rotate, so the local session is cleared.
+        when(() => mockStorage.getRefreshToken()).thenAnswer((_) async => null);
         when(() => mockDio.get(any()))
             .thenThrow(UnauthorizedException('invalid or expired token'));
         when(() => mockStorage.clearTokens()).thenAnswer((_) async {});

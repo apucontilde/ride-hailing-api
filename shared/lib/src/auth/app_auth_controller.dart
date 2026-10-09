@@ -9,6 +9,21 @@ import 'auth_storage.dart';
 
 enum AuthStatus { unauthenticated, loading, authenticated }
 
+/// Why the last [AppAuthController.refreshToken] attempt returned `false`.
+///
+/// [checkAuth] needs the distinction to decide whether a failed refresh after a
+/// `/me` 401 is recoverable: a [transientFailure] keeps the tokens, a
+/// [definitiveFailure] has already cleared them locally, [readFailed] is a
+/// transient storage blip that must not wipe, and [noToken] means the access
+/// token is dead with nothing to rotate.
+enum _RefreshOutcome {
+  success,
+  noToken,
+  readFailed,
+  definitiveFailure,
+  transientFailure,
+}
+
 class AuthState {
   final AuthStatus status;
   final AuthUser? user;
@@ -70,6 +85,17 @@ abstract class AppAuthController extends StateNotifier<AuthState> {
     required this.logoutEndpoint,
   }) : super(const AuthState());
 
+  /// Coalesces concurrent [refreshToken] callers (an explicit `checkAuth`
+  /// refresh and the `ApiClient` 401 interceptor) onto one `/auth/refresh`
+  /// rotation.
+  Future<bool>? _refreshInFlight;
+  _RefreshOutcome _lastRefreshOutcome = _RefreshOutcome.noToken;
+
+  /// The access token currently installed in [apiClient]; kept in memory so a
+  /// refresh-token-only cold start can still open the websocket even when the
+  /// best-effort storage write did not land.
+  String? _sessionAccessToken;
+
   /// Fetches the signed-in user from the app's `/me` endpoint. Throws
   /// [ApiException] (e.g. [ForbiddenException]) on failure.
   Future<AuthUser> fetchMe();
@@ -98,29 +124,144 @@ abstract class AppAuthController extends StateNotifier<AuthState> {
     );
   }
 
+  /// Classifies an error thrown while talking to an auth/profile endpoint.
+  ///
+  /// Definitive (400/401) means the server rejected the credential itself — the
+  /// token is dead and cannot be recovered. Everything else (timeout, connection
+  /// error, 5xx, 429, malformed body) is transient and must never destroy a
+  /// session. 403 is deliberately excluded: it means the account's role is wrong
+  /// for the endpoint, not that the token is invalid, and stays with
+  /// [onForbiddenProfile].
+  bool _isDefinitiveAuthFailure(Object error) {
+    final api = switch (error) {
+      ApiException() => error,
+      DioException(error: final Object? mapped) when mapped is ApiException =>
+        mapped,
+      _ => null,
+    };
+    final code = api?.statusCode;
+    return code == 400 || code == 401;
+  }
+
   Future<void> checkAuth() async {
-    final token = await authStorage.getAccessToken();
-    if (token != null) {
-      apiClient.setToken(token);
-      try {
-        final user = await fetchMe();
-        state = AuthState(status: AuthStatus.authenticated, user: user);
-        await onAuthenticated(user);
-        if (shouldConnectWebSocket(user)) {
-          await webSocketService.connect(token: token);
-        }
-      } on ForbiddenException {
-        await onForbiddenProfile();
-      } catch (_) {
-        await webSocketService.disconnect();
-        await authStorage.clearTokens();
-        apiClient.setToken(null);
-        state = const AuthState();
-      }
-    } else {
+    // Storage is best-effort: a throwing read means "no token", not a crash.
+    String? accessToken;
+    String? storedRefreshToken;
+    try {
+      accessToken = await authStorage.getAccessToken();
+    } catch (_) {
+      accessToken = null;
+    }
+    try {
+      storedRefreshToken = await authStorage.getRefreshToken();
+    } catch (_) {
+      storedRefreshToken = null;
+    }
+
+    if (accessToken == null && storedRefreshToken == null) {
       await webSocketService.disconnect();
       state = const AuthState();
+      return;
     }
+
+    if (accessToken == null) {
+      // Cold start with only a refresh token: recover it before probing `/me`.
+      final refreshed = await refreshToken();
+      if (!refreshed) {
+        // Transient (tokens kept) or definitive (already cleared locally) — the
+        // session is simply unauthenticated for this launch.
+        await webSocketService.disconnect();
+        state = const AuthState();
+        return;
+      }
+    } else {
+      apiClient.setToken(accessToken);
+      _sessionAccessToken = accessToken;
+    }
+
+    try {
+      await _completeAuthentication();
+    } on ForbiddenException {
+      await onForbiddenProfile();
+    } on UnauthorizedException {
+      // The access token was rejected: refresh once (coalescing with the
+      // interceptor's attempt) and retry `/me` once.
+      final refreshed = await refreshToken();
+      if (!refreshed) {
+        await _settleFailedRefresh();
+        return;
+      }
+      try {
+        await _completeAuthentication();
+      } on ForbiddenException {
+        await onForbiddenProfile();
+      } catch (retryError) {
+        await _handleProfileFailure(retryError);
+      }
+    } catch (e) {
+      await _handleProfileFailure(e);
+    }
+  }
+
+  /// The shared success path: read `/me`, publish the session, run the
+  /// subclass hook, and open the websocket when the app wants it.
+  Future<void> _completeAuthentication() async {
+    final user = await fetchMe();
+    state = AuthState(status: AuthStatus.authenticated, user: user);
+    await onAuthenticated(user);
+    if (shouldConnectWebSocket(user)) {
+      final token = _sessionAccessToken;
+      if (token != null) {
+        await webSocketService.connect(token: token);
+      }
+    }
+  }
+
+  /// A refresh that failed after `/me` returned 401.
+  ///
+  /// - transient: keep the tokens so a later launch/401 can recover.
+  /// - read failed: the refresh-token read itself blipped — transient, keep the
+  ///   tokens rather than wiping on a storage error.
+  /// - definitive: [_doRefresh] already cleared locally.
+  /// - no stored refresh token: the access token is dead with nothing to
+  ///   rotate, so clear the session now.
+  Future<void> _settleFailedRefresh() async {
+    await webSocketService.disconnect();
+    if (_lastRefreshOutcome == _RefreshOutcome.transientFailure ||
+        _lastRefreshOutcome == _RefreshOutcome.readFailed ||
+        _sessionAccessToken == null) {
+      state = const AuthState();
+      return;
+    }
+    await _clearLocalSession();
+  }
+
+  /// Applies the definitive/transient rule to a failed `/me` probe: only a
+  /// definitive failure wipes storage; a transient one keeps the tokens and
+  /// leaves a non-destructive unauthenticated state.
+  Future<void> _handleProfileFailure(Object error) async {
+    if (_isDefinitiveAuthFailure(error)) {
+      await _clearLocalSession();
+      return;
+    }
+    await webSocketService.disconnect();
+    state = const AuthState();
+  }
+
+  /// Tears down the local session without the server revoke [logout] performs.
+  /// Used only when the tokens are already dead (definitive 400/401), so a
+  /// token that cannot recover is not left behind to loop.
+  Future<void> _clearLocalSession() async {
+    await webSocketService.disconnect();
+    apiClient.setToken(null);
+    _sessionAccessToken = null;
+    try {
+      await authStorage.clearTokens();
+    } catch (_) {
+      // Storage is best-effort; the in-memory token is the session of record.
+    }
+    state = const AuthState();
+    await onLoggedOut();
   }
 
   /// True when the app already holds an authenticated session for an account
@@ -195,10 +336,16 @@ abstract class AppAuthController extends StateNotifier<AuthState> {
       final userData = data['user'] as Map<String, dynamic>;
 
       apiClient.setToken(accessToken);
-      await authStorage.saveTokens(
-        accessToken: accessToken,
-        refreshToken: refreshToken,
-      );
+      _sessionAccessToken = accessToken;
+      try {
+        await authStorage.saveTokens(
+          accessToken: accessToken,
+          refreshToken: refreshToken,
+        );
+      } catch (_) {
+        // Storage is best-effort: the in-memory token already installed above
+        // is the session of record, so a failed write must not fail login.
+      }
 
       final user = AuthUser.fromJson(userData);
       state = AuthState(status: AuthStatus.authenticated, user: user);
@@ -245,8 +392,22 @@ abstract class AppAuthController extends StateNotifier<AuthState> {
     }
   }
 
-  Future<bool> refreshToken() async {
-    final storedRefresh = await authStorage.getRefreshToken();
+  /// Single-flight wrapper: concurrent callers (an explicit [checkAuth] refresh
+  /// and the API client's 401 `unauthorizedHandler`) share one rotation.
+  Future<bool> refreshToken() =>
+      _refreshInFlight ??= _doRefresh().whenComplete(() => _refreshInFlight = null);
+
+  Future<bool> _doRefresh() async {
+    _lastRefreshOutcome = _RefreshOutcome.noToken;
+    String? storedRefresh;
+    try {
+      storedRefresh = await authStorage.getRefreshToken();
+    } catch (_) {
+      // A throwing read is transient: distinguish it from a genuinely absent
+      // token so [_settleFailedRefresh] keeps the session instead of wiping.
+      _lastRefreshOutcome = _RefreshOutcome.readFailed;
+      return false;
+    }
     if (storedRefresh == null) return false;
 
     try {
@@ -259,14 +420,27 @@ abstract class AppAuthController extends StateNotifier<AuthState> {
       final newRefresh = data['refresh_token'] as String;
 
       apiClient.setToken(newAccess);
-      await authStorage.saveTokens(
-        accessToken: newAccess,
-        refreshToken: newRefresh,
-      );
+      _sessionAccessToken = newAccess;
+      try {
+        await authStorage.saveTokens(
+          accessToken: newAccess,
+          refreshToken: newRefresh,
+        );
+      } catch (_) {
+        // Storage is best-effort; the in-memory token is the session of record.
+      }
       await webSocketService.connect(token: newAccess);
+      _lastRefreshOutcome = _RefreshOutcome.success;
       return true;
-    } catch (_) {
-      await logout();
+    } catch (e) {
+      // Never server-revoke here: a transient blip must not sign the user out.
+      // A definitive failure clears locally so a dead token cannot loop.
+      if (_isDefinitiveAuthFailure(e)) {
+        _lastRefreshOutcome = _RefreshOutcome.definitiveFailure;
+        await _clearLocalSession();
+      } else {
+        _lastRefreshOutcome = _RefreshOutcome.transientFailure;
+      }
       return false;
     }
   }
@@ -285,6 +459,7 @@ abstract class AppAuthController extends StateNotifier<AuthState> {
       // Silently continue — local cleanup is the priority
     }
     apiClient.setToken(null);
+    _sessionAccessToken = null;
     await authStorage.clearTokens();
     state = const AuthState();
     await onLoggedOut();

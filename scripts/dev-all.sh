@@ -27,6 +27,7 @@ REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$REPO_ROOT"
 
 DEVICE="chrome"
+WEB_PORT="5173"
 PORT="8080"
 DO_DOCKER=1
 DO_BOOTSTRAP=1
@@ -46,6 +47,9 @@ Options:
   -d, --device <id>       Flutter device for the apps (default: chrome)
                           Other useful values: web-server, linux, windows
   -p, --port <n>          API port for make run and the apps (default: 8080)
+      --web-port <n>      Fixed web port for browser/web-server devices
+                          (default: 5173) so the origin -- and thus the
+                          localStorage session -- is stable across restarts
       --no-docker         Do not touch docker compose (assume it is up)
       --no-server         Do not start the Go API
       --no-bootstrap      Do not run `melos bootstrap` first
@@ -73,6 +77,7 @@ while [ $# -gt 0 ]; do
   case "$1" in
     -d|--device)        DEVICE="${2:?--device needs a value}"; shift 2 ;;
     -p|--port)          PORT="${2:?--port needs a value}"; shift 2 ;;
+    --web-port)         WEB_PORT="${2:?--web-port needs a value}"; shift 2 ;;
     --no-docker)        DO_DOCKER=0; shift ;;
     --no-server)        DO_SERVER=0; shift ;;
     --no-bootstrap)     DO_BOOTSTRAP=0; shift ;;
@@ -88,6 +93,14 @@ done
 LOG_DIR="$REPO_ROOT/.tmp/dev"
 API_URL="http://localhost:$PORT"
 mkdir -p "$LOG_DIR"
+
+# Pin a stable web origin so browser storage (the auth session in
+# window.localStorage) survives dev-server restarts. Only web devices accept
+# --web-port.
+WEB_ARGS=()
+case "$DEVICE" in
+  chrome|web-server|web) WEB_ARGS=(--web-port "$WEB_PORT") ;;
+esac
 
 CHILD_PIDS=()
 LOG_FILES=()
@@ -237,7 +250,7 @@ fi
 step "Starting Flutter apps on '$DEVICE' (sequentially)"
 for app in $APPS; do
   start_bg "$app" "$app" "$REPO_ROOT/$app" \
-    "$FLUTTER" run -d "$DEVICE" --dart-define=API_BASE_URL="$API_URL"
+    "$FLUTTER" run -d "$DEVICE" "${WEB_ARGS[@]}" --dart-define=API_BASE_URL="$API_URL"
   wait_for "$app" "${CHILD_PIDS[-1]}" "$LOG_DIR/$app.log" \
     "Debug service listening on|is being served on" "$READY_TIMEOUT" \
     || die "$app failed to start; see $LOG_DIR/$app.log"
