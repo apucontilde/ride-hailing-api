@@ -1,5 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:go_router/go_router.dart';
+import 'package:ride_hailing_shared/ride_hailing_shared.dart';
 import '../../../core/location/location_service.dart';
 import '../data/safety_repository.dart';
 
@@ -98,7 +100,12 @@ class SafetyScreen extends ConsumerWidget {
   @override
   Widget build(BuildContext context, WidgetRef ref) {
     return Scaffold(
-      appBar: AppBar(title: const Text('Safety & support')),
+      appBar: AppBar(
+        title: const Text('Safety & support'),
+        // Pushed from Settings, but an explicit fallback keeps the arrow
+        // guaranteed even if `/safety` is deep-linked (where a pop is a no-op).
+        leading: AppBackButton(onFallback: () => context.go('/settings')),
+      ),
       body: ListView(
         padding: const EdgeInsets.all(24),
         children: [

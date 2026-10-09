@@ -55,12 +55,20 @@ class DriverShell extends ConsumerWidget {
     final ratingLabel = ref
         .read(profileNotifierProvider.notifier)
         .ratingSummaryLabel;
+    // `/home` is the root of the section space, so it keeps the hamburger as
+    // its leading; every other section gets a guaranteed back arrow (→ `/home`)
+    // with the hamburger moved to `actions` so the drawer stays one tap away.
+    final isHome = location == '/home';
 
     return Scaffold(
       appBar: AppBar(
-        // The same button widget the rider uses, instead of Flutter's implicit
-        // hamburger, so both apps open the sidebar identically.
-        leading: const AppSidebarToggleButton(),
+        // The same button widgets the rider uses, instead of Flutter's implicit
+        // hamburger, so both apps open the sidebar identically and the driver's
+        // non-Home sections always have a back affordance even when `go`-entered.
+        leading: isHome
+            ? const AppSidebarToggleButton()
+            : AppBackButton(onFallback: () => context.go('/home')),
+        actions: isHome ? null : const [AppSidebarToggleButton()],
         title: Text(sectionTitles[location] ?? 'Driver'),
       ),
       drawer: AppSidebar(

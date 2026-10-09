@@ -25,6 +25,10 @@ List<AppNavItem> buildDriverNavItems({
 }) {
   return [
     AppNavItem(
+      destination: AppNavDestination.home,
+      route: '/home',
+    ),
+    AppNavItem(
       destination: AppNavDestination.profile,
       route: '/profile',
     ),

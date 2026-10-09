@@ -1,8 +1,8 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
+import 'package:ride_hailing_shared/ride_hailing_shared.dart';
 import '../../../core/auth/auth_provider.dart';
-import '../../../core/utils/validators.dart';
 import 'widgets/auth_text_field.dart';
 
 class RegisterScreen extends ConsumerStatefulWidget {
@@ -47,7 +47,10 @@ class _RegisterScreenState extends ConsumerState<RegisterScreen> {
     final authState = ref.watch(authProvider);
 
     return Scaffold(
-      appBar: AppBar(title: const Text('Drive With Us')),
+      appBar: AppBar(
+        leading: AppBackButton(onPressed: () => context.go('/login')),
+        title: const Text('Drive With Us'),
+      ),
       body: Padding(
         padding: const EdgeInsets.all(24),
         child: Form(

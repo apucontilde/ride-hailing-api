@@ -5,20 +5,11 @@ import 'package:go_router/go_router.dart';
 import 'package:ride_hailing_shared/ride_hailing_shared.dart';
 import 'package:latlong2/latlong.dart';
 import '../../../core/location/location_service.dart';
+import '../../../core/map/driver_map_tile.dart';
 import '../../../core/ride/ride_state_notifier.dart';
 import '../../rides/data/rated_rides_provider.dart';
 import '../../rides/presentation/rate_sheet.dart';
 import '../providers/trip_notifier.dart';
-
-/// Tile layer for the trip map, behind a provider so widget tests can
-/// override it with `null` and never touch the network (`flutter_test`'s HTTP
-/// override rejects tile requests, which would fail the frame).
-final tripMapTileProvider = Provider<TileLayer?>((ref) {
-  return TileLayer(
-    urlTemplate: 'https://tile.openstreetmap.org/{z}/{x}/{y}.png',
-    userAgentPackageName: 'com.driver.app',
-  );
-});
 
 /// Trip journey screen (US-D7/D8/D9, US-11): one stage-driven primary button
 /// over a flutter_map route, driver-initiated cancel, and a clean landing
@@ -201,7 +192,13 @@ class _TripScreenState extends ConsumerState<TripScreen> {
       child: Scaffold(
         appBar: AppBar(
           title: const Text('Trip'),
-          automaticallyImplyLeading: !trip.isTerminal,
+          // The trip is reached by `push`, so Flutter would otherwise synthesize
+          // an implicit `Icons.arrow_back` whenever `leading` is null. Only the
+          // explicit slot may render a glyph.
+          automaticallyImplyLeading: false,
+          // A terminal trip must not offer a way to bypass `_finishTrip`, so the
+          // back arrow is suppressed exactly while `PopScope` blocks the pop.
+          leading: trip.isTerminal ? null : const AppBackButton(),
         ),
         body: Column(
           children: [
@@ -363,7 +360,8 @@ class _MapView extends ConsumerWidget {
       onFit(focus, '${stage.name}:${route?.fetchedAt.millisecondsSinceEpoch}');
     }
 
-    final tile = ref.watch(tripMapTileProvider);
+    final tileConfig = ref.watch(driverMapTileConfigProvider);
+    final tile = ref.watch(mapTileLayerProvider(tileConfig));
     return FlutterMap(
       mapController: controller,
       options: MapOptions(
@@ -392,6 +390,7 @@ class _MapView extends ConsumerWidget {
               ),
           ],
         ),
+        MapTileAttribution(config: tileConfig),
       ],
     );
   }

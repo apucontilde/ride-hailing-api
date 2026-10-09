@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:mocktail/mocktail.dart';
+import 'package:ride_hailing_shared/ride_hailing_shared.dart';
 import 'package:driver_app/core/location/location_service.dart';
 import 'package:driver_app/features/safety/data/safety_repository.dart';
 import 'package:driver_app/features/safety/presentation/safety_screen.dart';
@@ -33,6 +34,13 @@ void main() {
     );
     await tester.pumpAndSettle();
   }
+
+  testWidgets('renders the shared back arrow', (tester) async {
+    await pumpSafety(tester);
+
+    expect(find.byType(AppBackButton), findsOneWidget);
+    expect(find.byIcon(Icons.arrow_back), findsOneWidget);
+  });
 
   testWidgets('SOS sends the last known position and acks', (tester) async {
     when(() => repo.sendSos(

@@ -243,16 +243,16 @@ void main() {
       await openSidebar(tester);
 
       // The driver has no payment or security destination, so its sidebar renders
-      // three of the four headings from the same widget and the same enum order.
+      // four of the five headings from the same widget and the same enum order.
       // Read back in paint order: independent `findsOneWidget`s would not catch
       // APP rendering above ACTIVITY.
-      const all = ['ACCOUNT', 'ACTIVITY', 'SAFETY', 'APP'];
+      const all = ['HOME', 'ACCOUNT', 'ACTIVITY', 'SAFETY', 'APP'];
       final rendered = tester
           .widgetList<Text>(find.byType(Text))
           .map((t) => t.data)
           .where((d) => all.contains(d))
           .toList();
-      expect(rendered, ['ACCOUNT', 'ACTIVITY', 'APP']);
+      expect(rendered, ['HOME', 'ACCOUNT', 'ACTIVITY', 'APP']);
       expect(find.text('SAFETY'), findsNothing);
     });
 
@@ -262,7 +262,7 @@ void main() {
       await pumpHome(tester, profileContainer());
       await openSidebar(tester);
 
-      for (final id in ['profile', 'ride-history', 'settings']) {
+      for (final id in ['home', 'profile', 'ride-history', 'settings']) {
         expect(find.byKey(Key('sidebar-item-$id')), findsOneWidget, reason: id);
       }
     });
@@ -277,6 +277,22 @@ void main() {
       expect(find.text('Ride history & earnings'), findsOneWidget);
       // The canonical label must not leak through the override.
       expect(find.text('Ride history'), findsNothing);
+    });
+
+    testWidgets('the Home row renders first under its own HOME heading', (
+      tester,
+    ) async {
+      await pumpHome(tester, profileContainer());
+      await openSidebar(tester);
+
+      // Scoped to the row: the shell's AppBar title is also 'Home' on `/home`.
+      expect(
+        find.descendant(
+          of: find.byKey(const Key('sidebar-item-home')),
+          matching: find.text('Home'),
+        ),
+        findsOneWidget,
+      );
     });
 
     testWidgets('no /vehicle row while the vehicle backend is a stub', (

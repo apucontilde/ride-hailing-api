@@ -2,10 +2,9 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
 import 'package:dio/dio.dart';
+import 'package:ride_hailing_shared/ride_hailing_shared.dart';
 import '../../../core/auth/auth_provider.dart';
-import '../../../core/api/api_exceptions.dart';
 import '../../../core/api/endpoints.dart';
-import '../../../core/utils/validators.dart';
 import 'widgets/auth_text_field.dart';
 
 /// Wired to the real `POST /auth/forgot-password` endpoint (US-1). On success
@@ -61,7 +60,10 @@ class _ForgotPasswordScreenState extends ConsumerState<ForgotPasswordScreen> {
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      appBar: AppBar(title: const Text('Forgot Password')),
+      appBar: AppBar(
+        leading: AppBackButton(onPressed: () => context.go('/login')),
+        title: const Text('Forgot Password'),
+      ),
       body: Padding(
         padding: const EdgeInsets.all(24),
         child: Form(

@@ -130,6 +130,44 @@ void main() {
     expect(find.byType(AppSidebar), findsNothing);
   });
 
+  testWidgets('a non-home section leads with a back arrow, not the hamburger', (
+    tester,
+  ) async {
+    await pumpShell(tester, initial: '/profile');
+
+    expect(find.byIcon(Icons.arrow_back), findsOneWidget);
+    // The drawer stays one tap away: the toggle moved to the AppBar actions.
+    expect(find.byType(AppSidebarToggleButton), findsOneWidget);
+  });
+
+  testWidgets('home is the root exception: hamburger, no back arrow', (
+    tester,
+  ) async {
+    await pumpShell(tester);
+
+    expect(find.byIcon(Icons.arrow_back), findsNothing);
+    expect(
+      find.descendant(
+        of: find.byType(AppBar),
+        matching: find.byType(AppSidebarToggleButton),
+      ),
+      findsOneWidget,
+    );
+  });
+
+  testWidgets('the arrow on a non-home section falls back to /home', (
+    tester,
+  ) async {
+    await pumpShell(tester, initial: '/profile');
+    expect(find.text('Profile Section'), findsOneWidget);
+
+    await tester.tap(find.byIcon(Icons.arrow_back));
+    await tester.pumpAndSettle();
+
+    expect(find.text('Home Section'), findsOneWidget);
+    expect(find.widgetWithText(AppBar, 'Home'), findsOneWidget);
+  });
+
   testWidgets('a sidebar item routes to its section', (tester) async {
     await pumpShell(tester);
 

@@ -50,6 +50,7 @@ void main() {
     when(() => mockApiClient.dio).thenReturn(mockDio);
     when(() => mockStorage.getRefreshToken())
         .thenAnswer((_) async => 'refresh-123');
+    when(() => mockStorage.clearTokens()).thenAnswer((_) async {});
     when(() => mockStorage.saveTokens(
           accessToken: any(named: 'accessToken'),
           refreshToken: any(named: 'refreshToken'),
@@ -57,6 +58,16 @@ void main() {
     when(() => mockWebSocketService.connect(token: any(named: 'token')))
         .thenAnswer((_) async {});
     when(() => mockWebSocketService.disconnect()).thenAnswer((_) async {});
+    // `logout()` posts the stored refresh token before clearing locally.
+    when(() => mockDio.post(
+          ApiEndpoints.logout,
+          data: any(named: 'data'),
+        )).thenAnswer(
+      (_) async => Response(
+        requestOptions: RequestOptions(path: ApiEndpoints.logout),
+        statusCode: 200,
+      ),
+    );
 
     // POST /driver/register, then the token rotation and the profile probe.
     when(() => mockDio.post(ApiEndpoints.driverRegister)).thenAnswer(
@@ -116,6 +127,10 @@ void main() {
         GoRoute(
           path: '/home',
           builder: (_, _) => const Scaffold(body: Text('Home Screen')),
+        ),
+        GoRoute(
+          path: '/login',
+          builder: (_, _) => const Scaffold(body: Text('Log In Screen')),
         ),
       ],
     );
@@ -180,5 +195,32 @@ void main() {
       () => mockDio.put(ApiEndpoints.driverMe, data: any(named: 'data')),
     ).called(1);
     expect(find.text('Home Screen'), findsOneWidget);
+  });
+
+  testWidgets(
+    '"Use a different account" signs out before going to /login (bug #14)',
+    (tester) async {
+      await pumpOnboarding(tester);
+
+      // Before the fix this called `context.go('/login')` with the session
+      // intact, so the router bounced the authenticated non-driver straight
+      // back to `/onboarding` — a silent no-op. Signing out first is what lets
+      // the redirect through.
+      await tester.tap(find.text('Use a different account'));
+      await tester.pumpAndSettle();
+
+      expect(find.text('Log In Screen'), findsOneWidget);
+      verify(() => mockStorage.clearTokens()).called(1);
+    },
+  );
+
+  testWidgets('the back arrow signs out instead of popping a no-op',
+      (tester) async {
+    await pumpOnboarding(tester);
+
+    await tester.tap(find.byIcon(Icons.arrow_back));
+    await tester.pumpAndSettle();
+
+    verify(() => mockStorage.clearTokens()).called(1);
   });
 }

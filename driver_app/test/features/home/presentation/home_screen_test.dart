@@ -76,7 +76,7 @@ void main() {
         appPermissionProvider.overrideWith(
           (ref) => const AppPermissionState(granted: true),
         ),
-        tripMapTileProvider.overrideWith((ref) => null),
+        mapTileLayerProvider.overrideWith((ref, config) => null),
         locationServiceProvider.overrideWith(
           (ref) => FakeLocationService(
             apiClient: mockApiClient,
@@ -291,7 +291,7 @@ void main() {
           (ref) =>
               const AppPermissionState(granted: false, deniedPermanently: true),
         ),
-        tripMapTileProvider.overrideWith((ref) => null),
+        mapTileLayerProvider.overrideWith((ref, config) => null),
         locationServiceProvider.overrideWith(
           (ref) => FakeLocationService(
             apiClient: mockApiClient,

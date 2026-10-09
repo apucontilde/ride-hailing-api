@@ -5,14 +5,14 @@ import 'package:driver_app/features/navigation/driver_nav_items.dart';
 
 void main() {
   group('buildDriverNavItems with the shipped flag', () {
-    test('lists exactly the three driver destinations', () {
-      expect(buildDriverNavItems(), hasLength(3));
+    test('lists exactly the four driver destinations', () {
+      expect(buildDriverNavItems(), hasLength(4));
     });
 
     test('ids are the kebab-case strings the sidebar keys are built from', () {
       expect(
         buildDriverNavItems().map((i) => i.id),
-        ['profile', 'ride-history', 'settings'],
+        ['home', 'profile', 'ride-history', 'settings'],
       );
     });
 
@@ -26,8 +26,17 @@ void main() {
       // are the app-owned half of the seam.
       expect(
         buildDriverNavItems().map((i) => i.route),
-        ['/profile', '/rides-history', '/settings'],
+        ['/home', '/profile', '/rides-history', '/settings'],
       );
+    });
+
+    test('leads with the canonical home destination for both apps', () {
+      final home = buildDriverNavItems().first;
+      expect(home.id, 'home');
+      expect(home.label, 'Home');
+      expect(home.icon, Icons.home_outlined);
+      expect(home.section, AppNavSection.home);
+      expect(home.route, '/home');
     });
 
     test("the only label override is 'Ride history & earnings'", () {
@@ -68,12 +77,14 @@ void main() {
       final items = buildDriverNavItems(includeVehicle: true);
 
       expect(items.map((i) => i.id), [
+        'home',
         'profile',
         'vehicle',
         'ride-history',
         'settings',
       ]);
       expect(items.map((i) => i.route), [
+        '/home',
         '/profile',
         '/vehicle',
         '/rides-history',

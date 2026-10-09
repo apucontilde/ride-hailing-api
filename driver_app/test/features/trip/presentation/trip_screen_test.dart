@@ -96,7 +96,7 @@ void main() {
         apiClientProvider.overrideWithValue(mockApiClient),
         rideStateProvider.overrideWith((ref) => rideState),
         // No tiles: the map must not touch the network under flutter_test.
-        tripMapTileProvider.overrideWith((ref) => null),
+        mapTileLayerProvider.overrideWith((ref, config) => null),
         lastPositionProvider
             .overrideWith((ref) => const GeoPoint(pickupLat, pickupLng)),
       ],
@@ -187,6 +187,36 @@ void main() {
     await tester.pump();
   }
 
+  /// Mounts `/trip` by pushing it from `/home`, the production path
+  /// (`home_screen.dart` calls `context.push('/trip')`). Only on this stack —
+  /// with a route below `/trip` — could Flutter synthesize an implicit back
+  /// arrow for a null `AppBar.leading`, so this is the stack the terminal
+  /// suppression must be exercised on.
+  Future<GoRouter> pumpTripPushed(WidgetTester tester) async {
+    final router = GoRouter(
+      initialLocation: '/home',
+      routes: [
+        GoRoute(
+          path: '/home',
+          builder: (_, _) => const Scaffold(body: Text('home screen')),
+        ),
+        GoRoute(path: '/trip', builder: (_, _) => const TripScreen()),
+      ],
+    );
+    addTearDown(router.dispose);
+    await tester.pumpWidget(
+      UncontrolledProviderScope(
+        container: container,
+        child: MaterialApp.router(routerConfig: router),
+      ),
+    );
+    await tester.pump();
+    router.push('/trip');
+    await tester.pump();
+    await tester.pump();
+    return router;
+  }
+
   List<Polyline> polylines(WidgetTester tester) =>
       tester.widget<PolylineLayer>(find.byType(PolylineLayer)).polylines;
 
@@ -196,6 +226,54 @@ void main() {
 
       expect(find.text('No active trip'), findsOneWidget);
       expect(find.byKey(const Key('trip-primary-button')), findsNothing);
+    });
+
+    testWidgets('shows the shared back arrow while the trip is not terminal', (
+      tester,
+    ) async {
+      await pumpTrip(tester);
+
+      // Non-terminal: the driver can back out, so the shared glyph renders.
+      expect(find.byType(AppBackButton), findsOneWidget);
+      expect(find.byIcon(Icons.arrow_back), findsOneWidget);
+    });
+  });
+
+  group('terminal back-arrow suppression', () {
+    testWidgets('a completed trip hides the back arrow', (tester) async {
+      await pumpTripPushed(tester);
+      broadcast(status: 'completed');
+      await tester.pump();
+
+      // Terminal on the production push stack: no explicit glyph and — with
+      // `automaticallyImplyLeading: false` — no implicit `Icons.arrow_back`
+      // either, even though `/home` still sits below `/trip`.
+      expect(find.byType(AppBackButton), findsNothing);
+      expect(find.byIcon(Icons.arrow_back), findsNothing);
+    });
+
+    testWidgets('a cancelled trip hides the back arrow', (tester) async {
+      await pumpTripPushed(tester);
+      broadcast(status: 'cancelled', cancelledBy: 'rider');
+      await tester.pump();
+
+      expect(find.byType(AppBackButton), findsNothing);
+      expect(find.byIcon(Icons.arrow_back), findsNothing);
+    });
+
+    testWidgets('a non-terminal pushed trip keeps the shared back arrow', (
+      tester,
+    ) async {
+      await pumpTripPushed(tester);
+
+      // Non-terminal on the production stack: the shared glyph is the only
+      // back affordance and it pops back to `/home`.
+      expect(find.byType(AppBackButton), findsOneWidget);
+      expect(find.byIcon(Icons.arrow_back), findsOneWidget);
+
+      await tester.tap(find.byType(AppBackButton));
+      await tester.pumpAndSettle();
+      expect(find.text('home screen'), findsOneWidget);
     });
   });
 

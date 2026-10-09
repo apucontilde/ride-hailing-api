@@ -1,8 +1,8 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
+import 'package:ride_hailing_shared/ride_hailing_shared.dart';
 import '../../../core/auth/auth_provider.dart';
-import '../../../core/utils/validators.dart';
 import '../../profile/providers/profile_notifier.dart';
 
 /// US-D1 — driver onboarding. The registered account holds the `rider` role;
@@ -55,7 +55,15 @@ class _OnboardingScreenState extends ConsumerState<OnboardingScreen> {
     final authState = ref.watch(authProvider);
 
     return Scaffold(
-      appBar: AppBar(title: const Text('Become a Driver')),
+      appBar: AppBar(
+        title: const Text('Become a Driver'),
+        // `/onboarding` is force-redirected for authenticated non-drivers, so a
+        // pop is a no-op. Signing out is the only meaningful "back": the router
+        // then redirects to `/login`.
+        leading: AppBackButton(
+          onPressed: () => ref.read(authProvider.notifier).logout(),
+        ),
+      ),
       body: Padding(
         padding: const EdgeInsets.all(24),
         child: Form(
@@ -109,7 +117,13 @@ class _OnboardingScreenState extends ConsumerState<OnboardingScreen> {
               ),
               const SizedBox(height: 12),
               TextButton(
-                onPressed: () => context.go('/login'),
+                // Signing out first is required: the router redirects an
+                // authenticated non-driver straight back to `/onboarding`, so a
+                // bare `go('/login')` was a silent no-op (driver bug #14).
+                onPressed: () async {
+                  await ref.read(authProvider.notifier).logout();
+                  if (context.mounted) context.go('/login');
+                },
                 child: const Text('Use a different account'),
               ),
             ],

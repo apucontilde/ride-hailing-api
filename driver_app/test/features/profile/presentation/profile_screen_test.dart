@@ -312,6 +312,21 @@ void main() {
       expect(find.text('Ride history'), findsNothing);
     });
 
+    testWidgets('the new Home row is present as a shortcut', (tester) async {
+      await pumpProfile(tester);
+
+      // Fed from the same list minus `profile`, so the Home row appears here
+      // automatically and routes via the card's `context.go`.
+      expect(find.byKey(const Key('nav-link-home')), findsOneWidget);
+      expect(
+        find.descendant(
+          of: find.byKey(const Key('nav-link-home')),
+          matching: find.text('Home'),
+        ),
+        findsOneWidget,
+      );
+    });
+
     testWidgets('no /vehicle row while the vehicle backend is a stub', (
       tester,
     ) async {
