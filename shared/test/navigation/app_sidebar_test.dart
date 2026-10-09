@@ -108,6 +108,29 @@ void main() {
       expect(payment.dy, greaterThan(history.dy));
       expect(safety.dy, greaterThan(payment.dy));
     });
+
+    testWidgets('renders the HOME heading above ACCOUNT for a Home item', (
+      tester,
+    ) async {
+      await pumpOpenSidebar(
+        tester,
+        sidebar: AppSidebar(
+          items: [
+            AppNavItem(destination: AppNavDestination.home, route: '/home'),
+            ...fiveItems(),
+          ],
+          account: const AppSidebarAccount(displayName: 'Ana Rojas'),
+          onItemSelected: (_) {},
+        ),
+      );
+
+      expect(find.text('HOME'), findsOneWidget);
+      expect(find.byKey(const Key('sidebar-item-home')), findsOneWidget);
+      expect(
+        tester.getTopLeft(find.text('HOME')).dy,
+        lessThan(tester.getTopLeft(find.text('ACCOUNT')).dy),
+      );
+    });
   });
 
   group('AppSidebar items', () {

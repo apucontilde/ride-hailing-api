@@ -15,6 +15,7 @@ import 'app_nav_section.dart';
 /// `Key('sidebar-item-<id>')` renders it and both apps' nav-item suites assert
 /// the exact id lists.
 enum AppNavDestination {
+  home('home', 'Home', Icons.home_outlined, AppNavSection.home),
   profile('profile', 'Profile', Icons.person_outline, AppNavSection.account),
   rideHistory(
     'ride-history',

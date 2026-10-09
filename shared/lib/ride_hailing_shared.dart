@@ -29,6 +29,7 @@ export 'src/map/map_tile_layer.dart';
 export 'src/map/map_tile_attribution.dart';
 export 'src/models/auth_user.dart';
 export 'src/models/ride.dart';
+export 'src/navigation/app_back_button.dart';
 export 'src/navigation/app_nav_destination.dart';
 export 'src/navigation/app_nav_item.dart';
 export 'src/navigation/app_nav_link_card.dart';

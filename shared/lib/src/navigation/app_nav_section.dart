@@ -5,6 +5,7 @@
 /// rider lists five items flat under its header and the driver lists three, so
 /// "which group is this in" has no answer in either app.
 enum AppNavSection {
+  home('HOME'),
   account('ACCOUNT'),
   activity('ACTIVITY'),
   safety('SAFETY'),

@@ -10,8 +10,20 @@ void main() {
       // no analyzer will report.
       expect(
         AppNavDestination.values.map((d) => d.id),
-        ['profile', 'ride-history', 'payment', 'vehicle', 'security', 'settings'],
+        [
+          'home',
+          'profile',
+          'ride-history',
+          'payment',
+          'vehicle',
+          'security',
+          'settings',
+        ],
       );
+
+      expect(AppNavDestination.home.label, 'Home');
+      expect(AppNavDestination.home.icon, Icons.home_outlined);
+      expect(AppNavDestination.home.section, AppNavSection.home);
 
       expect(AppNavDestination.profile.label, 'Profile');
       expect(AppNavDestination.profile.icon, Icons.person_outline);
@@ -35,7 +47,7 @@ void main() {
 
       expect(
         AppNavSection.values.map((s) => s.title),
-        ['ACCOUNT', 'ACTIVITY', 'SAFETY', 'APP'],
+        ['HOME', 'ACCOUNT', 'ACTIVITY', 'SAFETY', 'APP'],
       );
     });
   });
