@@ -80,6 +80,34 @@ void main() {
     expect(find.byType(AppSidebar), findsOneWidget);
   });
 
+  testWidgets('a non-home section shows the shell back arrow and the toggle in actions', (
+    tester,
+  ) async {
+    await pumpShell(tester, '/profile');
+
+    expect(find.byType(AppBackButton), findsOneWidget);
+    expect(
+      find.descendant(
+        of: find.byType(AppBar),
+        matching: find.byType(AppSidebarToggleButton),
+      ),
+      findsOneWidget,
+      reason: 'the hamburger moved to the AppBar actions',
+    );
+
+    await tester.tap(find.byType(AppBackButton));
+    await tester.pumpAndSettle();
+
+    expect(find.text('home-body'), findsOneWidget);
+  });
+
+  testWidgets('/home is an AppBar-free root with no back arrow', (tester) async {
+    await pumpShell(tester, '/home');
+
+    expect(find.byType(AppBar), findsNothing);
+    expect(find.byType(AppBackButton), findsNothing);
+  });
+
   testWidgets('flow routes stay outside the shell and have no drawer', (
     tester,
   ) async {

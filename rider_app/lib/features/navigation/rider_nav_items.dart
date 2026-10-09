@@ -19,6 +19,10 @@ import 'package:ride_hailing_shared/ride_hailing_shared.dart';
 /// destination `Icons.credit_card`.
 List<AppNavItem> buildRiderNavItems() => [
       AppNavItem(
+        destination: AppNavDestination.home,
+        route: '/home',
+      ),
+      AppNavItem(
         destination: AppNavDestination.profile,
         route: '/profile',
       ),

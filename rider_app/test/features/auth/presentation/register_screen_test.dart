@@ -5,10 +5,8 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:dio/dio.dart';
 import 'package:mocktail/mocktail.dart';
 import 'package:go_router/go_router.dart';
+import 'package:ride_hailing_shared/ride_hailing_shared.dart';
 import 'package:rider_app/core/auth/auth_provider.dart';
-import 'package:rider_app/core/auth/auth_storage.dart';
-import 'package:rider_app/core/api/api_client.dart';
-import 'package:rider_app/core/api/api_exceptions.dart';
 import 'package:rider_app/features/auth/presentation/register_screen.dart';
 
 class MockAuthStorage extends Mock implements AuthStorage {}
@@ -155,6 +153,18 @@ void main() {
     await tester.pump();
 
     await tester.tap(find.text('Already have an account? Log in'));
+    await tester.pumpAndSettle();
+
+    expect(find.text('Login'), findsOneWidget);
+  });
+
+  testWidgets('the back arrow returns to /login even though it is not poppable',
+      (WidgetTester tester) async {
+    await tester.pumpWidget(createApp());
+    await tester.pump();
+
+    expect(find.byType(AppBackButton), findsOneWidget);
+    await tester.tap(find.byType(AppBackButton));
     await tester.pumpAndSettle();
 
     expect(find.text('Login'), findsOneWidget);

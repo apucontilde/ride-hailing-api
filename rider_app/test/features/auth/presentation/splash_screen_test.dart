@@ -35,6 +35,8 @@ void main() {
     // First frame is the splash spinner while `checkAuth()` is in flight.
     await tester.pump();
     expect(find.byType(CircularProgressIndicator), findsOneWidget);
+    // The transient root has no back affordance.
+    expect(find.byIcon(Icons.arrow_back), findsNothing);
 
     // `checkAuth()` finds no session, so the splash drives the startup redirect
     // to the login route rather than sitting on the spinner.

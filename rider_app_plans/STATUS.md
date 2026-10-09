@@ -247,6 +247,27 @@
   `rider_app/lib/core/router/app_router.dart:56-86`; `selectedRoute: path` `rider_shell.dart:69`;
   flow routes (`/location-search`, `/driver-matching`, `/active-ride`) stay outside
   `app_router.dart:87-105`; tests `test/features/navigation/rider_shell_test.dart:71-105,157-169`.
+- Home as a first-class destination — shared `AppNavSection.home('HOME')` first
+  `shared/lib/src/navigation/app_nav_section.dart:8`; `AppNavDestination.home('home', 'Home',
+  Icons.home_outlined, AppNavSection.home)` first `shared/lib/src/navigation/app_nav_destination.dart:18`;
+  prepended to the rider list `features/navigation/rider_nav_items.dart:21-24`, so the profile card
+  gains the row automatically from the same list minus `profile`
+  `features/home/presentation/profile_screen.dart:110-115`. Parity suites moved:
+  `shared/test/navigation/app_nav_item_test.dart`, `test/features/navigation/rider_nav_items_test.dart`.
+  No barrel edit (both files already exported) and no shim.
+- Universal back navigation — new shared router-free `AppBackButton` (explicit `onPressed` wins →
+  pop if `canPop` → `onFallback`; `shared/` calls no `go`/`push`) `shared/lib/src/navigation/app_back_button.dart:14-49`;
+  barrel `shared/lib/ride_hailing_shared.dart:32`. Rider shell decision D1-B: the five non-home
+  sections render `leading: AppBackButton(onFallback: → /home)` with `actions: [AppSidebarToggleButton]`
+  `features/navigation/rider_shell.dart:87-93`; `/home` stays `appBar: null` (edge-to-edge overlay
+  toggle). Sub-screens: `/location-search` `features/home/presentation/location_search_screen.dart:56`;
+  `/register` → `/login` `features/auth/presentation/register_screen.dart:49`; `/forgot-password` →
+  `/login` `features/auth/presentation/forgot_password_screen.dart:69`; `/driver-matching` reuses its
+  leave/cancel handler `features/home/presentation/driver_matching_screen.dart:142-144`; `/active-ride`
+  overlay `AppBackButton(onPressed: _handleBack)` `features/home/presentation/active_ride_screen.dart:567-572`
+  (`_handleBack` reuses cancel-confirm / `_goHome`, `:403-410`). `/login`, `/splash`, `/home` stay
+  roots with no back. Tests `shared/test/navigation/app_back_button_test.dart` (6) + the rider
+  shell/nav/sidebar/location-search/driver-matching/active-ride/register/forgot/login/splash suites.
 
 ### [design]
 - Shared style system — extended token set: `AppColors` semantic roles + the exact
@@ -383,6 +404,8 @@ unless they cross a package, in which case they are repo-relative
 | 24 | **Note (test migration, not a defect):** the driver `rate_sheet_test.dart` finder moved from `FilledButton` to a descendant `ElevatedButton` of the `rate-submit` key, because the shared `AppRatingSheet` renders the shared `AppButton` (`ElevatedButton`) instead of the old local `FilledButton`; behavior unchanged | `driver_app/test/features/rides/presentation/rate_sheet_test.dart:35-37`; shared `shared/lib/src/components/app_button.dart:83` | low | [rating] |
 | 25 | **Test-audit follow-up (tracked, not a code defect):** rider widget tests pumped the real `HomeScreen`/`ActiveRideScreen`, whose `FlutterMap` built a live `NetworkTileProvider` against `tile.openstreetmap.org`, so the suite made real network requests. — **RESOLVED (absorbed)** by Landed `[map]`: the shared nullable `mapTileLayerProvider` seam now exists and the three mounting suites override it to `null` | `shared/lib/src/map/map_tile_layer.dart:21`; overrides `test/features/home/presentation/home_screen_test.dart:131`, `test/features/home/presentation/active_ride_screen_test.dart:300`, `test/features/navigation/rider_sidebar_test.dart:84`; audit `tests/AUDIT_REPORT.md:78-80` | low | [map] |
 | 26 | **Test-audit follow-up — shared-owned (tracked, not a code defect):** `shared/test/network/websocket_service_test.dart` drives the heartbeat in real time (`waitFor` + fixed `Future.delayed`s) instead of `fakeAsync`; a `Timer`/clock seam in `WebSocketService` is the fix. `shared/` has no `STATUS.md`, so it is recorded here as a shared-owned follow-up | test delays `shared/test/network/websocket_service_test.dart:7-18,99,120-122,137-139,152-154`; service timers `shared/lib/src/network/websocket_service.dart:40-41,135,152`; audit `tests/AUDIT_REPORT.md:81-83` | low | shared |
+| 27 | **Note (test gap, not a code defect):** the rider shell back test exercises only `/profile`; the other four non-home sections share the identical `isHome ? null : AppBar(leading: AppBackButton…)` branch, so all five are covered by that one widget test — there is no per-section assertion | test `test/features/navigation/rider_shell_test.dart:83-102`; shared branch `features/navigation/rider_shell.dart:85-93` | low | [nav] |
+| 28 | **Note (test gap, not a code defect):** the profile card's `nav-link-home` row is code-proven (fed the same list minus `profile`) but has no direct widget assertion — the shared `app_nav_link_card_test.dart` only asserts `nav-link-payment`/`nav-link-vehicle`, and the rider profile suite does not assert the Home row | `features/home/presentation/profile_screen.dart:110-115`; `shared/test/navigation/app_nav_link_card_test.dart:108-109` | low | [nav] |
 
 *Rows #25–#26 track `tests/AUDIT_REPORT.md` §5.2–§5.3. #25 is resolved by Landed `[map]`; #26 is shared-owned (no shared `STATUS.md`).*
 
@@ -392,8 +415,6 @@ unless they cross a package, in which case they are repo-relative
 | --- | --- | --- | --- |
 | `[auth]_enter_to_login_desktop.md` | auth | `[]` | Web/desktop Enter-to-submit on the rider login password field via a pure `shouldSubmitOnEnter` predicate; mobile unchanged; additive `AuthTextField` keyboard params; no double-submit during an in-flight request. No API/shared change. |
 | `[auth]_web_session_persistence.md` | auth | `[]` | Web cold-start session survival: `checkAuth` recovers via the refresh token and clears only on a definitive 401/400 (transient network/timeout/5xx keeps tokens); `refreshToken` is single-flight and never server-revokes on a transient failure; storage errors never escape `login`/`checkAuth`/`refreshToken`; web `AuthStorage` uses a conditional-import `localStorage` backend. Shared change consumed by both apps (driver counterpart references it). Flutter-only, no API change. |
-| `[nav]_home_destination.md` | nav | `[]` | Home as a first-class shared destination: add `AppNavDestination.home` (`home`/`Home`/`Icons.home_outlined`) and a leading `AppNavSection.home('HOME')` (or first under `account`), prepend it to `buildRiderNavItems()` so the drawer **and** the profile `AppNavLinkCard` can reach `/home`; update the shared/rider parity suites. **CROSS-DOMAIN** — the driver plan adopts the same two shared symbols. No API change. |
-| `[nav]_back_navigation.md` | nav | `[]` | A back affordance on every screen: a shared router-free `AppBackButton` (`onPressed`/`onFallback`, `Icons.arrow_back`; reconciled with the parallel driver plan), a shell-level back on the five non-home sections (recommended `leading → /home`, hamburger to `actions`), explicit backs on `/register`+`/forgot-password` → `/login`, `/location-search` standardization, and arrow/guard decisions for `/driver-matching` + `/active-ride`; `/home`, `/login`, `/splash` stay roots. **CROSS-DOMAIN** — the driver plan adopts `AppBackButton`. No API change. |
 | `[map]_self_hosted_tile_host.md` | map | `[]` — **deferred; gate met by Landed `[map]`** | **DEFERRED.** Stand up a self-hosted tile server and replace the OSM public host (values-only change to the shared `MapTileConfig`); removes third-party policy risk; infra + migration decisions recorded. Authored once in the rider domain; driver consumes. |
 | `[map]_runtime_remote_tile_config.md` | map | `[]` — **deferred; gate met by Landed `[map]`** | **DEFERRED.** Fetch tile URL/key/attribution at runtime instead of compile-time `String.fromEnvironment`; shared factory unchanged; **compile-time default + last-good-cache fallback** so a config outage never blanks the map. The remote-config endpoint owner/shape is **UNSPECIFIED** (an open question to resolve only when scheduled, **not** an `api_plans` prerequisite). Authored once in the rider domain; driver consumes. |
 | `[release]_app_id_and_store_readiness.md` | release | `[]` | **DEFERRED.** Finalize the real reverse-DNS `applicationId` for **BOTH** apps; update Android/iOS build files; align `MapTileConfig.userAgentPackageName` (must match the chosen id) in the same commit; signing/build config; store metadata/data-safety. Canonical file — the driver domain references it, does not duplicate. Until it lands `userAgentPackageName` tracks the stock `com.example.rider_app`/`com.example.driver_app`. |
@@ -411,6 +432,8 @@ Landed `[multi]` above, and was deleted (2026-10-06). `[home]_bottom_panel_resiz
 `[rating]_unify_rating_ui.md` landed, were condensed into Landed `[home]`/`[rating]` above, and
 were deleted (2026-10-08). `[map]_android_tile_access.md` and `[location]_android_location_permission.md`
 landed, were condensed into Landed `[map]`/`[location]` above, and were deleted (2026-10-08).
+`[nav]_home_destination.md` and `[nav]_back_navigation.md` landed, were condensed into
+Landed `[nav]` above, and were deleted (2026-10-08).
 
 ## Invariants
 
@@ -445,6 +468,12 @@ landed, were condensed into Landed `[map]`/`[location]` above, and were deleted 
   hardcodes its own `Scaffold`/`AppBar` and nesting it would render two app bars. Any new shared
   full-screen widget intended for the shell must likewise be body-only (or expose a body-only
   variant).
+- **The rider shell owns the back affordance on the sections.** The five non-home sections render
+  `AppBackButton(onFallback: () => context.go('/home'))` as the shell `AppBar` `leading`, with the
+  `AppSidebarToggleButton` in `actions`; `/home` stays edge-to-edge (no `AppBar`, its toggle is the
+  `Positioned` overlay); `/login` and `/splash` stay roots with no back. `shared/` owns no router —
+  `AppBackButton` pops if it can and otherwise calls the app-supplied `onFallback`, never `go`/`push`
+  (`shared/lib/src/navigation/app_back_button.dart:41-49`).
 - Tests use `mocktail` + `http_mock_adapter`, mirroring the existing suites.
 - Don't remove public providers used by other screens; extend them.
 - The API never answers an outage with 4xx: it answers 5xx or `200 is_estimate: true`. Since
@@ -625,3 +654,13 @@ siblings' prose gates were re-pointed at Landed `[map]` (STATUS.md) instead of t
 **Driver-domain drift (report only, not touched):** `driver_app_plans/[map]_android_tile_access.md`
 and `driver_app_plans/[location]_android_location_permission.md` still reference the deleted rider
 plan filenames; the driver domain must re-point those at Landed `[map]`/`[location]`.
+
+`[nav]` Home-destination + back-navigation condensation (2026-10-08): static `file:line` evidence
+verified against the post-landing tree; both landing claims adversarially reviewed and
+**CONFIRMED-LANDED**. Gates re-run: `melos run analyze` clean; `melos run test` green — rider
+**384**, driver **302**, shared **189** (2026-10-08; Linux FVM SDK + native Melos 8; `melos` was
+not re-run by this condensation). Both landed plan files were deleted and their Open-plans rows
+removed. The two code-proven-but-untested gaps are recorded as notes #27 (shell back test only
+exercises `/profile`) and #28 (profile card `nav-link-home` row has no direct widget assertion).
+Dangling-`depends_on` check re-run: every remaining rider plan's `depends_on` is `[]` — no
+dangling reference.

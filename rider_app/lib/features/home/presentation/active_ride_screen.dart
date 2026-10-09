@@ -396,6 +396,19 @@ class _ActiveRideScreenState extends ConsumerState<ActiveRideScreen>
     if (mounted) context.go('/home');
   }
 
+  /// The overlay back arrow's handler: a live trip routes through the same
+  /// cancel confirmation as the `Cancel Ride` button; a terminal state (the
+  /// receipt/rating flow is already leaving) goes straight home. It never pops —
+  /// this screen is reached with `go`, so `canPop` is false.
+  void _handleBack() {
+    final status = ref.read(rideStatusProvider).status;
+    if (status == RideStatus.completed || status == RideStatus.cancelled) {
+      _goHome();
+    } else {
+      _cancelRide();
+    }
+  }
+
   /// Manual receipt access from the driver sheet (LC-3 item 3).
   Future<void> _showReceiptOnTap() async {
     final rideId = ref.read(rideStatusProvider).rideId;
@@ -549,6 +562,15 @@ class _ActiveRideScreenState extends ConsumerState<ActiveRideScreen>
               right: 16,
               child: SafeArea(child: _buildRouteBanner(tripRoute)),
             ),
+          // The screen has no `AppBar` (body-only, edge-to-edge map), so the
+          // back affordance floats over the map like Home's sidebar toggle.
+          Positioned(
+            top: 8,
+            left: 16,
+            child: SafeArea(
+              child: AppBackButton(onPressed: _handleBack),
+            ),
+          ),
           _buildDriverInfoSheet(rideState, driverPosition),
         ],
       ),

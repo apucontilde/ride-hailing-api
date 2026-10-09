@@ -3,7 +3,7 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
 import 'package:http_mock_adapter/http_mock_adapter.dart';
-import 'package:rider_app/core/api/api_client.dart';
+import 'package:ride_hailing_shared/ride_hailing_shared.dart';
 import 'package:rider_app/core/auth/auth_provider.dart';
 import 'package:rider_app/features/home/data/location_ping_service.dart';
 import 'package:rider_app/features/home/data/pickup_memory_provider.dart';
@@ -154,6 +154,36 @@ void main() {
     await tester.pump(const Duration(milliseconds: 10));
 
     await tester.tap(find.text('Back to Home'));
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 10));
+
+    expect(find.text('Home'), findsOneWidget);
+    expect(container.read(pickupMemoryProvider).restoreOnHome, isTrue);
+
+    await tester.pump(const Duration(seconds: 5));
+    await tester.pumpWidget(const SizedBox());
+    await tester.pump(const Duration(milliseconds: 1));
+  });
+
+  testWidgets(
+      'the leading AppBackButton replaces Icons.close and routes through the no-driver home path',
+      (WidgetTester tester) async {
+    dioAdapter.onGet(
+      '/api/v1/rides/current',
+      (server) => server.reply(200, {
+        'ride': {'id': 'ride-1', 'status': 'no_driver_available'},
+      }),
+    );
+    await makeMatching(tester);
+
+    await tester.pumpWidget(buildRouter());
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 10));
+
+    expect(find.byIcon(Icons.arrow_back), findsOneWidget);
+    expect(find.byIcon(Icons.close), findsNothing);
+
+    await tester.tap(find.byType(AppBackButton));
     await tester.pump();
     await tester.pump(const Duration(milliseconds: 10));
 

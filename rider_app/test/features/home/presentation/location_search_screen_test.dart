@@ -3,10 +3,10 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:dio/dio.dart';
 import 'package:http_mock_adapter/http_mock_adapter.dart';
+import 'package:ride_hailing_shared/ride_hailing_shared.dart';
 import 'package:rider_app/features/home/data/home_provider.dart';
 import 'package:rider_app/features/home/presentation/location_search_screen.dart';
 import 'package:rider_app/core/auth/auth_provider.dart';
-import 'package:rider_app/core/api/api_client.dart';
 
 void main() {
   late ApiClient apiClient;
@@ -93,5 +93,47 @@ void main() {
     await tester.pumpAndSettle();
 
     expect(requests, isEmpty);
+  });
+
+  testWidgets('the standardized leading AppBackButton pops the screen',
+      (WidgetTester tester) async {
+    await tester.pumpWidget(
+      ProviderScope(
+        overrides: [
+          apiClientProvider.overrideWithValue(apiClient),
+          placeSearchDebounceProvider.overrideWithValue(debounce),
+        ],
+        child: MaterialApp(
+          home: Builder(
+            builder: (context) => Scaffold(
+              body: Center(
+                child: ElevatedButton(
+                  onPressed: () => Navigator.of(context).push(
+                    MaterialPageRoute<void>(
+                      builder: (_) => const LocationSearchScreen(
+                        lat: 9.93,
+                        lng: -84.08,
+                      ),
+                    ),
+                  ),
+                  child: const Text('open search'),
+                ),
+              ),
+            ),
+          ),
+        ),
+      ),
+    );
+
+    await tester.tap(find.text('open search'));
+    await tester.pumpAndSettle();
+    expect(find.byType(AppBackButton), findsOneWidget);
+    expect(find.byIcon(Icons.arrow_back), findsOneWidget);
+
+    await tester.tap(find.byType(AppBackButton));
+    await tester.pumpAndSettle();
+
+    expect(find.byType(LocationSearchScreen), findsNothing);
+    expect(find.text('open search'), findsOneWidget);
   });
 }

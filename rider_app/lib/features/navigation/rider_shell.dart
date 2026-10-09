@@ -15,11 +15,12 @@ import 'rider_nav_items.dart';
 /// - `drawer:` the single [AppSidebar], with the account header and the sign-out
 ///   footer, and `selectedRoute` wired from the current location so the active
 ///   section is highlighted (`AppSidebar.selectedRoute` finally has a consumer).
-/// - `appBar:` the sidebar toggle leading + a route-aware title. `/home` is the
-///   exception: it is an edge-to-edge map with no `AppBar`, so it keeps its own
-///   `Positioned` [AppSidebarToggleButton] over the map. Because the shell owns
-///   the only `Scaffold`, that overlay's `Scaffold.of(context)` resolves here and
-///   opens the same drawer.
+/// - `appBar:` a route-aware title with a leading [AppBackButton] (→ `/home`)
+///   and the [AppSidebarToggleButton] in `actions`, so the drawer stays one tap
+///   away. `/home` is the exception: it is an edge-to-edge map with no `AppBar`,
+///   so it keeps its own `Positioned` [AppSidebarToggleButton] over the map.
+///   Because the shell owns the only `Scaffold`, that overlay's
+///   `Scaffold.of(context)` resolves here and opens the same drawer.
 ///
 /// Flow routes (`/location-search`, `/driver-matching`, `/active-ride`) and the
 /// auth routes are deliberately **outside** the shell: they keep their own chrome.
@@ -84,7 +85,10 @@ class RiderShell extends ConsumerWidget {
       appBar: isHome
           ? null
           : AppBar(
-              leading: const AppSidebarToggleButton(),
+              leading: AppBackButton(
+                onFallback: () => context.go('/home'),
+              ),
+              actions: const [AppSidebarToggleButton()],
               title: Text(_sectionTitles[path] ?? ''),
             ),
       body: child,

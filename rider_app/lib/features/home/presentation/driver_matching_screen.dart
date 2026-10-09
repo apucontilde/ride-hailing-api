@@ -139,8 +139,7 @@ class _DriverMatchingScreenState extends ConsumerState<DriverMatchingScreen>
     return Scaffold(
       appBar: AppBar(
         title: const Text('Finding Driver'),
-        leading: IconButton(
-          icon: const Icon(Icons.close),
+        leading: AppBackButton(
           onPressed: showNoDrivers ? _goHome : _cancelRequest,
         ),
       ),

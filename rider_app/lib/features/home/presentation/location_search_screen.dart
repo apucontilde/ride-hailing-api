@@ -53,6 +53,7 @@ class _LocationSearchScreenState extends ConsumerState<LocationSearchScreen> {
 
     return Scaffold(
       appBar: AppBar(
+        leading: const AppBackButton(),
         title: TextField(
           controller: _searchController,
           autofocus: true,

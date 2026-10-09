@@ -96,9 +96,17 @@ void main() {
   ///
   /// It mirrors the real tree's shape: the six sections live in one `ShellRoute`
   /// rendered by [RiderShell] (which owns the drawer), `/login` stays outside.
-  Future<void> pumpHome(WidgetTester tester) async {
+  Future<void> pumpHome(
+    WidgetTester tester, {
+    String initialLocation = '/home',
+  }) async {
+    // The rider drawer now carries a HOME heading and a sixth row; a phone-sized
+    // surface would push the last row off-screen and make its tap a no-op.
+    tester.view.physicalSize = const Size(1000, 1600);
+    tester.view.devicePixelRatio = 1.0;
+    addTearDown(tester.view.reset);
     final router = GoRouter(
-      initialLocation: '/home',
+      initialLocation: initialLocation,
       routes: [
         ShellRoute(
           builder: (context, state, child) =>
@@ -217,6 +225,34 @@ void main() {
 
         expect(find.text(entry.value), findsOneWidget, reason: entry.key);
       }
+    });
+
+    testWidgets('the Home row closes the drawer and lands on /home', (
+      tester,
+    ) async {
+      // The one rider destination with no simple text stub: `/home` is the real
+      // `HomeScreen` (edge-to-edge map), so its map box key is the marker.
+      await pumpHome(tester, initialLocation: '/profile');
+      await openSidebar(tester);
+
+      await tester.tap(find.byKey(const Key('sidebar-item-home')));
+      await tester.pumpAndSettle();
+
+      expect(find.byKey(const ValueKey<String>('home-map')), findsOneWidget);
+      expect(find.byType(AppSidebar), findsNothing);
+    });
+
+    testWidgets('the drawer renders the HOME heading above ACCOUNT', (
+      tester,
+    ) async {
+      await pumpHome(tester);
+      await openSidebar(tester);
+
+      expect(find.text('HOME'), findsOneWidget);
+      expect(
+        tester.getTopLeft(find.text('HOME')).dy,
+        lessThan(tester.getTopLeft(find.text('ACCOUNT')).dy),
+      );
     });
 
     testWidgets(

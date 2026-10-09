@@ -178,6 +178,13 @@ void main() {
     expect(find.text('Forgot Password'), findsOneWidget);
   });
 
+  testWidgets('is a root screen with no back arrow', (WidgetTester tester) async {
+    await tester.pumpWidget(createApp());
+    await tester.pump();
+
+    expect(find.byIcon(Icons.arrow_back), findsNothing);
+  });
+
   testWidgets('asks to switch when logging in as another account',
       (WidgetTester tester) async {
     final postPaths = <String>[];

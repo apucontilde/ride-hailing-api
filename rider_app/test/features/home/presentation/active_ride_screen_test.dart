@@ -461,6 +461,38 @@ void main() {
     await settleAndDispose(tester);
   });
 
+  testWidgets('the overlay back arrow routes through the cancel path without popping',
+      (WidgetTester tester) async {
+    fixture();
+    dioAdapter.onPost(
+      '/api/v1/rides/ride-1/cancel',
+      (server) => server.reply(200, {'ride': {'id': 'ride-1', 'status': 'cancelled'}}),
+    );
+    emit(acceptedEvent());
+
+    await tester.pumpWidget(buildRouter());
+    await tester.pump();
+
+    expect(find.byType(AppBackButton), findsOneWidget);
+    expect(find.byIcon(Icons.arrow_back), findsOneWidget);
+
+    await tester.tap(find.byType(AppBackButton));
+    await tester.pump();
+
+    // A live trip reuses the same confirmation the `Cancel Ride` button shows.
+    expect(find.text('Cancel this ride?'), findsOneWidget);
+
+    await tester.tap(find.text('Yes, Cancel'));
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 10));
+    await tester.pump();
+
+    expect(find.text('Home'), findsOneWidget);
+    expect(container.read(pickupMemoryProvider).restoreOnHome, isTrue);
+
+    await settleAndDispose(tester);
+  });
+
   testWidgets('WS cancelled event routes home', (WidgetTester tester) async {
     fixture();
     emit(acceptedEvent());

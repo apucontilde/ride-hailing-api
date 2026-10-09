@@ -1,11 +1,12 @@
+import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:ride_hailing_shared/ride_hailing_shared.dart';
 import 'package:rider_app/features/navigation/rider_nav_items.dart';
 
 void main() {
   group('buildRiderNavItems identity', () {
-    test('lists exactly the five rider destinations', () {
-      expect(buildRiderNavItems(), hasLength(5));
+    test('lists exactly the six rider destinations', () {
+      expect(buildRiderNavItems(), hasLength(6));
     });
 
     test('ids are the kebab-case strings the sidebar keys are built from', () {
@@ -13,7 +14,7 @@ void main() {
       // these strings are a test contract rather than an implementation detail.
       expect(
         buildRiderNavItems().map((i) => i.id),
-        ['profile', 'ride-history', 'payment', 'security', 'settings'],
+        ['home', 'profile', 'ride-history', 'payment', 'security', 'settings'],
       );
     });
 
@@ -28,8 +29,17 @@ void main() {
       // nowhere in shared/.
       expect(
         buildRiderNavItems().map((i) => i.route),
-        ['/profile', '/history', '/payment', '/security', '/settings'],
+        ['/home', '/profile', '/history', '/payment', '/security', '/settings'],
       );
+    });
+
+    test('Home leads with its canonical label, icon and section', () {
+      // Never overridden in either app: the parity guarantee.
+      final home = buildRiderNavItems().first;
+      expect(home.destination, AppNavDestination.home);
+      expect(home.label, 'Home');
+      expect(home.icon, Icons.home_outlined);
+      expect(home.section, AppNavSection.home);
     });
 
     test('carries no vehicle destination', () {
