@@ -63,6 +63,11 @@ class LocationService {
   final Stream<Position> Function() positionStreamProvider;
   final Duration throttle;
 
+  /// Reads the current wall-clock time for the throttle window. Defaults to
+  /// [DateTime.now]; injectable so tests can advance the clock deterministically
+  /// instead of sleeping in real time. Behaviour is otherwise identical.
+  final DateTime Function() _now;
+
   /// Called with the detailed permission result when
   /// [requestPermission] resolves. Wired to
   /// [appPermissionProvider] so the denial banner can fire.
@@ -85,8 +90,10 @@ class LocationService {
     this.throttle = const Duration(seconds: 5),
     this.onPermission,
     this.onPosition,
-  }) : positionStreamProvider =
-            positionStreamProvider ?? LocationHelper.getPositionStream;
+    DateTime Function()? now,
+  })  : positionStreamProvider =
+            positionStreamProvider ?? LocationHelper.getPositionStream,
+        _now = now ?? DateTime.now;
 
   bool get active => _subscription != null;
 
@@ -138,7 +145,7 @@ class LocationService {
   ///
   /// Returns whether the push actually went out.
   bool _throttledPush(Position position) {
-    final now = DateTime.now();
+    final now = _now();
     if (_lastPushTime != null &&
         now.difference(_lastPushTime!) < throttle) {
       return false;

@@ -2,6 +2,28 @@ import 'dart:async';
 import 'dart:convert';
 import 'package:web_socket_channel/web_socket_channel.dart';
 
+/// Builds the single-shot/periodic [Timer]s the service owns (the 5 s reconnect
+/// delay and the [WebSocketService.heartbeatInterval] keep-alive loop).
+///
+/// This is a seam only: production always uses the real [Timer] constructors
+/// below, so timing is byte-for-byte the same. A test can inject its own factory
+/// to drive both timers deterministically instead of sleeping in real time.
+typedef WebSocketTimerFactory = Timer Function(
+  Duration duration,
+  void Function() callback, {
+  required bool periodic,
+});
+
+Timer _defaultWebSocketTimerFactory(
+  Duration duration,
+  void Function() callback, {
+  required bool periodic,
+}) {
+  return periodic
+      ? Timer.periodic(duration, (_) => callback())
+      : Timer(duration, callback);
+}
+
 /// Shared websocket service used by both the rider and driver apps.
 ///
 /// The driver both *receives* events (`ride.offer`, `ride.updated`,
@@ -36,6 +58,10 @@ class WebSocketService {
   /// driver app enables it via its `webSocketServiceProvider`.
   final Duration heartbeatInterval;
 
+  /// Creates the reconnect/keep-alive timers. Defaults to real [Timer]s;
+  /// injectable so tests can advance the clock deterministically.
+  final WebSocketTimerFactory _timerFactory;
+
   WebSocketChannel? _channel;
   Timer? _reconnectTimer;
   Timer? _heartbeatTimer;
@@ -55,7 +81,9 @@ class WebSocketService {
     String? baseUrl,
     this.wsPath = '/ws',
     this.heartbeatInterval = Duration.zero,
-  }) : baseUrl = baseUrl ?? 'http://localhost:8080';
+    WebSocketTimerFactory? timerFactory,
+  })  : baseUrl = baseUrl ?? 'http://localhost:8080',
+        _timerFactory = timerFactory ?? _defaultWebSocketTimerFactory;
 
   Stream<Map<String, dynamic>> get events => _eventController.stream;
 
@@ -132,12 +160,16 @@ class WebSocketService {
     if (!_shouldReconnect || _accessToken == null) return;
 
     _reconnectTimer?.cancel();
-    _reconnectTimer = Timer(const Duration(seconds: 5), () {
-      final token = _accessToken;
-      if (token != null && !_isDisposed) {
-        connect(token: token);
-      }
-    });
+    _reconnectTimer = _timerFactory(
+      const Duration(seconds: 5),
+      () {
+        final token = _accessToken;
+        if (token != null && !_isDisposed) {
+          connect(token: token);
+        }
+      },
+      periodic: false,
+    );
   }
 
   /// Starts (or restarts) the keep-alive ping loop for the current channel.
@@ -149,10 +181,14 @@ class WebSocketService {
     if (_isDisposed) return;
     if (heartbeatInterval <= Duration.zero) return;
     _heartbeatTimer?.cancel();
-    _heartbeatTimer = Timer.periodic(heartbeatInterval, (_) {
-      if (_isDisposed || _channel == null) return;
-      ping();
-    });
+    _heartbeatTimer = _timerFactory(
+      heartbeatInterval,
+      () {
+        if (_isDisposed || _channel == null) return;
+        ping();
+      },
+      periodic: true,
+    );
   }
 
   /// Cancels the keep-alive ping loop. Safe to call more than once.

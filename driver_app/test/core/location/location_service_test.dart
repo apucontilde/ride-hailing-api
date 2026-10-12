@@ -70,19 +70,6 @@ class _FakeGeolocatorPlatform extends GeolocatorPlatform {
       _stream;
 }
 
-Future<void> waitFor(
-  bool Function() predicate, {
-  Duration timeout = const Duration(seconds: 5),
-}) async {
-  final deadline = DateTime.now().add(timeout);
-  while (!predicate()) {
-    if (DateTime.now().isAfter(deadline)) {
-      fail('condition not met within $timeout');
-    }
-    await Future<void>.delayed(const Duration(milliseconds: 20));
-  }
-}
-
 void main() {
   late MockApiClient mockApiClient;
   late MockDio mockDio;
@@ -107,18 +94,23 @@ void main() {
     addTearDown(positions.close);
   });
 
-  LocationService buildService({Duration throttle = const Duration(milliseconds: 50)}) {
+  LocationService buildService({
+    Duration throttle = const Duration(milliseconds: 50),
+    DateTime Function()? now,
+  }) {
     return LocationService(
       apiClient: mockApiClient,
       availabilityNotifier: availability,
       positionStreamProvider: () => positions.stream,
       throttle: throttle,
+      now: now,
     );
   }
 
   LocationService buildServiceWithObserver(
     List<GeoPoint> seen, {
     Duration throttle = const Duration(milliseconds: 50),
+    DateTime Function()? now,
   }) {
     return LocationService(
       apiClient: mockApiClient,
@@ -126,6 +118,7 @@ void main() {
       positionStreamProvider: () => positions.stream,
       throttle: throttle,
       onPosition: (position) => seen.add(GeoPoint(position.latitude, position.longitude)),
+      now: now,
     );
   }
 
@@ -137,7 +130,10 @@ void main() {
 
   group('LocationService', () {
     test('throttles pushes to the configured interval', () async {
-      final service = buildService();
+      // The throttle reads the injected clock, so the window is advanced
+      // explicitly instead of sleeping in real time.
+      var now = DateTime(2024, 1, 1);
+      final service = buildService(now: () => now);
       when(() => mockDio.put(
             ApiEndpoints.driverLocation,
             data: any(named: 'data'),
@@ -147,10 +143,11 @@ void main() {
       service.start();
 
       positions.add(positionFor(9.93, -84.08));
-      await Future<void>.delayed(const Duration(milliseconds: 20));
+      await pumpEventQueue();
       // Second position within the throttle window must be skipped.
+      now = now.add(const Duration(milliseconds: 20));
       positions.add(positionFor(9.94, -84.09));
-      await Future<void>.delayed(const Duration(milliseconds: 120));
+      await pumpEventQueue();
 
       verify(() => mockDio.put(
             ApiEndpoints.driverLocation,
@@ -165,9 +162,9 @@ void main() {
       service.start();
 
       positions.add(positionFor(9.93, -84.08));
-      await Future<void>.delayed(const Duration(milliseconds: 100));
+      await pumpEventQueue();
       positions.add(positionFor(9.94, -84.09));
-      await Future<void>.delayed(const Duration(milliseconds: 100));
+      await pumpEventQueue();
 
       verifyNever(() => mockDio.put(any(), data: any(named: 'data')));
       service.stop();
@@ -189,7 +186,7 @@ void main() {
       availability.setOffline();
       service.start();
       positions.add(positionFor(9.93, -84.08));
-      await Future<void>.delayed(const Duration(milliseconds: 100));
+      await pumpEventQueue();
 
       // Nothing pushed while offline...
       verifyNever(() => mockDio.put(
@@ -201,7 +198,7 @@ void main() {
       // though the geolocator stream has gone quiet.
       availability.setOnline();
       service.publishLastPosition();
-      await Future<void>.delayed(const Duration(milliseconds: 50));
+      await pumpEventQueue();
 
       verify(() => mockDio.put(
             ApiEndpoints.driverLocation,
@@ -211,7 +208,11 @@ void main() {
     });
 
     test('publishLastPosition bypasses the throttle', () async {
-      final service = buildService(throttle: const Duration(seconds: 30));
+      var now = DateTime(2024, 1, 1);
+      final service = buildService(
+        throttle: const Duration(seconds: 30),
+        now: () => now,
+      );
       when(() => mockDio.put(
             ApiEndpoints.driverLocation,
             data: any(named: 'data'),
@@ -222,7 +223,7 @@ void main() {
 
       // First fix: nothing pushed yet, so it goes straight out.
       positions.add(positionFor(9.93, -84.08));
-      await Future<void>.delayed(const Duration(milliseconds: 100));
+      await pumpEventQueue();
       verify(() => mockDio.put(
             ApiEndpoints.driverLocation,
             data: any(named: 'data'),
@@ -232,7 +233,7 @@ void main() {
 
       // Second fix lands inside the 30 s window and is throttled away.
       positions.add(positionFor(9.94, -84.09));
-      await Future<void>.delayed(const Duration(milliseconds: 100));
+      await pumpEventQueue();
       verifyNever(() => mockDio.put(
             ApiEndpoints.driverLocation,
             data: any(named: 'data'),
@@ -243,7 +244,7 @@ void main() {
       // *newest* fix: a driver coming online is not a routine ping, it is the
       // row dispatch is about to search on.
       service.publishLastPosition();
-      await Future<void>.delayed(const Duration(milliseconds: 50));
+      await pumpEventQueue();
 
       final calls = verify(() => mockDio.put(
             ApiEndpoints.driverLocation,
@@ -263,19 +264,19 @@ void main() {
 
       // No fix has arrived yet — nothing to publish, and nothing invented.
       service.publishLastPosition();
-      await Future<void>.delayed(const Duration(milliseconds: 50));
+      await pumpEventQueue();
       verifyNever(() => mockDio.put(any(), data: any(named: 'data')));
 
       // A fix arrives, but the driver is still offline.
       availability.setOffline();
       service.start();
       positions.add(positionFor(9.93, -84.08));
-      await Future<void>.delayed(const Duration(milliseconds: 50));
+      await pumpEventQueue();
 
       // Explicitly asking while offline must not push either; the online gate
       // is the server contract, not a UI hint.
       service.publishLastPosition();
-      await Future<void>.delayed(const Duration(milliseconds: 50));
+      await pumpEventQueue();
       verifyNever(() => mockDio.put(any(), data: any(named: 'data')));
       service.stop();
     });
@@ -284,10 +285,12 @@ void main() {
         () async {
       // The trip map and the >200 m route refetch read the driver's real
       // position, which must not depend on the online/throttle gates.
+      var now = DateTime(2024, 1, 1);
       final seen = <GeoPoint>[];
       final service = buildServiceWithObserver(
         seen,
         throttle: const Duration(seconds: 30),
+        now: () => now,
       );
       availability.setOnline();
       when(() => mockDio.put(
@@ -297,10 +300,10 @@ void main() {
       service.start();
 
       positions.add(positionFor(9.93, -84.08));
-      await Future<void>.delayed(const Duration(milliseconds: 20));
+      await pumpEventQueue();
       // Throttled out of the server push, but the app still sees it.
       positions.add(positionFor(9.94, -84.09));
-      await Future<void>.delayed(const Duration(milliseconds: 20));
+      await pumpEventQueue();
 
       expect(seen, const [GeoPoint(9.93, -84.08), GeoPoint(9.94, -84.09)]);
       verify(() => mockDio.put(
@@ -317,7 +320,7 @@ void main() {
       service.start();
 
       positions.add(positionFor(9.93, -84.08));
-      await Future<void>.delayed(const Duration(milliseconds: 20));
+      await pumpEventQueue();
 
       expect(seen, const [GeoPoint(9.93, -84.08)]);
       verifyNever(() => mockDio.put(any(), data: any(named: 'data')));
@@ -333,7 +336,8 @@ void main() {
 
     test('buffers a failed push and flushes it as a batch on next success',
         () async {
-      final service = buildService();
+      var now = DateTime(2024, 1, 1);
+      final service = buildService(now: () => now);
       availability.setOnline();
 
       when(() => mockDio.put(
@@ -345,10 +349,11 @@ void main() {
 
       service.start();
       positions.add(positionFor(9.93, -84.08));
-      await Future<void>.delayed(const Duration(milliseconds: 100));
+      await pumpEventQueue();
 
       // Next push succeeds: the buffered point is flushed via the batch
-      // endpoint.
+      // endpoint. Advance the clock past the throttle window first.
+      now = now.add(const Duration(milliseconds: 100));
       when(() => mockDio.put(
             ApiEndpoints.driverLocation,
             data: any(named: 'data'),
@@ -361,7 +366,7 @@ void main() {
       );
 
       positions.add(positionFor(9.94, -84.09));
-      await Future<void>.delayed(const Duration(milliseconds: 100));
+      await pumpEventQueue();
 
       // The second, successful single push carried the latest point; the
       // earlier failed one was buffered, not re-sent.
@@ -420,7 +425,7 @@ void main() {
 
     test('the provider binding re-publishes the last fix on reconnect',
         () async {
-      // Regression for location_service.dart:249: the provider owns the
+      // Regression for location_service.dart: the provider owns the
       // reconnect hook (`websocket.onReconnected = () => service
       // .publishLastPosition()`), and no test instantiated it. Build the real
       // provider wiring with the websocket + geolocator seam faked, feed one
@@ -460,7 +465,8 @@ void main() {
       availability.setOffline();
       service.start();
       positions.add(positionFor(9.93, -84.08));
-      await waitFor(() => container.read(lastPositionProvider) != null);
+      await pumpEventQueue();
+      expect(container.read(lastPositionProvider), isNotNull);
       clearInteractions(mockDio);
 
       availability.setOnline();
@@ -468,9 +474,9 @@ void main() {
           reason: 'locationServiceProvider must bind the reconnect hook');
 
       websocket.onReconnected!();
-      await waitFor(() => pushed);
-      await Future<void>.delayed(const Duration(milliseconds: 20));
+      await pumpEventQueue();
 
+      expect(pushed, isTrue);
       verify(() => mockDio.put(
             ApiEndpoints.driverLocation,
             data: {

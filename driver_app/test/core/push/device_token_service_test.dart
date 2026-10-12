@@ -388,6 +388,53 @@ void main() {
           )).called(1);
     });
 
+    test('registers on the cold-start session restore (checkAuth)', () async {
+      // Bug #12: only a post-materialization login and the availability edge
+      // were covered. The cold-start branch — a persisted session restored by
+      // `checkAuth()` while the service provider is already materialized (as
+      // app.dart does) — must register the push token on that first `/me`.
+      final source = FakePushTokenSource(token: 'tok-123');
+      when(() => mockDio.post(
+            ApiEndpoints.devices,
+            data: any(named: 'data'),
+          )).thenAnswer((_) async => created(ApiEndpoints.devices));
+      when(() => mockDio.get(any())).thenAnswer((_) async => Response(
+            requestOptions: RequestOptions(path: ApiEndpoints.driverMe),
+            statusCode: 200,
+            data: driverJson(),
+          ));
+      final storage = MockAuthStorage();
+      when(() => storage.getAccessToken()).thenAnswer((_) async => 'access-1');
+      when(() => storage.getRefreshToken()).thenAnswer((_) async => null);
+      final ws = MockWebSocketService();
+      when(() => ws.connect(token: any(named: 'token')))
+          .thenAnswer((_) async {});
+      when(() => ws.disconnect()).thenAnswer((_) async {});
+
+      final container = ProviderContainer(
+        overrides: [
+          apiClientProvider.overrideWithValue(mockApiClient),
+          authStorageProvider.overrideWithValue(storage),
+          webSocketServiceProvider.overrideWithValue(ws),
+          pushTokenSourceProvider.overrideWithValue(source),
+        ],
+      );
+      addTearDown(container.dispose);
+
+      // The app materializes the service for its lifetime before the async
+      // cold-start probe resolves.
+      container.read(deviceTokenServiceProvider);
+
+      await container.read(authProvider.notifier).checkAuth();
+      await pumpEventQueue();
+
+      expect(container.read(authProvider).isAuthenticated, isTrue);
+      verify(() => mockDio.post(
+            ApiEndpoints.devices,
+            data: {'token': 'tok-123', 'platform': 'android'},
+          )).called(1);
+    });
+
     test(
         'login registers and logout unregisters through the real provider graph',
         () async {
