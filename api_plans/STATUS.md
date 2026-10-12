@@ -410,22 +410,30 @@
 ## Test-audit follow-ups
 
 > From `tests/AUDIT_REPORT.md` §5. Test-infra debt, not a production bug; no plan file (no design or
-> schedule yet). Verified by reading the fixtures, not by running the tests.
+> schedule yet). The DDL item below is resolved and was adversarially CONFIRMED-LANDED by running the
+> DB-backed suite.
 
 - **DDL fixture duplication across repository integration tests** (`tests/AUDIT_REPORT.md` §5.4) —
-  every `internal/repository/*_integration_test.go` hand-rolls `CREATE TEMP TABLE` DDL that restates
-  the migration schema, so a migration change can leave a fixture silently stale. The `rides` temp
-  table alone is declared four times with different column subsets:
-  `ride_stops_integration_test.go:27` and `fare_snapshot_integration_test.go:32` (full ride schema),
-  `final_fare_integration_test.go:21` (money + `quoted_*`) and `ride_actuals_integration_test.go:21`
-  (actuals only); `routing_regions` recurs at `fare_repo_integration_test.go:57`,
-  `fare_snapshot_integration_test.go:65` and `regions_integration_test.go:83`, and the
-  `road_network_{vertices,edges}_pgr` pair at `pgrouting_repo_integration_test.go:65`,
-  `navigation_elevation_integration_test.go:28`, `regions_integration_test.go:68` and
-  `pgrouting_repo_benchmark_test.go:46`. **Suggested fix:** one shared DDL fixture helper — the
-  existing `connectPG`/`mustExec` (`pgrouting_repo_integration_test.go:22,32`) is its natural home —
-  or derive the temp tables from the migrations. **Requires a live DB** (`make test-integration`) to
-  consolidate, so it is deferred while no DB is available.
+  **RESOLVED** (landed, adversarially confirmed; `make test-integration` **402 PASS / 0 FAIL / 1
+  opt-in SKIP**, `make lint` 0 issues). The canonical TEMP-table DDL now lives once in
+  `internal/repository/testdb_integration_test.go` (`//go:build integration`): `createRidesTable`
+  with the `ridesFull`/`ridesFareQuote`/`ridesActuals` `ridesSchema` enum, `createRideStopsTable`,
+  `createRideTrackPointsTable`, `createRoutingRegionsTable`,
+  `createFareRegionsTable`/`createFareRatesTable`/`createFareRatesActiveIndex`/
+  `createFareDemandWindowsTable`, and `createSingleRegionRoadTables`; `mustExec` is widened to
+  `testing.TB` (`pgrouting_repo_integration_test.go:32`) so the routing benchmark reuses it. Shared
+  by the 11 repository `//go:build integration` test files that reference the helpers (10 callers
+  plus the definitions file) and by `pgrouting_repo_benchmark_test.go`, replacing the four divergent
+  `rides` declarations and the repeated `routing_regions` / `road_network_{vertices,edges}_pgr`
+  pairs named in the original finding. **Two honest caveats:** (a) the single source of truth is
+  **package-local** — the three suites outside `package repository`
+  (`internal/service/pin_uncovered_integration_test.go`,
+  `internal/service/fare_recompute_integration_test.go`,
+  `internal/database/fare_seed_integration_test.go`) cannot import the helpers and still hand-roll
+  their DDL; (b) the fixtures deliberately drop some production CHECKs/FKs (e.g. the
+  `fare_regions`→`routing_regions` and `fare_rates`→`fare_regions` FKs, and the `vehicle_type` /
+  `day_mask` / `multiplier` CHECKs) to keep insert ordering flexible, so the **migrations remain the
+  schema oracle**, not the fixtures.
 
 ## Preserved records (resolved — not open)
 

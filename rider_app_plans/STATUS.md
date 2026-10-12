@@ -428,11 +428,11 @@ unless they cross a package, in which case they are repo-relative
 | 23 | **Test gap (tracked, not a code defect):** the `[home]` handle-toggle test only asserted the handle's `Semantics.onTap` is non-null, so it would not catch a regression where the tap stops changing the sheet size — **FIXED**: the test now invokes the handle's `Semantics.onTap` and asserts `Expanded`/`Collapsed` plus the actual sheet-size transition (min ⇄ opening) both ways | post-fix `test/features/home/presentation/home_screen_test.dart:1315-1348`; toggle `features/home/presentation/home_screen.dart:342-352,677` | low | [home] |
 | 24 | **Note (test migration, not a defect):** the driver `rate_sheet_test.dart` finder moved from `FilledButton` to a descendant `ElevatedButton` of the `rate-submit` key, because the shared `AppRatingSheet` renders the shared `AppButton` (`ElevatedButton`) instead of the old local `FilledButton`; behavior unchanged | `driver_app/test/features/rides/presentation/rate_sheet_test.dart:35-37`; shared `shared/lib/src/components/app_button.dart:83` | low | [rating] |
 | 25 | **Test-audit follow-up (tracked, not a code defect):** rider widget tests pumped the real `HomeScreen`/`ActiveRideScreen`, whose `FlutterMap` built a live `NetworkTileProvider` against `tile.openstreetmap.org`, so the suite made real network requests. — **RESOLVED (absorbed)** by Landed `[map]`: the shared nullable `mapTileLayerProvider` seam now exists and the three mounting suites override it to `null` | `shared/lib/src/map/map_tile_layer.dart:21`; overrides `test/features/home/presentation/home_screen_test.dart:131`, `test/features/home/presentation/active_ride_screen_test.dart:300`, `test/features/navigation/rider_sidebar_test.dart:84`; audit `tests/AUDIT_REPORT.md:78-80` | low | [map] |
-| 26 | **Test-audit follow-up — shared-owned (tracked, not a code defect):** `shared/test/network/websocket_service_test.dart` drives the heartbeat in real time (`waitFor` + fixed `Future.delayed`s) instead of `fakeAsync`; a `Timer`/clock seam in `WebSocketService` is the fix. `shared/` has no `STATUS.md`, so it is recorded here as a shared-owned follow-up | test delays `shared/test/network/websocket_service_test.dart:7-18,99,120-122,137-139,152-154`; service timers `shared/lib/src/network/websocket_service.dart:40-41,135,152`; audit `tests/AUDIT_REPORT.md:81-83` | low | shared |
+| 26 | **Test-audit follow-up — shared-owned (tracked, not a code defect):** `shared/test/network/websocket_service_test.dart` drove the heartbeat in real time (`waitFor` + fixed `Future.delayed`s) instead of `fakeAsync`, causing a documented flake. — **RESOLVED**: an additive `WebSocketTimerFactory` seam drives both the reconnect and heartbeat timers through a manual, deterministic factory while the production default stays the real `Timer` constructors (timing byte-for-byte unchanged). `fakeAsync` still cannot be used — the suite talks to a real `dart:io` socket, whose I/O never completes inside a fake-clock zone — so the manual-timer seam is the right determinism mechanism (documented in the suite). `shared/` has no `STATUS.md`, so it is recorded here as a shared-owned follow-up | seam `shared/lib/src/network/websocket_service.dart:11-25,84-86,163-172,184-191`; converted suite `shared/test/network/websocket_service_test.dart:8-15,16-74,96-108`; audit `tests/AUDIT_REPORT.md:81-83` | low | shared |
 | 27 | **Note (test gap, not a code defect):** the rider shell back test exercises only `/profile`; the other four non-home sections share the identical `isHome ? null : AppBar(leading: AppBackButton…)` branch, so all five are covered by that one widget test — there is no per-section assertion | test `test/features/navigation/rider_shell_test.dart:83-102`; shared branch `features/navigation/rider_shell.dart:85-93` | low | [nav] |
 | 28 | **Note (test gap, not a code defect):** the profile card's `nav-link-home` row is code-proven (fed the same list minus `profile`) but has no direct widget assertion — the shared `app_nav_link_card_test.dart` only asserts `nav-link-payment`/`nav-link-vehicle`, and the rider profile suite does not assert the Home row | `features/home/presentation/profile_screen.dart:110-115`; `shared/test/navigation/app_nav_link_card_test.dart:108-109` | low | [nav] |
 
-*Rows #25–#26 track `tests/AUDIT_REPORT.md` §5.2–§5.3. #25 is resolved by Landed `[map]`; #26 is shared-owned (no shared `STATUS.md`).*
+*Rows #25–#26 track `tests/AUDIT_REPORT.md` §5.2–§5.3. Both are **resolved**: #25 by Landed `[map]`; #26 by the shared additive timer seam (2026-10-11). #26 is shared-owned (no shared `STATUS.md`).*
 
 ## Open plans
 
@@ -719,4 +719,19 @@ remaining rider plan's `depends_on` is `[]` — no dangling reference.
 `:128-137`, `checkAuth` `:139-196`, `refreshToken` `:387-388`, `_clearLocalSession` `:244-255` and
 `login` `:328-338` are stale; the verified ranges recorded in Landed `[auth]` above
 (`:135-144`, `:146-204`, `:397-398`, `:254-265`, `:340-348`) are current. The `readFailed` tuple
-`:22,403-409,228-236` also drifted by one to `:22,403-410,228-237`.
+  `:22,403-409,228-236` also drifted by one to `:22,403-410,228-237`.
+
+Flutter test-hygiene cleanup (2026-10-11): the shared websocket suite's real-time heartbeat
+flake (bug #26) is **RESOLVED**. The additive `WebSocketTimerFactory` seam
+(`shared/lib/src/network/websocket_service.dart:11-25,84-86,163-172,184-191`) defaults to the real
+`Timer` constructors, so production timing is unchanged; the converted
+`shared/test/network/websocket_service_test.dart` exercises the real `dart:io` socket but drives
+both the reconnect and heartbeat timers through a manual, deterministic factory. `fakeAsync` cannot
+be used here because real I/O never completes in a fake-clock zone; the manual-timer seam is the
+appropriate mechanism and is documented in the suite. The landing claim was adversarially reviewed
+and **CONFIRMED-LANDED**. Gates: `melos run test` green across 3 consecutive full runs with no flake
+— shared **205 passed + 1 skipped** now (was 189/203 in earlier waves; the one skip is the
+browser-only `window.localStorage` case, `shared/test/auth/auth_storage_test.dart:93-104`, verified
+on Chrome), rider **394**, driver **317** (2026-10-11; Linux FVM SDK + native Melos 8; `melos` was
+not re-run by this condensation). Bug #25 remains resolved by Landed `[map]`. Dangling-`depends_on`
+check re-run: every remaining rider plan's `depends_on` is `[]` — no dangling reference.
