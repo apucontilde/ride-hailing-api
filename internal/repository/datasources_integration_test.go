@@ -79,7 +79,7 @@ func seedDatasourceFixture(t *testing.T) datasourceFixture {
 
 	// The registry: one local city, one on a real second datasource, one on a
 	// datasource that cannot be reached. cr-sj is the default region.
-	createRegionRegistry(t, local)
+	createRoutingRegionsTable(t, local)
 	createDatasourceRegistry(t, local)
 	mustExec(t, local, "INSERT INTO routing_regions (region_id, level, name, parent_region, "+
 		"bbox_lon_min, bbox_lat_min, bbox_lon_max, bbox_lat_max, default_region, datasource) VALUES "+

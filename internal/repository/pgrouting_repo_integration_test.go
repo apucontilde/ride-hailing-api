@@ -29,10 +29,10 @@ func connectPG(t *testing.T) *sqlx.DB {
 	return db
 }
 
-func mustExec(t *testing.T, db *sqlx.DB, q string, args ...any) {
-	t.Helper()
+func mustExec(tb testing.TB, db *sqlx.DB, q string, args ...any) {
+	tb.Helper()
 	if _, err := db.Exec(q, args...); err != nil {
-		t.Fatalf("exec error: %v (query: %s)", err, q)
+		tb.Fatalf("exec error: %v (query: %s)", err, q)
 	}
 }
 
@@ -62,13 +62,7 @@ func seedPGRTestGraph(t *testing.T) *sqlx.DB {
 		_, _ = db.Exec("DROP TABLE IF EXISTS road_network_edges_pgr")
 	})
 
-	mustExec(t, db, "CREATE TEMP TABLE road_network_vertices_pgr ("+
-		"id BIGINT PRIMARY KEY, the_geom GEOMETRY(Point,4326), "+
-		"lat DOUBLE PRECISION NOT NULL, lng DOUBLE PRECISION NOT NULL, "+
-		"elevation_m DOUBLE PRECISION, elevation_source TEXT)")
-	mustExec(t, db, "CREATE TEMP TABLE road_network_edges_pgr ("+
-		"id BIGINT PRIMARY KEY, source BIGINT, target BIGINT, cost DOUBLE PRECISION)")
-	mustExec(t, db, "CREATE INDEX ON road_network_vertices_pgr USING GIST (the_geom)")
+	createSingleRegionRoadTables(t, db)
 
 	for _, id := range []int64{1, 2, 3, 4, 20, 21, 30} {
 		lat := float64(id) * 0.001

@@ -18,22 +18,7 @@ func TestFinalizeRideFareSQLIntegration(t *testing.T) {
 	db.SetMaxOpenConns(1)
 	t.Cleanup(func() { _, _ = db.Exec("DROP TABLE IF EXISTS rides") })
 
-	mustExec(t, db, `CREATE TEMP TABLE rides (
-		id                     UUID PRIMARY KEY,
-		base_fare              DOUBLE PRECISION NOT NULL DEFAULT 0,
-		distance_fare          DOUBLE PRECISION NOT NULL DEFAULT 0,
-		time_fare              DOUBLE PRECISION NOT NULL DEFAULT 0,
-		surge_multiplier       DOUBLE PRECISION NOT NULL DEFAULT 1.0,
-		total_fare             DOUBLE PRECISION NOT NULL DEFAULT 0,
-		grade_uplift_pct       NUMERIC(6,4),
-		quoted_base_fare       DOUBLE PRECISION,
-		quoted_distance_fare   DOUBLE PRECISION,
-		quoted_time_fare       DOUBLE PRECISION,
-		quoted_surge_multiplier DOUBLE PRECISION,
-		quoted_total_fare      DOUBLE PRECISION,
-		quoted_grade_uplift_pct NUMERIC(6,4),
-		updated_at             TIMESTAMPTZ NOT NULL DEFAULT NOW()
-	)`)
+	createRidesTable(t, db, ridesFareQuote)
 
 	repo := NewRideRepo(db)
 	rideID := "11111111-1111-1111-1111-111111111111"

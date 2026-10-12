@@ -21,43 +21,11 @@ func TestFareRepoIntegration(t *testing.T) {
 	t.Cleanup(func() { _, _ = db.Exec("DROP TABLE IF EXISTS fare_regions") })
 	t.Cleanup(func() { _, _ = db.Exec("DROP TABLE IF EXISTS routing_regions") })
 
-	mustExec(t, db, `CREATE TEMP TABLE fare_regions (
-		region_id  TEXT PRIMARY KEY,
-		currency   TEXT NOT NULL DEFAULT 'USD',
-		timezone   TEXT NOT NULL,
-		created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-		updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
-	)`)
-	mustExec(t, db, `CREATE TEMP TABLE fare_rates (
-		id              UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-		region_id       TEXT NOT NULL,
-		vehicle_type    TEXT NOT NULL,
-		currency        TEXT NOT NULL,
-		base_fare_cents INTEGER NOT NULL,
-		per_km_cents    INTEGER NOT NULL,
-		per_min_cents   INTEGER NOT NULL,
-		grade_uplift_factor NUMERIC(10,6) NOT NULL DEFAULT 0,
-		grade_uplift_cap    NUMERIC(6,4)  NOT NULL DEFAULT 0,
-		effective_from  TIMESTAMPTZ NOT NULL DEFAULT now(),
-		effective_to    TIMESTAMPTZ,
-		created_at      TIMESTAMPTZ NOT NULL DEFAULT now()
-	)`)
-	mustExec(t, db, `CREATE UNIQUE INDEX uq_fare_rates_active
-		ON fare_rates(region_id, vehicle_type) WHERE effective_to IS NULL`)
-	mustExec(t, db, `CREATE TEMP TABLE fare_demand_windows (
-		id           UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-		region_id    TEXT NOT NULL,
-		name         TEXT NOT NULL,
-		day_mask     SMALLINT NOT NULL DEFAULT 127,
-		start_minute INTEGER NOT NULL,
-		end_minute   INTEGER NOT NULL,
-		multiplier   NUMERIC(4,2) NOT NULL DEFAULT 1.0,
-		created_at   TIMESTAMPTZ NOT NULL DEFAULT now()
-	)`)
-	mustExec(t, db, `CREATE TEMP TABLE routing_regions (
-		region_id      TEXT PRIMARY KEY,
-		default_region BOOLEAN NOT NULL DEFAULT FALSE
-	)`)
+	createFareRegionsTable(t, db)
+	createFareRatesTable(t, db)
+	createFareRatesActiveIndex(t, db)
+	createFareDemandWindowsTable(t, db)
+	createRoutingRegionsTable(t, db)
 
 	mustExec(t, db, `INSERT INTO fare_regions (region_id, currency, timezone) VALUES
 		('cr-sj', 'USD', 'America/Costa_Rica'),

@@ -41,7 +41,7 @@ func seedBandRegion(t *testing.T) *sqlx.DB {
 	db.SetMaxOpenConns(1)
 	dropRegionTables(t, db, "road_network_edges_pgr", "road_network_vertices_pgr", "routing_regions")
 
-	createRegionRegistry(t, db)
+	createRoutingRegionsTable(t, db)
 	mustExec(t, db, "INSERT INTO routing_regions (region_id, level, name, parent_region, "+
 		"bbox_lon_min, bbox_lat_min, bbox_lon_max, bbox_lat_max, default_region, datasource) VALUES "+
 		"('cr-sj', 'state', 'San Jose', NULL, -84.50, 9.00, -83.50, 10.20, TRUE, NULL)")

@@ -24,51 +24,8 @@ func TestRideStopsSQLIntegration(t *testing.T) {
 	t.Cleanup(func() { _, _ = db.Exec("DROP TABLE IF EXISTS ride_stops") })
 	t.Cleanup(func() { _, _ = db.Exec("DROP TABLE IF EXISTS rides") })
 
-	mustExec(t, db, `CREATE TEMP TABLE rides (
-		id                UUID          PRIMARY KEY DEFAULT uuid_generate_v4(),
-		rider_id          UUID          NOT NULL,
-		driver_id         UUID,
-		status            TEXT          NOT NULL DEFAULT 'pending',
-		pickup_lat        DOUBLE PRECISION NOT NULL,
-		pickup_lng        DOUBLE PRECISION NOT NULL,
-		dropoff_lat       DOUBLE PRECISION NOT NULL,
-		dropoff_lng       DOUBLE PRECISION NOT NULL,
-		pickup_address    TEXT          NOT NULL DEFAULT '',
-		dropoff_address   TEXT          NOT NULL DEFAULT '',
-		vehicle_type      TEXT          NOT NULL DEFAULT 'sedan',
-		cancellation_fee  DOUBLE PRECISION NOT NULL DEFAULT 0,
-		idempotency_key   TEXT          NOT NULL DEFAULT '',
-		base_fare         DOUBLE PRECISION NOT NULL DEFAULT 0,
-		distance_fare     DOUBLE PRECISION NOT NULL DEFAULT 0,
-		time_fare         DOUBLE PRECISION NOT NULL DEFAULT 0,
-		surge_multiplier  DOUBLE PRECISION NOT NULL DEFAULT 1.0,
-		total_fare        DOUBLE PRECISION NOT NULL DEFAULT 0,
-		fare_region_id    TEXT,
-		fare_rate_id      UUID,
-		fare_currency     TEXT,
-		grade_uplift_pct  NUMERIC(6,4),
-		grade_ascent_m    DOUBLE PRECISION,
-		requested_at      TIMESTAMPTZ   NOT NULL DEFAULT NOW(),
-		accepted_at       TIMESTAMPTZ,
-		driver_arrived_at TIMESTAMPTZ,
-		started_at        TIMESTAMPTZ,
-		completed_at      TIMESTAMPTZ,
-		cancelled_at      TIMESTAMPTZ,
-		created_at        TIMESTAMPTZ   NOT NULL DEFAULT NOW(),
-		updated_at        TIMESTAMPTZ   NOT NULL DEFAULT NOW()
-	)`)
-	mustExec(t, db, `CREATE TEMP TABLE ride_stops (
-		id         UUID        PRIMARY KEY DEFAULT uuid_generate_v4(),
-		ride_id    UUID        NOT NULL,
-		sequence   INTEGER     NOT NULL CHECK (sequence >= 1),
-		kind       TEXT        NOT NULL DEFAULT 'stop' CHECK (kind IN ('stop','destination')),
-		lat        DOUBLE PRECISION NOT NULL,
-		lng        DOUBLE PRECISION NOT NULL,
-		address    TEXT        NOT NULL DEFAULT '',
-		created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-		updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-		UNIQUE (ride_id, sequence)
-	)`)
+	createRidesTable(t, db, ridesFull)
+	createRideStopsTable(t, db)
 
 	const (
 		rider1  = "11111111-1111-1111-1111-111111111111"
@@ -372,18 +329,7 @@ func TestFindStopsByRideIDsIntegration(t *testing.T) {
 	db.SetMaxOpenConns(1)
 	t.Cleanup(func() { _, _ = db.Exec("DROP TABLE IF EXISTS ride_stops") })
 
-	mustExec(t, db, `CREATE TEMP TABLE ride_stops (
-		id         UUID        PRIMARY KEY DEFAULT uuid_generate_v4(),
-		ride_id    UUID        NOT NULL,
-		sequence   INTEGER     NOT NULL CHECK (sequence >= 1),
-		kind       TEXT        NOT NULL DEFAULT 'stop' CHECK (kind IN ('stop','destination')),
-		lat        DOUBLE PRECISION NOT NULL,
-		lng        DOUBLE PRECISION NOT NULL,
-		address    TEXT        NOT NULL DEFAULT '',
-		created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-		updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-		UNIQUE (ride_id, sequence)
-	)`)
+	createRideStopsTable(t, db)
 
 	const (
 		rideA = "11111111-1111-1111-1111-111111111111"

@@ -25,12 +25,7 @@ func seedElevationTestGraph(t *testing.T) *sqlx.DB {
 		_, _ = db.Exec("DROP TABLE IF EXISTS road_network_edges_pgr")
 	})
 
-	mustExec(t, db, "CREATE TEMP TABLE road_network_vertices_pgr ("+
-		"id BIGINT PRIMARY KEY, the_geom GEOMETRY(Point,4326), "+
-		"lat DOUBLE PRECISION NOT NULL, lng DOUBLE PRECISION NOT NULL, "+
-		"elevation_m DOUBLE PRECISION, elevation_source TEXT)")
-	mustExec(t, db, "CREATE TEMP TABLE road_network_edges_pgr ("+
-		"id BIGINT PRIMARY KEY, source BIGINT, target BIGINT, cost DOUBLE PRECISION)")
+	createSingleRegionRoadTables(t, db)
 
 	mustExec(t, db, "INSERT INTO road_network_vertices_pgr (id, the_geom, lat, lng, elevation_m, elevation_source) VALUES "+
 		"(1, ST_SetSRID(ST_MakePoint(0, 0.001), 4326), 0.001, 0, 100, 'skadi:N09W085'), "+

@@ -29,66 +29,11 @@ func TestRideFareSnapshotRoundTripIntegration(t *testing.T) {
 	t.Cleanup(func() { _, _ = db.Exec("DROP TABLE IF EXISTS routing_regions") })
 	t.Cleanup(func() { _, _ = db.Exec("DROP TABLE IF EXISTS rides") })
 
-	mustExec(t, db, `CREATE TEMP TABLE rides (
-		id                UUID          PRIMARY KEY DEFAULT uuid_generate_v4(),
-		rider_id          UUID          NOT NULL,
-		driver_id         UUID,
-		status            TEXT          NOT NULL DEFAULT 'pending',
-		pickup_lat        DOUBLE PRECISION NOT NULL,
-		pickup_lng        DOUBLE PRECISION NOT NULL,
-		dropoff_lat       DOUBLE PRECISION NOT NULL,
-		dropoff_lng       DOUBLE PRECISION NOT NULL,
-		pickup_address    TEXT          NOT NULL DEFAULT '',
-		dropoff_address   TEXT          NOT NULL DEFAULT '',
-		vehicle_type      TEXT          NOT NULL DEFAULT 'sedan',
-		cancellation_fee  DOUBLE PRECISION NOT NULL DEFAULT 0,
-		idempotency_key   TEXT          NOT NULL DEFAULT '',
-		base_fare         DOUBLE PRECISION NOT NULL DEFAULT 0,
-		distance_fare     DOUBLE PRECISION NOT NULL DEFAULT 0,
-		time_fare         DOUBLE PRECISION NOT NULL DEFAULT 0,
-		surge_multiplier  DOUBLE PRECISION NOT NULL DEFAULT 1.0,
-		total_fare        DOUBLE PRECISION NOT NULL DEFAULT 0,
-		fare_region_id    TEXT,
-		fare_rate_id      UUID,
-		fare_currency     TEXT,
-		grade_uplift_pct  NUMERIC(6,4),
-		grade_ascent_m    DOUBLE PRECISION,
-		requested_at      TIMESTAMPTZ   NOT NULL DEFAULT NOW(),
-		accepted_at       TIMESTAMPTZ,
-		driver_arrived_at TIMESTAMPTZ,
-		started_at        TIMESTAMPTZ,
-		completed_at      TIMESTAMPTZ,
-		cancelled_at      TIMESTAMPTZ,
-		created_at        TIMESTAMPTZ   NOT NULL DEFAULT NOW(),
-		updated_at        TIMESTAMPTZ   NOT NULL DEFAULT NOW()
-	)`)
-	mustExec(t, db, `CREATE TEMP TABLE routing_regions (
-		region_id      TEXT PRIMARY KEY,
-		default_region BOOLEAN NOT NULL DEFAULT FALSE
-	)`)
-	mustExec(t, db, `CREATE TEMP TABLE fare_regions (
-		region_id  TEXT PRIMARY KEY REFERENCES routing_regions(region_id),
-		currency   TEXT NOT NULL DEFAULT 'USD',
-		timezone   TEXT NOT NULL,
-		created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-		updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
-	)`)
-	mustExec(t, db, `CREATE TEMP TABLE fare_rates (
-		id              UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-		region_id       TEXT NOT NULL REFERENCES fare_regions(region_id),
-		vehicle_type    TEXT NOT NULL,
-		currency        TEXT NOT NULL,
-		base_fare_cents INTEGER NOT NULL,
-		per_km_cents    INTEGER NOT NULL,
-		per_min_cents   INTEGER NOT NULL,
-		grade_uplift_factor NUMERIC(10,6) NOT NULL DEFAULT 0,
-		grade_uplift_cap    NUMERIC(6,4)  NOT NULL DEFAULT 0,
-		effective_from  TIMESTAMPTZ NOT NULL DEFAULT now(),
-		effective_to    TIMESTAMPTZ,
-		created_at      TIMESTAMPTZ NOT NULL DEFAULT now()
-	)`)
-	mustExec(t, db, `CREATE UNIQUE INDEX uq_fare_rates_active
-		ON fare_rates(region_id, vehicle_type) WHERE effective_to IS NULL`)
+	createRidesTable(t, db, ridesFull)
+	createRoutingRegionsTable(t, db)
+	createFareRegionsTable(t, db)
+	createFareRatesTable(t, db)
+	createFareRatesActiveIndex(t, db)
 
 	const (
 		regionID = "zz-faretest"

@@ -18,19 +18,8 @@ func TestRideActualsSQLIntegration(t *testing.T) {
 	t.Cleanup(func() { _, _ = db.Exec("DROP TABLE IF EXISTS ride_track_points") })
 	t.Cleanup(func() { _, _ = db.Exec("DROP TABLE IF EXISTS rides") })
 
-	mustExec(t, db, `CREATE TEMP TABLE rides (
-		id                UUID PRIMARY KEY,
-		actual_duration_s INTEGER,
-		actual_distance_m DOUBLE PRECISION,
-		updated_at        TIMESTAMPTZ NOT NULL DEFAULT NOW()
-	)`)
-	mustExec(t, db, `CREATE TEMP TABLE ride_track_points (
-		id          UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
-		ride_id     UUID NOT NULL REFERENCES rides(id) ON DELETE CASCADE,
-		lat         DOUBLE PRECISION NOT NULL,
-		lng         DOUBLE PRECISION NOT NULL,
-		recorded_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
-	)`)
+	createRidesTable(t, db, ridesActuals)
+	createRideTrackPointsTable(t, db)
 
 	repo := NewRideRepo(db)
 	rideID := "11111111-1111-1111-1111-111111111111"

@@ -76,18 +76,6 @@ func createRegionTables(t *testing.T, db *sqlx.DB) {
 	mustExec(t, db, "CREATE INDEX ON road_network_vertices_pgr USING GIST (the_geom)")
 }
 
-// createRegionRegistry creates the TEMP routing_regions. parent_region and
-// datasource are NULL-able by design, so the COALESCE mapping is exercised.
-func createRegionRegistry(t *testing.T, db *sqlx.DB) {
-	t.Helper()
-	mustExec(t, db, "CREATE TEMP TABLE routing_regions ("+
-		"region_id TEXT PRIMARY KEY, level TEXT NOT NULL, name TEXT NOT NULL, "+
-		"parent_region TEXT, "+
-		"bbox_lon_min DOUBLE PRECISION, bbox_lat_min DOUBLE PRECISION, "+
-		"bbox_lon_max DOUBLE PRECISION, bbox_lat_max DOUBLE PRECISION, "+
-		"default_region BOOLEAN, datasource TEXT)")
-}
-
 // createDatasourceRegistry creates the TEMP routing_datasources that the
 // per-datasource pools read their connection coordinates from (api_plans/06).
 func createDatasourceRegistry(t *testing.T, db *sqlx.DB) {
@@ -128,7 +116,7 @@ func seedRegionTables(t *testing.T) *sqlx.DB {
 	// mapping is exercised. Only the two rows these tests read are registered —
 	// cr-lc's network exists below without a registry row, which is exactly how
 	// an un-registered import behaves.
-	createRegionRegistry(t, db)
+	createRoutingRegionsTable(t, db)
 	mustExec(t, db, "INSERT INTO routing_regions (region_id, level, name, parent_region, "+
 		"bbox_lon_min, bbox_lat_min, bbox_lon_max, bbox_lat_max, default_region, datasource) VALUES "+
 		"('cr', 'country', 'Costa Rica', NULL, -85.95, 7.98, -82.55, 11.22, FALSE, NULL), "+
