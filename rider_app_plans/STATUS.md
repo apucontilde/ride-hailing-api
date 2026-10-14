@@ -431,6 +431,7 @@ unless they cross a package, in which case they are repo-relative
 | 26 | **Test-audit follow-up — shared-owned (tracked, not a code defect):** `shared/test/network/websocket_service_test.dart` drove the heartbeat in real time (`waitFor` + fixed `Future.delayed`s) instead of `fakeAsync`, causing a documented flake. — **RESOLVED**: an additive `WebSocketTimerFactory` seam drives both the reconnect and heartbeat timers through a manual, deterministic factory while the production default stays the real `Timer` constructors (timing byte-for-byte unchanged). `fakeAsync` still cannot be used — the suite talks to a real `dart:io` socket, whose I/O never completes inside a fake-clock zone — so the manual-timer seam is the right determinism mechanism (documented in the suite). `shared/` has no `STATUS.md`, so it is recorded here as a shared-owned follow-up | seam `shared/lib/src/network/websocket_service.dart:11-25,84-86,163-172,184-191`; converted suite `shared/test/network/websocket_service_test.dart:8-15,16-74,96-108`; audit `tests/AUDIT_REPORT.md:81-83` | low | shared |
 | 27 | **Note (test gap, not a code defect):** the rider shell back test exercises only `/profile`; the other four non-home sections share the identical `isHome ? null : AppBar(leading: AppBackButton…)` branch, so all five are covered by that one widget test — there is no per-section assertion | test `test/features/navigation/rider_shell_test.dart:83-102`; shared branch `features/navigation/rider_shell.dart:85-93` | low | [nav] |
 | 28 | **Note (test gap, not a code defect):** the profile card's `nav-link-home` row is code-proven (fed the same list minus `profile`) but has no direct widget assertion — the shared `app_nav_link_card_test.dart` only asserts `nav-link-payment`/`nav-link-vehicle`, and the rider profile suite does not assert the Home row | `features/home/presentation/profile_screen.dart:110-115`; `shared/test/navigation/app_nav_link_card_test.dart:108-109` | low | [nav] |
+| 29 | **Status chip lies after arrival:** `_getStatusText` has cases only for `driverApproaching`/`onTrip`/`completed` and `default: return 'Matching'`, so `driverArrived` (mapped correctly from backend `driver_arrived` at `ride_status_provider.dart:164-165`) and `matching`/`cancelled`/`noDriverAvailable`/`idle` all render the generic `Matching`. Fix owned by `[ontrip]_status_labels.md` (exhaustive per-status labels) | `features/home/presentation/active_ride_screen.dart:786-797` (chip `:711`, `:653`); mapping `features/home/data/ride_status_provider.dart:158-177` | medium | [ontrip]_status_labels.md |
 
 *Rows #25–#26 track `tests/AUDIT_REPORT.md` §5.2–§5.3. Both are **resolved**: #25 by Landed `[map]`; #26 by the shared additive timer seam (2026-10-11). #26 is shared-owned (no shared `STATUS.md`).*
 
@@ -441,12 +442,33 @@ unless they cross a package, in which case they are repo-relative
 | `[map]_self_hosted_tile_host.md` | map | `[]` — **deferred; gate met by Landed `[map]`** | **DEFERRED.** Stand up a self-hosted tile server and replace the OSM public host (values-only change to the shared `MapTileConfig`); removes third-party policy risk; infra + migration decisions recorded. Authored once in the rider domain; driver consumes. |
 | `[map]_runtime_remote_tile_config.md` | map | `[]` — **deferred; gate met by Landed `[map]`** | **DEFERRED.** Fetch tile URL/key/attribution at runtime instead of compile-time `String.fromEnvironment`; shared factory unchanged; **compile-time default + last-good-cache fallback** so a config outage never blanks the map. The remote-config endpoint owner/shape is **UNSPECIFIED** (an open question to resolve only when scheduled, **not** an `api_plans` prerequisite). Authored once in the rider domain; driver consumes. |
 | `[release]_app_id_and_store_readiness.md` | release | `[]` | **DEFERRED.** Finalize the real reverse-DNS `applicationId` for **BOTH** apps; update Android/iOS build files; align `MapTileConfig.userAgentPackageName` (must match the chosen id) in the same commit; signing/build config; store metadata/data-safety. Canonical file — the driver domain references it, does not duplicate. Until it lands `userAgentPackageName` tracks the stock `com.example.rider_app`/`com.example.driver_app`. |
+| `[ontrip]_driver_arrival_eta.md` | ontrip | landed `[tracking]` + `[ontrip]` capability | Live driver→pickup ETA while `driverApproaching` (client-computed, `GET /geo/eta`, throttled); reconnect/cold-start restore via the driver-location poll + a driver-id source from `rideData`; per-status semantics (`driverArrived` = arrived, `onTrip` = no arrival countdown); reclaim the currently-unconsumed `ApiEndpoints.eta`. **Open decisions on R1/R2/R3 and the label are in the plan.** |
+| `[ontrip]_active_trip_itinerary.md` | ontrip | `[]` | **R-1 + R-3 combined.** Expose the active ride's ordered itinerary (pickup / intermediate `stopPoints` / dropoff / `vehicleType`) from the existing `GET /rides/:id` read in `TripRouteState`; draw ordered stop + destination markers on the active-ride map (mirror Home); gate the mid-trip destination change behind a confirmation dialog that shows a fresh `POST /estimates/price` fare/time and only `PUT`s on Confirm (Cancel leaves the ride untouched). No `shared/`/API change needed; the WS driver fan-out already exists. Open inputs: confirm copy, failure policy, and whether the confirmed estimate should become the booked quote (the latter is an `api_plans` decision). |
+| `[ontrip]_status_labels.md` | ontrip | `[]` | Make `_getStatusText` exhaustive: `driverArrived` → `Driver arrived` (not `Matching`), `matching` → `Finding your driver`, plus explicit `cancelled`/`noDriverAvailable`/`idle` labels; drop the `default`. Reconciles the arrived wording with `[ontrip]_driver_arrival_eta.md`. Owns Known bug #29. |
+| `[auth]_web_reload_session_bootstrap.md` | auth | landed shared `[auth]` capability (STATUS.md → Landed `[auth]`) | **Chain head (unnumbered).** Web reload still bounces an authenticated rider to `/login`: the default hash URL boots go_router at the reloaded route, so `/splash` (the only `checkAuth()` caller) never mounts. Invoke `checkAuth()` exactly once on every entry path and gate the router `redirect` on a bootstrap-resolved flag. App-local; no `shared/`/API change. Driver app has the identical defect (mirror, reported). |
+| `01_[trip]_post_auth_live_trip_restore.md` | trip | `[auth]_web_reload_session_bootstrap.md` (open) | **Stage 01 of the auth→trip chain.** Restore the in-progress ride after auth on login, reload and reload-at-any-route: route `pending` → `/driver-matching`, `accepted`/`driver_arrived`/`in_progress` → `/active-ride`. `completed` is unreachable via `/rides/current` (query excludes it, drift); `cancelled`/`no_driver_available` never restore. Delete the caller-less `RideStatusNotifier.restore()`. No API/`shared/` change; driver half is a mirror. |
+| `01_[arrival]_auto_arrival_nearby.md` | arrival | `api_plans/[arrival]_proximity_arrival_geofence.md` (open) | **Stage 01 (rider) of the arrival chain.** Consume the API's `driver.location.near_pickup`/`distance_to_pickup_m` and the auto-emitted `ride.updated {driver_arrived}`: parse them, surface a "driver is nearby" notice, reflect auto-arrival. Arrived chip wording and ETA-row semantics stay owned by the `[ontrip]` siblings. API owns the geofence/transition; rider only consumes. No API/`shared/`/driver change. |
 
 The two `[map]` deferred plans are **siblings, not a chain**: both are alternatives/composables over
 the same shared `MapTileConfig`, gated behind the now-landed `[map]` work (STATUS.md → Landed `[map]`).
 They stay unnumbered with `depends_on: []` and carry `status: deferred` (numbering is reserved for
 sequential stages; two same-tag branch heads cannot both be `01_`). Their gate is met; flip a plan's
 `status` to `open` when its product trigger is chosen.
+
+`[ontrip]_driver_arrival_eta.md` is a **live, independent** open plan (not deferred): its prerequisites
+are landed capability (Landed `[tracking]` + `[ontrip]` above), so it stays unnumbered per the
+`depends_on` rule. It ships no `shared/` symbol and needs no driver-app change under the recommended
+option (R1); the R2/R3 alternatives would add an `api_plans` dependency.
+
+`[ontrip]_active_trip_itinerary.md` and `[ontrip]_status_labels.md` (authored 2026-10-13) are both
+**independent** (`depends_on: []`; prerequisites are landed capability), so both are unnumbered
+despite sharing the `ontrip` tag with `[ontrip]_driver_arrival_eta.md` — a shared tag is not a
+chain. `active_trip_itinerary` combines the coordinator's R-1 (change-destination confirmation with
+a fresh estimate) and R-3 (active-trip stop markers) because they share one new data source
+(`TripRouteState` itinerary) and one screen/state file; `status_labels` owns the R-2 bug (#29). No
+`api_plans`/`shared/`/driver file is edited by either plan; the one possible `api_plans`
+dependency (whether a confirmed change-destination estimate becomes the booked quote) is recorded
+as an open input, not a prerequisite.
 
 Earlier wave plans — `[tracking]_ride_detail_receipt_rating.md` (LC-3 + LC-4) and
 `01_[ontrip]_live_route_and_eta.md` — landed, were condensed into Landed above, and were deleted
@@ -735,3 +757,40 @@ browser-only `window.localStorage` case, `shared/test/auth/auth_storage_test.dar
 on Chrome), rider **394**, driver **317** (2026-10-11; Linux FVM SDK + native Melos 8; `melos` was
 not re-run by this condensation). Bug #25 remains resolved by Landed `[map]`. Dangling-`depends_on`
 check re-run: every remaining rider plan's `depends_on` is `[]` — no dangling reference.
+
+Batch authoring — R-1/R-2/R-3 (2026-10-13): two new open plans were authored
+(`[ontrip]_active_trip_itinerary.md` = R-1 + R-3 combined; `[ontrip]_status_labels.md` = R-2) and
+Known bug #29 was recorded for the `Matching`-after-arrival label. `active_trip_itinerary` adds an
+additive itinerary exposure (pickup/`stopPoints`/dropoff/`vehicleType`) to `TripRouteState`, stop +
+destination markers on the active-ride map, and a confirmation dialog that shows a fresh
+`POST /estimates/price` fare/time before the `PUT /rides/:id/destination`. **Plan-only change — no
+source, test or manifest was edited, so there is nothing new to analyze; `melos run analyze` /
+`melos run test` were not run.** Dangling-`depends_on` check re-run: both new plans declare
+`depends_on: []` and every remaining rider plan's `depends_on` resolves — no dangling reference.
+Reported (not authored): the one possible `api_plans` dependency (whether a confirmed
+change-destination estimate becomes the booked quote; the API currently does not reprice on change)
+and the existing driver-side WS consumption.
+
+Cross-app batch authoring — X2-R/X1-R/X3-R (2026-10-13): three new rider plans authored.
+`[auth]_web_reload_session_bootstrap.md` (X2-R) is the **unnumbered `[auth]` chain head** — its only
+prerequisite is landed shared `[auth]` capability, so it earns no `NN_`;
+`01_[trip]_post_auth_live_trip_restore.md` (X1-R) is numbered because its `depends_on` names that
+**open** plan; `01_[arrival]_auto_arrival_nearby.md` (X3-R) is numbered because its `depends_on` names
+the **open** `api_plans/[arrival]_proximity_arrival_geofence.md` (which already names this rider
+filename as its consumer). X2-R's root cause is code-confirmed (no `usePathUrlStrategy` in the tree;
+`#/home` reload boots go_router at `/home`, so `/splash` never mounts and `checkAuth()` never runs —
+`splash_screen.dart:16-37`, `app_router.dart:22-39`). X1-R adopts the landed `/rides/current` contract
+verbatim and records two drifts: `pending` is excluded from `needsRestore`
+(`current_ride_provider.dart:143-149`) and the `completed` entry there is **unreachable** because
+`FindCurrentRideByRider` filters to `pending/accepted/driver_arrived/in_progress`
+(`ride_repo.go:243-253`); the caller-less `RideStatusNotifier.restore()`
+(`ride_status_provider.dart:179-183`) is recommended for deletion. X3-R adopts the API plan's
+`near_pickup`/`distance_to_pickup_m` fields and auto-`ride.updated {driver_arrived}` **verbatim** and
+adds only rider consumption; the arrived chip/ETA wording stays owned by the `[ontrip]` siblings.
+**Plan-only change — no source, test or manifest was edited, so there is nothing new to analyze;
+`melos run analyze` / `melos run test` were not run.** Dangling-`depends_on` check: X2-R resolves to
+landed capability; X1-R resolves to the new open X2-R file; X3-R resolves to the existing open
+`api_plans/[arrival]_proximity_arrival_geofence.md` — no dangling reference. Reported (not authored):
+the driver-app mirrors for X2-R (same hash-reload defect) and X1-R (same missing post-auth restore)
+belong to `driver-planner`; the X2-R "shared `AuthStatus.resolving`" alternative is the only candidate
+`shared/` edit and is flagged, not written.
