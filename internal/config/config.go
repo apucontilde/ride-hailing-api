@@ -98,6 +98,14 @@ type Config struct {
 	// DefaultRideMaxStops at the consumer (BuildItinerary), the same pattern as
 	// FareMaxMultiplier.
 	RideMaxStops int
+
+	// Arrival configures the server-owned proximity arrival geofence on the geo
+	// driver-location hot path (api_plans/[arrival]_proximity_arrival_geofence.md).
+	// ON by default; off restores the legacy driver.location payload and
+	// disables the auto accepted→driver_arrived advance. The engine is a
+	// straight-line (haversine) distance to the ride's pickup — never a routing
+	// call — so a routing outage cannot disable it.
+	Arrival ArrivalGeofence
 }
 
 // Fare defaults (api_plans/STATUS.md [fare]). USD is the
@@ -192,6 +200,33 @@ const (
 // same set's median, 0.76 m). Replaces the datasheet provisional 3.0.
 const defaultElevationDeadbandM = 3.8
 
+// ArrivalGeofence configures the proximity arrival geofence
+// (api_plans/[arrival]_proximity_arrival_geofence.md). It is ON by default; a
+// region with no active ride or no accepted ride is unaffected. The disabled
+// (Enabled=false) mode restores the pre-geofence driver.location shape and
+// disables the auto advance, and is the only rollback that needs no redeploy.
+type ArrivalGeofence struct {
+	Enabled       bool    // GEOFENCE_ENABLED=on|off; unset/"" = on, garbage = off (fail-closed). Default on.
+	NearbyRadiusM float64 // GEOFENCE_NEARBY_RADIUS_M; default defaultGeofenceNearbyRadiusM (300).
+	ArriveRadiusM float64 // GEOFENCE_ARRIVE_RADIUS_M; default defaultGeofenceArriveRadiusM (80).
+	HysteresisM   float64 // GEOFENCE_HYSTERESIS_M;   default defaultGeofenceHysteresisM (30).
+	MinMoveM      float64 // GEOFENCE_MIN_MOVE_M;     default defaultGeofenceMinMoveM (10).
+}
+
+// Arrival geofence defaults — product UX thresholds, not a cost model, so no
+// measured sweep gates them; all four are env-tunable. 300 m is a comfortable
+// "almost here" radius at urban speeds; 80 m is about one vehicle length plus
+// GPS noise, so arrival fires at the kerb without a false positive from a
+// parallel street; 30 m of hysteresis stops the near_pickup flag flickering at
+// the 300 m boundary; 10 m of movement suppresses jittery nearby bookkeeping.
+// MIN_MOVE gates ONLY the nearby crossing, never the arrive gate.
+const (
+	defaultGeofenceNearbyRadiusM = 300
+	defaultGeofenceArriveRadiusM = 80
+	defaultGeofenceHysteresisM   = 30
+	defaultGeofenceMinMoveM      = 10
+)
+
 func Load() *Config {
 	return &Config{
 		ServerPort: getEnv("SERVER_PORT", "8080"),
@@ -245,6 +280,14 @@ func Load() *Config {
 		FareCurrency:      getEnv("FARE_CURRENCY", DefaultFareCurrency),
 		FareMaxMultiplier: getFloat("FARE_MAX_MULTIPLIER", DefaultFareMaxMultiplier),
 		RideMaxStops:      getInt("RIDE_MAX_STOPS", DefaultRideMaxStops),
+
+		Arrival: ArrivalGeofence{
+			Enabled:       geofenceEnabledFromEnv(),
+			NearbyRadiusM: getFloat("GEOFENCE_NEARBY_RADIUS_M", defaultGeofenceNearbyRadiusM),
+			ArriveRadiusM: getFloat("GEOFENCE_ARRIVE_RADIUS_M", defaultGeofenceArriveRadiusM),
+			HysteresisM:   getFloat("GEOFENCE_HYSTERESIS_M", defaultGeofenceHysteresisM),
+			MinMoveM:      getFloat("GEOFENCE_MIN_MOVE_M", defaultGeofenceMinMoveM),
+		},
 	}
 }
 
@@ -301,6 +344,16 @@ func routingEngineFromEnv() string {
 // "garbage -> off".
 func routingElevationEnabledFromEnv() bool {
 	v := os.Getenv("ROUTING_ELEVATION")
+	return v == "" || v == "on"
+}
+
+// geofenceEnabledFromEnv whitelists GEOFENCE_ENABLED. Unset or empty means ON
+// (the shipped default); "on" means on; anything else — including a typo —
+// fails CLOSED to off, exactly like routingElevationEnabledFromEnv. os.Getenv
+// is used deliberately in place of getEnv so unset and set-empty are both "on"
+// while garbage is "off".
+func geofenceEnabledFromEnv() bool {
+	v := os.Getenv("GEOFENCE_ENABLED")
 	return v == "" || v == "on"
 }
 

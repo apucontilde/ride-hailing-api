@@ -147,7 +147,13 @@ void main() {
     expect(find.text('Drive to the pickup'), findsOneWidget);
   });
 
-  testWidgets('a ride restored on launch opens the trip', (tester) async {
+  testWidgets('the Home-mount fallback restores a ride the bootstrap did not',
+      (tester) async {
+    // This mount happens without `SessionBootstrap.run()` (as in a standalone
+    // widget test), so `restoreAttempted` is false and Home's own
+    // `_restoreActiveTrip` fetches. In production the bootstrap owns the launch
+    // restore and the login restore — see
+    // `test/core/router/app_router_test.dart` for both production entry paths.
     when(() => mockDio.get(ApiEndpoints.driverRidesCurrent)).thenAnswer(
       (_) async => Response(
         requestOptions: RequestOptions(path: ApiEndpoints.driverRidesCurrent),
@@ -277,6 +283,33 @@ void main() {
     // See above: cancel the outstanding 30 s expiry timer before teardown.
     rideState.declineOffer();
     await tester.pumpAndSettle();
+  });
+
+  testWidgets('a live offer is not dismissed by the barrier or back', (
+    tester,
+  ) async {
+    await pumpHome(tester);
+
+    rideState.onWsEvent(
+      WsEvent(type: WsEventType.offer, data: {'ride_id': 'r7'}),
+    );
+    await tester.pumpAndSettle();
+    expect(find.byType(OfferSheet), findsOneWidget);
+
+    // Barrier tap (top-left, outside the sheet) must not dismiss it.
+    await tester.tapAt(const Offset(20, 20));
+    await tester.pumpAndSettle();
+    expect(find.byType(OfferSheet), findsOneWidget);
+
+    // The system back gesture must not dismiss it either.
+    await tester.binding.handlePopRoute();
+    await tester.pumpAndSettle();
+    expect(find.byType(OfferSheet), findsOneWidget);
+
+    // The explicit Pass is the only exit.
+    await tester.tap(find.text('Pass'));
+    await tester.pumpAndSettle();
+    expect(find.byType(OfferSheet), findsNothing);
   });
 
   testWidgets('the denial banner renders when permission is permanently denied', (

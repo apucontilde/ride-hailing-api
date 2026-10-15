@@ -127,6 +127,37 @@ void main() {
       expect(notifier.state.needsRestore, isTrue);
     });
 
+    test('a pending ride needs restore to the matching screen', () async {
+      payload = {'ride': {'id': 'ride-p', 'status': 'pending'}};
+
+      await notifier.pollNow();
+
+      expect(notifier.state.needsRestore, isTrue);
+      expect(notifier.state.status, 'pending');
+      expect(container.read(rideStatusProvider).status, RideStatus.matching);
+    });
+
+    test('completed is not a restore target from /rides/current', () async {
+      // The endpoint's query excludes completed rides; it must never restore.
+      payload = {'ride': {'id': 'ride-done', 'status': 'completed'}};
+
+      await notifier.pollNow();
+
+      expect(notifier.state.needsRestore, isFalse);
+    });
+
+    test('reset clears the poll view', () async {
+      payload = {'ride': {'id': 'ride-1', 'status': 'accepted'}};
+      await notifier.pollNow();
+      expect(notifier.state.needsRestore, isTrue);
+
+      notifier.reset();
+
+      expect(notifier.state.rideId, isNull);
+      expect(notifier.state.needsRestore, isFalse);
+      expect(notifier.state.status, isNull);
+    });
+
     test('a pending ride that disappears becomes no driver available', () async {
       payload = {'ride': {'id': 'ride-1', 'status': 'pending'}};
       await notifier.pollNow();

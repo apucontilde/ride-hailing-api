@@ -1,34 +1,13 @@
 import 'package:flutter/material.dart';
-import 'package:flutter_riverpod/flutter_riverpod.dart';
-import 'package:go_router/go_router.dart';
-import '../../../core/auth/auth_provider.dart';
 
-class SplashScreen extends ConsumerStatefulWidget {
+/// The transient startup route: a spinner shown while the app-level session
+/// bootstrap (`core/app_bootstrap.dart`) authenticates and restores any
+/// in-progress ride. The router redirect is gated on the bootstrap and moves on
+/// to the resolved route; this widget owns no navigation of its own, so a web
+/// reload at any route is handled by the bootstrap rather than relying on this
+/// screen ever mounting.
+class SplashScreen extends StatelessWidget {
   const SplashScreen({super.key});
-
-  @override
-  ConsumerState<SplashScreen> createState() => _SplashScreenState();
-}
-
-class _SplashScreenState extends ConsumerState<SplashScreen> {
-  @override
-  void initState() {
-    super.initState();
-    _checkAuth();
-  }
-
-  Future<void> _checkAuth() async {
-    await ref.read(authProvider.notifier).checkAuth();
-    if (!mounted) return;
-    final authState = ref.read(authProvider);
-    if (authState.isAuthenticated && authState.isDriver) {
-      context.go('/home');
-    } else if (authState.isAuthenticated) {
-      context.go('/onboarding');
-    } else {
-      context.go('/login');
-    }
-  }
 
   @override
   Widget build(BuildContext context) {

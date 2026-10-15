@@ -3,6 +3,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:ride_hailing_shared/ride_hailing_shared.dart';
 import '../../../core/auth/auth_provider.dart';
 import '../../../core/api/endpoints.dart';
+import '../../trip/model/ride_stop.dart';
 
 /// One page of `GET /driver/rides/history` plus the pagination metadata the
 /// server echoes back (`internal/handler/ride.go:151-189`).
@@ -82,6 +83,32 @@ class DriverRatingPage {
   });
 }
 
+/// A `GET /navigation/route` result for the offer sheet's honest trip estimate.
+/// [isEstimate] mirrors the backend's `is_estimate` (no road coverage → a
+/// straight-line fallback), so the UI can label it as an estimate.
+class RouteEstimate {
+  final double distanceM;
+  final int durationS;
+  final bool isEstimate;
+
+  const RouteEstimate({
+    required this.distanceM,
+    required this.durationS,
+    required this.isEstimate,
+  });
+}
+
+/// A ride plus the sibling `stops` itinerary. The API returns `stops` as an
+/// array alongside `ride` (`internal/handler/ride.go`), ordered by `sequence`
+/// and excluding the pickup; its last row is the destination. The plain
+/// `fetchRide`/`currentRide` read methods keep returning only the [Ride].
+class RideItinerary {
+  final Ride ride;
+  final List<RideStop> stops;
+
+  const RideItinerary({required this.ride, required this.stops});
+}
+
 class RidesRepository {
   final ApiClient apiClient;
 
@@ -112,6 +139,22 @@ class RidesRepository {
     }
   }
 
+  /// Full ride detail plus the sibling `stops` itinerary for one ride.
+  ///
+  /// `fetchRide` stays ride-only for the offer sheet; this is the trip layer's
+  /// itinerary source. Degrades to `[]` when the `stops` key is absent.
+  Future<RideItinerary> fetchRideItinerary(String id) async {
+    final response = await apiClient.dio.get(
+      ApiEndpoints.driverRideById(id),
+    );
+    final data = response.data as Map<String, dynamic>;
+    final rideData = data['ride'] as Map<String, dynamic>? ?? data;
+    return RideItinerary(
+      ride: Ride.fromJson(rideData),
+      stops: _parseStops(data['stops']),
+    );
+  }
+
   /// The driver's active ride, or `null` when there is none. The websocket has
   /// no replay, so this is how a cold start (or a crash mid-trip) recovers the
   /// trip the driver is already on.
@@ -121,6 +164,61 @@ class RidesRepository {
     final rideData = data['ride'] as Map<String, dynamic>?;
     if (rideData == null) return null;
     return Ride.fromJson(rideData);
+  }
+
+  /// Like [currentRide], but also parses the sibling `stops` itinerary.
+  Future<RideItinerary?> currentRideItinerary() async {
+    final response = await apiClient.dio.get(ApiEndpoints.driverRidesCurrent);
+    final data = response.data as Map<String, dynamic>;
+    final rideData = data['ride'] as Map<String, dynamic>?;
+    if (rideData == null) return null;
+    return RideItinerary(
+      ride: Ride.fromJson(rideData),
+      stops: _parseStops(data['stops']),
+    );
+  }
+
+  /// The road route from `(fromLat, fromLng)` to `(toLat, toLng)` as a distance
+  /// and duration estimate, used by the offer sheet. The endpoint is
+  /// Bearer-authenticated for drivers; `is_estimate` is preserved so the caller
+  /// never presents a fallback as a road route.
+  Future<RouteEstimate> routeEstimate({
+    required double fromLat,
+    required double fromLng,
+    required double toLat,
+    required double toLng,
+  }) async {
+    final response = await apiClient.dio.get(
+      ApiEndpoints.navigationRoute,
+      queryParameters: {
+        'from_lat': fromLat,
+        'from_lng': fromLng,
+        'to_lat': toLat,
+        'to_lng': toLng,
+      },
+    );
+    final data = response.data as Map<String, dynamic>;
+    return RouteEstimate(
+      distanceM: _asDouble(data['total_distance_m']),
+      durationS: (data['total_duration_s'] as num?)?.toInt() ?? 0,
+      isEstimate: data['is_estimate'] == true,
+    );
+  }
+
+  /// Parses the `stops` sibling, ordered by `sequence`; `[]` when absent.
+  static List<RideStop> _parseStops(Object? raw) {
+    final stops = (raw as List<dynamic>? ?? const [])
+        .whereType<Map<String, dynamic>>()
+        .map(RideStop.fromJson)
+        .toList()
+      ..sort((a, b) => a.sequence.compareTo(b.sequence));
+    return stops;
+  }
+
+  static double _asDouble(Object? value) {
+    if (value is num) return value.toDouble();
+    if (value is String) return double.tryParse(value) ?? 0;
+    return 0;
   }
 
   /// One page of the driver's past rides.

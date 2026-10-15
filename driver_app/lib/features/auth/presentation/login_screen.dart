@@ -42,6 +42,9 @@ class _LoginScreenState extends ConsumerState<LoginScreen> {
   }
 
   Future<void> _submit() async {
+    // `onFieldSubmitted` fires regardless of the button's disabled state, so a
+    // second Enter while a login is in flight must be a no-op, not a second POST.
+    if (ref.read(authProvider).isLoading) return;
     if (!_formKey.currentState!.validate()) return;
 
     final email = _emailController.text.trim();
@@ -106,6 +109,7 @@ class _LoginScreenState extends ConsumerState<LoginScreen> {
                   label: 'Email',
                   hint: 'Enter your email',
                   keyboardType: TextInputType.emailAddress,
+                  textInputAction: TextInputAction.next,
                   autofillHints: const [AutofillHints.email, AutofillHints.username],
                   prefixIcon: const Icon(Icons.email_outlined),
                   validator: Validators.validateEmail,
@@ -116,6 +120,8 @@ class _LoginScreenState extends ConsumerState<LoginScreen> {
                   label: 'Password',
                   hint: 'Enter your password',
                   obscureText: _obscurePassword,
+                  textInputAction: TextInputAction.done,
+                  onFieldSubmitted: (_) => _submit(),
                   autofillHints: const [AutofillHints.password],
                   prefixIcon: const Icon(Icons.lock_outlined),
                   suffixIcon: IconButton(

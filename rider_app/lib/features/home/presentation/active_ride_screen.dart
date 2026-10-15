@@ -9,12 +9,15 @@ import 'package:rider_app/core/map/rider_map_tile.dart';
 import '../model/driver.dart';
 import '../model/fare.dart';
 import '../model/place.dart';
+import '../model/ride_estimate.dart';
 import '../data/change_destination_provider.dart';
+import '../data/current_ride_provider.dart';
 import '../data/ride_status_provider.dart';
 import '../data/home_provider.dart';
 import '../data/location_ping_service.dart';
 import '../data/ride_provider.dart';
 import '../data/driver_tracking_provider.dart';
+import '../data/driver_eta_provider.dart';
 import '../data/trip_eta.dart';
 import '../data/trip_return.dart';
 import '../data/trip_route_provider.dart';
@@ -46,6 +49,10 @@ class _ActiveRideScreenState extends ConsumerState<ActiveRideScreen>
   /// `initState` so `dispose()` can stop the timer.
   late final TripRouteNotifier _tripRoute;
 
+  /// `[ontrip]` R1: the client-computed driver→pickup ETA. Read once in
+  /// `initState` so `dispose()` can stop its tick.
+  late final DriverEtaNotifier _driverEta;
+
   /// `MapController.move` before `FlutterMap` has built throws
   /// `LateInitializationError`; the post-frame callback is the earliest point at
   /// which the controller is usable.
@@ -67,6 +74,7 @@ class _ActiveRideScreenState extends ConsumerState<ActiveRideScreen>
     _pingService!.start();
     _tracker = ref.read(driverTrackingProvider.notifier);
     _tripRoute = ref.read(tripRouteProvider.notifier);
+    _driverEta = ref.read(driverEtaProvider.notifier);
     _initRiderLocation();
     WidgetsBinding.instance.addPostFrameCallback((_) {
       if (!mounted) return;
@@ -78,7 +86,7 @@ class _ActiveRideScreenState extends ConsumerState<ActiveRideScreen>
       // an accept that arrived before the screen mounted — `WidgetRef.listen` has
       // no `fireImmediately`).
       _tracker
-        ..attach(ref.read(rideStatusProvider).driver?.id)
+        ..attach(ref.read(rideStatusProvider).effectiveDriverId)
         ..start();
       // `[ontrip]`: the active trip's road route + live refresh. The `select`
       // listeners in `build` cover later ride/destination changes; this call
@@ -86,6 +94,8 @@ class _ActiveRideScreenState extends ConsumerState<ActiveRideScreen>
       _tripRoute.start();
       final rideId = ref.read(rideStatusProvider).rideId;
       if (rideId != null) unawaited(_tripRoute.load(rideId));
+      // `[ontrip]` R1: seed the client ETA for a ride already approaching.
+      _driverEta.onRideState(ref.read(rideStatusProvider));
       unawaited(_seedRatedRideIds());
       unawaited(_ensureRideDetail());
     });
@@ -126,6 +136,8 @@ class _ActiveRideScreenState extends ConsumerState<ActiveRideScreen>
     _tracker.stop();
     // `[ontrip]`: neither may the trip-route refresh tick outlive the screen.
     _tripRoute.stop();
+    // `[ontrip]` R1: nor the driver-ETA compute tick.
+    _driverEta.stop();
     super.dispose();
   }
 
@@ -200,11 +212,13 @@ class _ActiveRideScreenState extends ConsumerState<ActiveRideScreen>
     _goHomeAfterCancel();
   }
 
-  /// `[multi]` — pick a new final destination and `PUT /rides/:id/destination`.
+  /// `[multi]` — pick a new final destination, show a fresh estimate, and only
+  /// `PUT /rides/:id/destination` once the rider confirms.
   ///
   /// The server mutates the ride and pushes `ride.updated`; the listener in
   /// [build] already re-reads `GET /rides/:id` and re-requests the route, so
-  /// this flow deliberately does **not** re-route or reprice locally.
+  /// this flow deliberately does **not** re-route or reprice locally. Cancelling
+  /// the confirmation leaves the ride, its fare and the driver untouched.
   Future<void> _changeDestination() async {
     final rideId = ref.read(rideStatusProvider).rideId;
     if (rideId == null) return;
@@ -219,6 +233,12 @@ class _ActiveRideScreenState extends ConsumerState<ActiveRideScreen>
       },
     );
     if (place == null || !mounted) return;
+
+    final estimate = await _estimateForDestination(place);
+    if (!mounted) return;
+
+    final confirmed = await _confirmChangeDestination(place, estimate);
+    if (confirmed != true || !mounted) return;
 
     final changed = await ref
         .read(changeDestinationProvider.notifier)
@@ -237,6 +257,144 @@ class _ActiveRideScreenState extends ConsumerState<ActiveRideScreen>
     ScaffoldMessenger.of(
       context,
     ).showSnackBar(SnackBar(content: Text(message)));
+  }
+
+  /// A fresh `POST /estimates/price` for `place` as the new dropoff, using the
+  /// trip's ordered itinerary as the origin. Returns null when the estimate
+  /// cannot be produced (no routeable pickup, an outage, or a malformed body) —
+  /// the confirmation is still offered, honestly labeled.
+  Future<RideEstimate?> _estimateForDestination(Place place) async {
+    final tripRoute = ref.read(tripRouteProvider);
+    final pickup = tripRoute.pickup ?? _pickupFromRideData();
+    if (pickup == null) return null;
+
+    final args = PriceEstimateArgs(
+      pickupLat: pickup.latitude,
+      pickupLng: pickup.longitude,
+      dropoffLat: place.lat,
+      dropoffLng: place.lng,
+      stops: [
+        for (final stop in tripRoute.stopPoints)
+          EstimateStop(lat: stop.latitude, lng: stop.longitude),
+      ],
+    );
+    try {
+      final estimates = await ref.read(priceEstimatesProvider(args).future);
+      return _pickEstimate(estimates, tripRoute.vehicleType);
+    } catch (_) {
+      // An estimate outage must not veto a core action.
+      return null;
+    }
+  }
+
+  /// The trip's pickup pin from the live ride data, for the cold-start shape
+  /// (`/rides/current` carries `pickup_lat`/`pickup_lng`). Never fabricated.
+  LatLng? _pickupFromRideData() {
+    final data = ref.read(rideStatusProvider).rideData;
+    final pickup = data?['pickup'];
+    if (pickup is Map) {
+      final lat = pickup['lat'];
+      final lng = pickup['lng'];
+      if (lat is num && lng is num) {
+        return LatLng(lat.toDouble(), lng.toDouble());
+      }
+    }
+    final lat = data?['pickup_lat'];
+    final lng = data?['pickup_lng'];
+    if (lat is num && lng is num) {
+      return LatLng(lat.toDouble(), lng.toDouble());
+    }
+    return null;
+  }
+
+  /// The booked vehicle's estimate, or the first/only one when the booked type
+  /// is unknown.
+  RideEstimate? _pickEstimate(List<RideEstimate> estimates, String? vehicleType) {
+    if (estimates.isEmpty) return null;
+    if (vehicleType != null && vehicleType.isNotEmpty) {
+      for (final estimate in estimates) {
+        if (estimate.vehicleType == vehicleType) return estimate;
+      }
+    }
+    return estimates.first;
+  }
+
+  Future<bool?> _confirmChangeDestination(
+    Place place,
+    RideEstimate? estimate,
+  ) {
+    return showDialog<bool>(
+      context: context,
+      builder: (dialogContext) {
+        return AlertDialog(
+          key: const ValueKey<String>('change-destination-dialog'),
+          title: const Text('Change destination?'),
+          content: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text(place.address, style: AppTextStyles.body),
+              const SizedBox(height: 12),
+              if (estimate == null)
+                Text(
+                  'Estimate unavailable',
+                  key: const ValueKey<String>('change-destination-no-estimate'),
+                  style: AppTextStyles.label.copyWith(
+                    color: AppColors.mutedStrong,
+                  ),
+                )
+              else ...[
+                Text(
+                  'Estimated new fare: ${estimate.formattedTotal}'
+                  '${_estimateDuration(estimate) == null ? '' : ' · ${_estimateDuration(estimate)}'}',
+                  key: const ValueKey<String>('change-destination-estimate'),
+                  style: AppTextStyles.subtitle,
+                ),
+                if (estimate.isEstimate)
+                  Padding(
+                    padding: const EdgeInsets.only(top: 4),
+                    child: Text(
+                      'Estimated fare — not fully road-routed',
+                      style: AppTextStyles.caption.copyWith(
+                        color: AppColors.warningForeground,
+                      ),
+                    ),
+                  ),
+              ],
+              const SizedBox(height: 12),
+              Text(
+                'Your final charge is recalculated from the distance actually '
+                'driven — this is an estimate, not a guaranteed fare.',
+                style: AppTextStyles.caption.copyWith(color: AppColors.muted),
+              ),
+            ],
+          ),
+          actions: [
+            TextButton(
+              key: const ValueKey<String>('change-destination-cancel'),
+              onPressed: () => Navigator.of(dialogContext).pop(false),
+              child: const Text('Cancel'),
+            ),
+            FilledButton(
+              key: const ValueKey<String>('change-destination-confirm'),
+              onPressed: () => Navigator.of(dialogContext).pop(true),
+              child: const Text('Confirm'),
+            ),
+          ],
+        );
+      },
+    );
+  }
+
+  /// `~N min` from the summed leg durations, or null when the endpoint returned
+  /// no durations (the price endpoint carries no `eta_seconds`).
+  String? _estimateDuration(RideEstimate estimate) {
+    var seconds = 0;
+    for (final leg in estimate.legs) {
+      seconds += leg.durationS;
+    }
+    if (seconds <= 0) return null;
+    return '~${(seconds / 60).ceil()} min';
   }
 
   /// The search center for a new destination: the trip's pickup, else the
@@ -384,6 +542,9 @@ class _ActiveRideScreenState extends ConsumerState<ActiveRideScreen>
     if (_leaving) return;
     _leaving = true;
     markTripReturn(ref, restorePickup: false);
+    // Drop the poll's (now stale) active status so the router's restore
+    // redirect cannot bounce a completed ride back to the trip.
+    ref.read(currentRideProvider.notifier).reset();
     if (mounted) context.go('/home');
   }
 
@@ -393,6 +554,7 @@ class _ActiveRideScreenState extends ConsumerState<ActiveRideScreen>
     if (_leaving) return;
     _leaving = true;
     markTripReturn(ref, restorePickup: true);
+    ref.read(currentRideProvider.notifier).reset();
     if (mounted) context.go('/home');
   }
 
@@ -429,9 +591,11 @@ class _ActiveRideScreenState extends ConsumerState<ActiveRideScreen>
 
     // LC-4: the driver id from the accepted payload drives the
     // `GET /drivers/:id/location` fallback. `initState` attaches the id that is
-    // already known; this listener picks up every later change.
+    // already known; this listener picks up every later change. `effectiveDriverId`
+    // also covers a cold-start `/rides/current` payload, which carries
+    // `driver_id` with no nested `driver` object.
     ref.listen<String?>(
-      rideStatusProvider.select((state) => state.driver?.id),
+      rideStatusProvider.select((state) => state.effectiveDriverId),
       (previous, next) =>
           _tracker.attach(next),
     );
@@ -472,6 +636,9 @@ class _ActiveRideScreenState extends ConsumerState<ActiveRideScreen>
 
     // Handle ride completion / cancellation
     ref.listen<RideState>(rideStatusProvider, (previous, next) {
+      // `[ontrip]` R1: recompute/stop the client ETA on every status or fix
+      // change (it no-ops unless `driverApproaching`).
+      _driverEta.onRideState(next);
       if (next.status == RideStatus.completed) {
         // Nothing left to track; stop before the dialogs open.
         _tracker.stop();
@@ -536,6 +703,32 @@ class _ActiveRideScreenState extends ConsumerState<ActiveRideScreen>
                 ),
               MarkerLayer(
                 markers: [
+                  // `[ontrip]` R-3: the ordered itinerary pins the Home map
+                  // already draws. Intermediate stops use Home's `trip_origin`
+                  // vocabulary, the destination `location_on`; both are distinct
+                  // from the rider/driver markers below.
+                  for (final stop in tripRoute.stopPoints)
+                    Marker(
+                      point: stop,
+                      width: 32,
+                      height: 32,
+                      child: const Icon(
+                        Icons.trip_origin,
+                        color: AppColors.warning,
+                        size: 28,
+                      ),
+                    ),
+                  if (tripRoute.dropoff != null)
+                    Marker(
+                      point: tripRoute.dropoff!,
+                      width: 40,
+                      height: 40,
+                      child: const Icon(
+                        Icons.location_on,
+                        color: AppColors.danger,
+                        size: 36,
+                      ),
+                    ),
                   if (_riderPosition != null)
                     Marker(
                       point: _riderPosition!,
@@ -651,11 +844,6 @@ class _ActiveRideScreenState extends ConsumerState<ActiveRideScreen>
         ? null
         : (driver.rating <= 0 ? 'New driver' : driver.rating.toStringAsFixed(1));
     final statusText = _getStatusText(rideState.status);
-    // `[ontrip]`: the live ETA is driven by the typed `RideState.etaSeconds`.
-    // `etaLabel` returns null for the backend's 300 s placeholder, so an
-    // unknown ETA is labeled, never rounded into a fake "5 min".
-    final eta = etaLabel(rideState.etaSeconds);
-    final etaText = eta == null ? 'ETA unavailable' : 'ETA $eta';
 
     return Positioned(
       bottom: 0,
@@ -712,20 +900,8 @@ class _ActiveRideScreenState extends ConsumerState<ActiveRideScreen>
               ],
             ),
             const SizedBox(height: 12),
-            Row(
-              children: [
-                Icon(Icons.schedule, size: 16, color: AppColors.mutedStrong),
-                const SizedBox(width: 6),
-                Text(
-                  etaText,
-                  key: const ValueKey<String>('trip-eta'),
-                  style: AppTextStyles.body.copyWith(
-                    fontWeight: FontWeight.w600,
-                    color: AppColors.mutedStrong,
-                  ),
-                ),
-              ],
-            ),
+            _buildStatusDetail(rideState),
+            _buildNearbyNotice(rideState),
             if (driverPosition != null) ...[
               const SizedBox(height: 16),
               AppButton(
@@ -783,16 +959,139 @@ class _ActiveRideScreenState extends ConsumerState<ActiveRideScreen>
     return parts.isEmpty ? null : parts.join(' · ');
   }
 
+  /// The status-aware detail row under the driver card.
+  ///
+  /// `[ontrip]` D1: the arrival ETA is meaningful only while the driver is
+  /// approaching. Once arrived, a countdown to an event that already happened is
+  /// a lie, so it becomes an explicit arrived line; once on the trip the
+  /// driver→pickup time is meaningless and the row is gone.
+  Widget _buildStatusDetail(RideState rideState) {
+    switch (rideState.status) {
+      case RideStatus.driverApproaching:
+        return Row(
+          children: [
+            const Icon(Icons.schedule, size: 16, color: AppColors.mutedStrong),
+            const SizedBox(width: 6),
+            Text(
+              _etaText(rideState),
+              key: const ValueKey<String>('trip-eta'),
+              style: AppTextStyles.body.copyWith(
+                fontWeight: FontWeight.w600,
+                color: AppColors.mutedStrong,
+              ),
+            ),
+          ],
+        );
+      case RideStatus.driverArrived:
+        return Row(
+          children: [
+            const Icon(
+              Icons.person_pin_circle,
+              size: 16,
+              color: AppColors.mutedStrong,
+            ),
+            const SizedBox(width: 6),
+            Text(
+              'Your driver has arrived',
+              key: const ValueKey<String>('trip-arrived'),
+              style: AppTextStyles.body.copyWith(
+                fontWeight: FontWeight.w600,
+                color: AppColors.mutedStrong,
+              ),
+            ),
+          ],
+        );
+      case RideStatus.matching:
+      case RideStatus.onTrip:
+      case RideStatus.completed:
+      case RideStatus.cancelled:
+      case RideStatus.noDriverAvailable:
+      case RideStatus.idle:
+        return const SizedBox.shrink();
+    }
+  }
+
+  /// The live arrival ETA, with distance when `/geo/eta` supplied one. The
+  /// `300`-placeholder honesty is preserved by [etaLabel].
+  String _etaText(RideState rideState) {
+    final eta = etaLabel(rideState.etaSeconds);
+    if (eta == null) return 'ETA unavailable';
+    final distance = rideState.etaDistanceM;
+    if (distance != null && distance > 0) {
+      final km = (distance / 1000).toStringAsFixed(1);
+      return '$km km · ETA $eta';
+    }
+    return 'ETA $eta';
+  }
+
+  /// `[arrival]` — the pre-arrival "driver is nearby" notice. Only shown while
+  /// the server holds `accepted` **and** flagged `near_pickup`; the rider never
+  /// invents "near". Cleared on the status transition by `RideStatusNotifier`.
+  Widget _buildNearbyNotice(RideState rideState) {
+    if (rideState.status != RideStatus.driverApproaching ||
+        !rideState.nearPickup) {
+      return const SizedBox.shrink();
+    }
+    final distance = rideState.nearPickupDistanceM;
+    final distanceText = distance == null
+        ? null
+        : distance >= 1000
+            ? '${(distance / 1000).toStringAsFixed(1)} km away'
+            : '${distance.round()} m away';
+    return Container(
+      key: const ValueKey<String>('driver-nearby-notice'),
+      margin: const EdgeInsets.only(top: 12),
+      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+      decoration: BoxDecoration(
+        color: AppColors.estimateBanner,
+        borderRadius: BorderRadius.circular(AppRadii.md),
+      ),
+      child: Row(
+        children: [
+          const Icon(
+            Icons.near_me,
+            size: 16,
+            color: AppColors.warningForeground,
+          ),
+          const SizedBox(width: 6),
+          Expanded(
+            child: Text(
+              distanceText == null
+                  ? 'Your driver is nearby'
+                  : 'Your driver is nearby · $distanceText',
+              style: AppTextStyles.label.copyWith(
+                color: AppColors.warningForeground,
+              ),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  /// The status chip label. Exhaustive over [RideStatus] — no `default`, so a
+  /// future status forces a copy decision instead of silently reading
+  /// `Matching` (Known bug #29: `driverArrived` used to fall through to
+  /// `Matching`).
   String _getStatusText(RideStatus status) {
     switch (status) {
+      case RideStatus.matching:
+        // Aligns with the matching screen's own copy.
+        return 'Finding your driver';
       case RideStatus.driverApproaching:
         return 'Driver Approaching';
+      case RideStatus.driverArrived:
+        return 'Driver arrived';
       case RideStatus.onTrip:
         return 'On Trip';
       case RideStatus.completed:
         return 'Completed';
-      default:
-        return 'Matching';
+      case RideStatus.cancelled:
+        return 'Cancelled';
+      case RideStatus.noDriverAvailable:
+        return 'No drivers found';
+      case RideStatus.idle:
+        return 'No active ride';
     }
   }
 }

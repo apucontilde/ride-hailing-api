@@ -8,6 +8,7 @@ import 'package:ride_hailing_shared/ride_hailing_shared.dart';
 
 import 'package:driver_app/core/api/endpoints.dart';
 import 'package:driver_app/core/auth/auth_provider.dart';
+import 'package:driver_app/core/location/location_service.dart';
 import 'package:driver_app/core/network/websocket_service.dart';
 import 'package:driver_app/core/network/ws_event.dart';
 import 'package:driver_app/core/ride/ride_state_notifier.dart';
@@ -34,6 +35,7 @@ void main() {
   // suites agree on the coordinates.
   const pickupLat = tripPickupLat, pickupLng = tripPickupLng;
   const dropoffLat = tripDropoffLat, dropoffLng = tripDropoffLng;
+  const midLat = 9.9400, midLng = -84.0900;
 
   setUp(() {
     mockApiClient = MockApiClient();
@@ -43,6 +45,40 @@ void main() {
     when(() => mockWs.events)
         .thenAnswer((_) => const Stream<WsEvent>.empty());
     rideState = RideStateNotifier(mockWs, apiClient: MockApiClient());
+
+    // The trip layer loads the sibling `stops` itinerary once per ride.
+    when(() => mockDio.get(ApiEndpoints.driverRideById('r1'))).thenAnswer(
+      (_) async => Response(
+        requestOptions: RequestOptions(path: ApiEndpoints.driverRideById('r1')),
+        statusCode: 200,
+        data: {
+          'ride': {
+            'id': 'r1',
+            'status': 'accepted',
+            'pickup_lat': pickupLat,
+            'pickup_lng': pickupLng,
+            'dropoff_lat': dropoffLat,
+            'dropoff_lng': dropoffLng,
+          },
+          'stops': [
+            {
+              'sequence': 1,
+              'kind': 'stop',
+              'lat': midLat,
+              'lng': midLng,
+              'address': 'Midpoint Cafe',
+            },
+            {
+              'sequence': 2,
+              'kind': 'destination',
+              'lat': dropoffLat,
+              'lng': dropoffLng,
+              'address': 'Airport',
+            },
+          ],
+        },
+      ),
+    );
 
     // The container owns the overridden provider, so it disposes the
     // notifier — no separate teardown here.
@@ -81,6 +117,12 @@ void main() {
   void seedAcceptedRide() {
     broadcast(status: 'accepted');
     rideState.onWsEvent(rideUpdated(status: 'accepted', includePlaces: true));
+  }
+
+  /// Lets the fire-and-forget itinerary load settle.
+  Future<void> settleStops() async {
+    await Future<void>.delayed(Duration.zero);
+    await Future<void>.delayed(Duration.zero);
   }
 
   void stubStatusPut({String status = 'driver_arrived'}) {
@@ -149,19 +191,16 @@ void main() {
   });
 
   group('advance()', () {
-    test('enrouteToPickup puts driver_arrived and adopts the response',
+    test('enrouteToPickup never sends driver_arrived (server geofence owns it)',
         () async {
       seedAcceptedRide();
       stubStatusPut();
 
       await notifier.advance();
 
-      final captured = verify(
-        () => mockDio.put(ApiEndpoints.driverRideStatus('r1'),
-            data: captureAny(named: 'data')),
-      ).captured;
-      expect((captured.first as Map)['status'], 'driver_arrived');
-      expect(notifier.state.stage, TripStage.arrived);
+      // Arrival is server-owned: the driver must never PUT `driver_arrived`.
+      verifyNever(() => mockDio.put(any(), data: any(named: 'data')));
+      expect(notifier.state.stage, TripStage.enrouteToPickup);
     });
 
     test('arrived puts in_progress', () async {
@@ -323,6 +362,79 @@ void main() {
       await notifier.cancelTrip();
 
       verifyNever(() => mockDio.post(any(), data: any(named: 'data')));
+    });
+  });
+
+  group('itinerary and next waypoint', () {
+    test('orders pickup, intermediate stops and destination', () async {
+      seedAcceptedRide();
+      await settleStops();
+
+      final ride = notifier.state.currentRide!;
+      final waypoints = notifier.waypointsFor(ride);
+
+      expect(waypoints, hasLength(3));
+      expect(waypoints[0].isPickup, isTrue);
+      expect(waypoints[1].address, 'Midpoint Cafe');
+      expect(waypoints[2].isDestination, isTrue);
+      expect(waypoints[2].address, 'Airport');
+    });
+
+    test('next waypoint on driving is the first stop beyond the radius',
+        () async {
+      seedAcceptedRide();
+      await settleStops();
+      broadcast(status: 'in_progress');
+      final ride = notifier.state.currentRide!;
+
+      // At the pickup, the intermediate stop is the next waypoint.
+      container.read(lastPositionProvider.notifier).state =
+          const GeoPoint(pickupLat, pickupLng);
+      expect(
+        notifier.nextWaypoint(TripStage.driving, ride)!.address,
+        'Midpoint Cafe',
+      );
+
+      // Standing at the intermediate stop, the destination is next.
+      container.read(lastPositionProvider.notifier).state =
+          const GeoPoint(midLat, midLng);
+      expect(
+        notifier.nextWaypoint(TripStage.driving, ride)!.isDestination,
+        isTrue,
+      );
+    });
+
+    test('a destination-only patch moves the destination row, stage unchanged',
+        () {
+      seedAcceptedRide();
+      expect(notifier.state.stage, TripStage.enrouteToPickup);
+      final before = notifier.state.currentRide!.dropoffLat;
+
+      rideState.onWsEvent(rideUpdated(
+        status: 'accepted',
+        includePlaces: true,
+        dropoffLat: 9.99,
+        dropoffLng: -84.2,
+        dropoffAddress: 'New Place',
+      ));
+
+      expect(notifier.state.stage, TripStage.enrouteToPickup);
+      expect(notifier.state.currentRide!.dropoffLat, isNot(before));
+      expect(notifier.state.currentRide!.dropoffLat, 9.99);
+      expect(notifier.state.currentRide!.dropoffAddress, 'New Place');
+    });
+
+    test('a new ride drops the loaded stops', () async {
+      seedAcceptedRide();
+      await settleStops();
+      expect(notifier.state.stops, isNotEmpty);
+
+      rideState.adoptRide(
+        const Ride(id: 'r2', riderId: 'u2', status: 'accepted'),
+      );
+
+      expect(notifier.state.currentRide!.id, 'r2');
+      expect(notifier.state.stops, isEmpty);
     });
   });
 

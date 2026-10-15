@@ -95,6 +95,16 @@ class CurrentRideNotifier extends StateNotifier<CurrentRideState> {
   /// Single immediate poll used at cold start to restore an ongoing ride.
   Future<void> checkOnce() => pollNow();
 
+  /// Clears the poll's view of the current ride.
+  ///
+  /// Called when a trip reaches a terminal state and the rider leaves the trip
+  /// screen: the last poll can still hold an active status, which would make the
+  /// router's restore redirect bounce a completed ride straight back to the
+  /// trip. Resetting keeps `needsRestore` false for the post-trip Home.
+  void reset() {
+    state = const CurrentRideState();
+  }
+
   Future<void> pollNow() async {
     if (_attempts >= maxAttempts) {
       stopPolling();
@@ -142,11 +152,15 @@ class CurrentRideNotifier extends StateNotifier<CurrentRideState> {
 
     final status = ride['status'] as String?;
     final rideId = ride['id'] as String?;
+    // The active set `GET /rides/current` actually returns. `pending` maps to
+    // the matching screen, so it must restore too; `completed` is **never**
+    // returned by the endpoint (its query excludes it) — keeping it here would
+    // be dead. `cancelled` / `no_driver_available` never restore.
     final restore =
+        status == 'pending' ||
         status == 'accepted' ||
         status == 'driver_arrived' ||
-        status == 'in_progress' ||
-        status == 'completed';
+        status == 'in_progress';
 
     return CurrentRideState(
       loading: false,

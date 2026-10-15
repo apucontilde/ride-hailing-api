@@ -80,4 +80,13 @@ type DriverLocationData struct {
 	Lng      float64 `json:"lng"`
 	Heading  float64 `json:"heading"`
 	Speed    float64 `json:"speed"`
+
+	// Additive proximity fields (api_plans/[arrival]_proximity_arrival_geofence.md
+	// §2.4). Present only while the caller's active ride is status "accepted";
+	// the legacy shape is unchanged otherwise (omitempty). DistanceToPickupM is
+	// straight-line (haversine) metres to the pickup — deliberately not road
+	// distance — and near_pickup is the hysteresis-gated "almost here" signal.
+	// Nearby never changes ride.status.
+	NearPickup        bool    `json:"near_pickup,omitempty"`
+	DistanceToPickupM float64 `json:"distance_to_pickup_m,omitempty"`
 }

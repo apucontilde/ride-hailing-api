@@ -107,6 +107,36 @@ void main() {
     // state in which the post-trip prompt may appear. A case that cares about a
     // different list re-stubs it after this.
     stubRatings(const []);
+
+    // The trip layer loads the sibling `stops` once per ride.
+    when(() => mockDio.get(ApiEndpoints.driverRideById('r1'))).thenAnswer(
+      (_) async => jsonResponse({
+        'ride': {
+          'id': 'r1',
+          'status': 'accepted',
+          'pickup_lat': pickupLat,
+          'pickup_lng': pickupLng,
+          'dropoff_lat': dropoffLat,
+          'dropoff_lng': dropoffLng,
+        },
+        'stops': [
+          {
+            'sequence': 1,
+            'kind': 'stop',
+            'lat': 9.9400,
+            'lng': -84.0900,
+            'address': 'Midpoint Cafe',
+          },
+          {
+            'sequence': 2,
+            'kind': 'destination',
+            'lat': dropoffLat,
+            'lng': dropoffLng,
+            'address': 'Airport',
+          },
+        ],
+      }),
+    );
   });
 
   void broadcast({
@@ -114,6 +144,9 @@ void main() {
     String status = 'accepted',
     Map<String, dynamic>? fare,
     String? cancelledBy,
+    double? dropoffLat,
+    double? dropoffLng,
+    String? dropoffAddress,
   }) {
     rideState.onWsEvent(rideUpdated(
       rideId: rideId,
@@ -121,6 +154,9 @@ void main() {
       fare: fare,
       cancelledBy: cancelledBy,
       includePlaces: true,
+      dropoffLat: dropoffLat,
+      dropoffLng: dropoffLng,
+      dropoffAddress: dropoffAddress,
     ));
   }
 
@@ -289,28 +325,26 @@ void main() {
       expect(find.text('Complete Trip'), findsOneWidget);
     });
 
-    testWidgets('enrouteToPickup offers arrival and advances to arrived',
+    testWidgets(
+        'enrouteToPickup has no arrival button; the broadcast advances it',
         (tester) async {
       await pumpTrip(tester);
       broadcast();
       await tester.pump();
-      stubPut('driver_arrived');
 
+      // Arrival is server-owned: no manual primary button exists while en route.
       expect(find.text('Drive to the pickup'), findsOneWidget);
-      expect(find.text('Central Park'), findsOneWidget);
-      expect(find.text('Arrived at pickup'), findsOneWidget);
+      expect(find.byKey(const Key('trip-primary-button')), findsNothing);
+      expect(find.text('Arrived at pickup'), findsNothing);
 
-      await tester.tap(find.byKey(const Key('trip-primary-button')));
-      await tester.pump();
+      // The server's proximity geofence broadcasts `driver_arrived`; the app
+      // reflects it without sending anything.
+      broadcast(status: 'driver_arrived');
       await tester.pump();
 
-      final captured = verify(
-        () => mockDio.put(ApiEndpoints.driverRideStatus('r1'),
-            data: captureAny(named: 'data')),
-      ).captured;
-      expect((captured.first as Map)['status'], 'driver_arrived');
       expect(find.text('Arrived at the pickup'), findsOneWidget);
       expect(find.text('Start trip'), findsOneWidget);
+      verifyNever(() => mockDio.put(any(), data: any(named: 'data')));
     });
 
     testWidgets('arrived starts the trip and then shows the complete button',
@@ -748,6 +782,91 @@ void main() {
       );
       expect(find.byIcon(Icons.error_outline), findsOneWidget);
       expect(find.byType(AppErrorRow), findsOneWidget);
+    });
+  });
+
+  group('live destination and itinerary', () {
+    testWidgets(
+        'a destination-only update re-requests the route to the new dropoff',
+        (tester) async {
+      stubRouteGet();
+      await pumpTrip(tester);
+      // Stand at the intermediate stop so the destination is the next target.
+      container.read(lastPositionProvider.notifier).state =
+          const GeoPoint(9.9400, -84.0900);
+      broadcast(status: 'in_progress');
+      await tester.pump();
+      await tester.pump();
+
+      // The stage does not change, but the destination moved: the route must be
+      // re-requested to the new dropoff.
+      broadcast(
+        status: 'in_progress',
+        dropoffLat: 9.99,
+        dropoffLng: -84.2,
+        dropoffAddress: 'Moved',
+      );
+      await tester.pump();
+      await tester.pump();
+
+      // `verify` consumes matched invocations, so assert the whole set once.
+      final captured = verify(() => mockDio.get(
+            ApiEndpoints.navigationRoute,
+            queryParameters: captureAny(named: 'queryParameters'),
+          )).captured;
+      expect(captured, hasLength(2));
+      expect((captured.last as Map)['to_lat'], 9.99);
+      expect((captured.last as Map)['to_lng'], -84.2);
+    });
+
+    testWidgets('the drawer lists every waypoint and marks the next',
+        (tester) async {
+      await pumpTrip(tester);
+      broadcast(status: 'in_progress');
+      await tester.pump();
+      await tester.pump();
+
+      expect(find.byKey(const Key('trip-itinerary')), findsOneWidget);
+      expect(find.text('Central Park'), findsOneWidget);
+      expect(find.text('Midpoint Cafe'), findsOneWidget);
+      expect(find.text('Airport'), findsOneWidget);
+      expect(find.text('Next'), findsOneWidget);
+    });
+
+    testWidgets('the map marks only the next waypoint plus the driver',
+        (tester) async {
+      await pumpTrip(tester);
+      broadcast(status: 'in_progress');
+      await tester.pump();
+      await tester.pump();
+
+      final layer = tester.widget<MarkerLayer>(find.byType(MarkerLayer));
+      // Next waypoint + driver, never the whole itinerary.
+      expect(layer.markers, hasLength(2));
+    });
+
+    testWidgets('moving to an intermediate stop advances the route target',
+        (tester) async {
+      stubRouteGet();
+      await pumpTrip(tester);
+      broadcast(status: 'in_progress');
+      await tester.pump();
+      await tester.pump();
+
+      container.read(lastPositionProvider.notifier).state =
+          const GeoPoint(9.9400, -84.0900);
+      await tester.pump();
+      await tester.pump();
+
+      // At the pickup the target was the intermediate stop; now the
+      // destination is the next target, a new cache key.
+      final captured = verify(() => mockDio.get(
+            ApiEndpoints.navigationRoute,
+            queryParameters: captureAny(named: 'queryParameters'),
+          )).captured;
+      expect(captured, hasLength(2));
+      expect((captured.last as Map)['to_lat'], dropoffLat);
+      expect((captured.last as Map)['to_lng'], dropoffLng);
     });
   });
 }

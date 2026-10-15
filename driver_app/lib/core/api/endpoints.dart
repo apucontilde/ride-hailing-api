@@ -35,7 +35,6 @@ class ApiEndpoints {
   static String driverRideStatus(String id) => '$prefix/driver/rides/$id/status';
   static String driverRideCancel(String id) => '$prefix/driver/rides/$id/cancel';
   static String driverRideRate(String id) => '$prefix/driver/rides/$id/rate';
-  static String driverRideNotifyArrival(String id) => '$prefix/driver/rides/$id/notify-arrival';
 
   // Geo & navigation
   static const String driverLocation = '$prefix/geo/driver/location';

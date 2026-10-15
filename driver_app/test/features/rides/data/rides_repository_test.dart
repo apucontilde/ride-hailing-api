@@ -2,6 +2,7 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:mocktail/mocktail.dart';
 import 'package:dio/dio.dart';
 import 'package:ride_hailing_shared/ride_hailing_shared.dart';
+import 'package:driver_app/core/api/endpoints.dart';
 import 'package:driver_app/features/rides/data/rides_repository.dart';
 
 class MockApiClient extends Mock implements ApiClient {}
@@ -281,6 +282,102 @@ void main() {
         );
 
         verifyNever(() => mockDio.post(any(), data: any(named: 'data')));
+      });
+    });
+
+    group('fetchRideItinerary', () {
+      test('parses the sibling stops ordered by sequence', () async {
+        when(() => mockDio.get('/api/v1/driver/rides/r1')).thenAnswer(
+          (_) async => Response(
+            requestOptions: RequestOptions(path: '/api/v1/driver/rides/r1'),
+            statusCode: 200,
+            data: {
+              'ride': {'id': 'r1', 'status': 'in_progress'},
+              'stops': [
+                {
+                  'sequence': 2,
+                  'kind': 'destination',
+                  'lat': 9.96,
+                  'lng': -84.11,
+                  'address': 'Airport',
+                },
+                {
+                  'sequence': 1,
+                  'kind': 'stop',
+                  'lat': 9.94,
+                  'lng': -84.09,
+                  'address': 'Midpoint Cafe',
+                },
+              ],
+            },
+          ),
+        );
+
+        final itinerary = await repo.fetchRideItinerary('r1');
+
+        expect(itinerary.ride.id, 'r1');
+        expect(itinerary.stops, hasLength(2));
+        expect(itinerary.stops.first.sequence, 1);
+        expect(itinerary.stops.first.address, 'Midpoint Cafe');
+        expect(itinerary.stops.last.isDestination, isTrue);
+      });
+
+      test('degrades to an empty list when stops is absent', () async {
+        when(() => mockDio.get('/api/v1/driver/rides/r1')).thenAnswer(
+          (_) async => Response(
+            requestOptions: RequestOptions(path: '/api/v1/driver/rides/r1'),
+            statusCode: 200,
+            data: {
+              'ride': {'id': 'r1', 'status': 'in_progress'},
+            },
+          ),
+        );
+
+        final itinerary = await repo.fetchRideItinerary('r1');
+
+        expect(itinerary.stops, isEmpty);
+      });
+    });
+
+    group('routeEstimate', () {
+      test('pins the query params and parses the estimate', () async {
+        when(() => mockDio.get(
+              ApiEndpoints.navigationRoute,
+              queryParameters: any(named: 'queryParameters'),
+            )).thenAnswer(
+          (_) async => Response(
+            requestOptions: RequestOptions(path: ApiEndpoints.navigationRoute),
+            statusCode: 200,
+            data: {
+              'polyline': [
+                {'lat': 1.0, 'lng': 2.0},
+              ],
+              'total_distance_m': 4200,
+              'total_duration_s': 380,
+              'is_estimate': true,
+            },
+          ),
+        );
+
+        final estimate = await repo.routeEstimate(
+          fromLat: 9.93,
+          fromLng: -84.08,
+          toLat: 9.95,
+          toLng: -84.10,
+        );
+
+        verify(() => mockDio.get(
+              ApiEndpoints.navigationRoute,
+              queryParameters: {
+                'from_lat': 9.93,
+                'from_lng': -84.08,
+                'to_lat': 9.95,
+                'to_lng': -84.10,
+              },
+            )).called(1);
+        expect(estimate.distanceM, 4200);
+        expect(estimate.durationS, 380);
+        expect(estimate.isEstimate, isTrue);
       });
     });
   });

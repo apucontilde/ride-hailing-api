@@ -1,29 +1,29 @@
 ---
 tag: location
 depends_on: ["landed [location] Android foreground permissions (driver_app_plans/STATUS.md)"]
-status: deferred
+status: open
 ---
 
 # [location] Background tracking — keep an online driver positioned when backgrounded
 
-> **DEFERRED** — a future product feature, not a bug-fix prerequisite. Its prerequisite has landed: the
-> foreground permission work (`ACCESS_FINE_LOCATION`/`COARSE` + `uses-feature`) is now in the driver main
-> manifest (`driver_app_plans/STATUS.md` → Landed `[location]`). Do **not** start until the product has
-> decided screen-off dispatchability is worth the Play Store review and battery cost. Owner:
-> `driver-planner`. Verify: `melos run analyze` + `melos run test` (Linux FVM SDK — see STATUS.md
-> Verification); the Android behavior is **UNVERIFIABLE in this WSL tree** and must be closed on an
-> Android host (see Verification).
+> **OPEN** — this is the fix for driver bug **#18** (an online driver goes dark when the app is
+> backgrounded or the screen locked). Its prerequisite has landed: the foreground permission work
+> (`ACCESS_FINE_LOCATION`/`COARSE` + `uses-feature`) is now in the driver main manifest
+> (`driver_app_plans/STATUS.md` → Landed `[location]`). Owner: `driver-planner`. Verify:
+> `melos run analyze` + `melos run test` (Linux FVM SDK — see STATUS.md Verification); the Android
+> behavior is **UNVERIFIABLE in this WSL tree** and must be closed on an Android host (see
+> Verification).
 >
 > **OWNERSHIP:** this plan owns the coupled `ACCESS_BACKGROUND_LOCATION` permission and the
 > `FOREGROUND_SERVICE`/`FOREGROUND_SERVICE_LOCATION` permissions. The landed foreground `[location]`
 > capability deliberately does **not** add them; a bare background-location permission is useless without
 > the service described here.
 >
-> **Why deferred (per the skill):** the skill reserves `status: deferred` for a plan whose work is gated
-> on a product decision and a landed prerequisite; this is a new feature (foreground service, persistent
-> notification, Play Store declaration, battery/lifecycle design), not a fix for a broken landed
-> capability. It is unnumbered — its `depends_on` names landed capability, not an open plan it must
-> extend.
+> **Why open now (per the skill):** the work was deferred pending a product decision; that decision is
+> now to fix bug #18, so the plan flips to `status: open`. It is unnumbered — its `depends_on` names
+> landed capability, not an open plan it must extend. The scope below (foreground service, persistent
+> notification, Play Store declaration, battery/lifecycle design) is unchanged; the "Decisions to
+> surface" section still records the mechanism choices to settle at implementation time.
 
 ## Goal
 

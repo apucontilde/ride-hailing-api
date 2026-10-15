@@ -212,6 +212,66 @@ void main() {
     expect(find.text('Forgot Password'), findsOneWidget);
   });
 
+  testWidgets('the password field submits on Enter', (WidgetTester tester) async {
+    final postPaths = stubAuthPosts();
+
+    await tester.pumpWidget(createApp());
+    await tester.pump();
+
+    // Email advances, password submits.
+    expect(
+      tester.widget<TextField>(find.byType(TextField).at(0)).textInputAction,
+      TextInputAction.next,
+    );
+    expect(
+      tester.widget<TextField>(find.byType(TextField).at(1)).textInputAction,
+      TextInputAction.done,
+    );
+
+    await tester.enterText(find.byType(TextFormField).at(0), 'test@test.com');
+    await tester.enterText(find.byType(TextFormField).at(1), 'Password1');
+    await tester.testTextInput.receiveAction(TextInputAction.done);
+    await tester.pumpAndSettle();
+
+    expect(postPaths.where((path) => path.contains('login')), hasLength(1));
+    expect(find.text('Onboarding'), findsOneWidget);
+  });
+
+  testWidgets('a second Enter while logging in sends no second POST',
+      (WidgetTester tester) async {
+    final completer = Completer<Response>();
+    final postPaths = <String>[];
+    when(() => mockDio.post(any(), data: any(named: 'data'))).thenAnswer(
+      (invocation) {
+        postPaths.add(invocation.positionalArguments.first as String);
+        return completer.future;
+      },
+    );
+
+    await tester.pumpWidget(createApp());
+    await tester.pump();
+
+    await tester.enterText(find.byType(TextFormField).at(0), 'test@test.com');
+    await tester.enterText(find.byType(TextFormField).at(1), 'Password1');
+    await tester.testTextInput.receiveAction(TextInputAction.done);
+    await tester.pump();
+    await tester.testTextInput.receiveAction(TextInputAction.done);
+    await tester.pump();
+
+    expect(postPaths.where((path) => path.contains('login')), hasLength(1));
+
+    completer.complete(Response(
+      requestOptions: RequestOptions(path: '/auth/login'),
+      statusCode: 200,
+      data: {
+        'access_token': 'token',
+        'refresh_token': 'refresh',
+        'user': {'id': '1', 'email': 'test@test.com', 'role': 'rider'},
+      },
+    ));
+    await tester.pumpAndSettle();
+  });
+
   testWidgets('asks to switch when logging in as another account',
       (WidgetTester tester) async {
     final postPaths = stubAuthPosts();

@@ -406,3 +406,115 @@ func TestRideMaxStopsConfigFromEnv(t *testing.T) {
 		t.Errorf("DefaultRideMaxStops = %d, want the documented 8", DefaultRideMaxStops)
 	}
 }
+
+// Proximity arrival geofence knobs
+// (api_plans/[arrival]_proximity_arrival_geofence.md §2.2): ON by default with
+// the 300/80/30/10 product thresholds, the bool whitelist fails CLOSED (a typo
+// means off, never on), and an unparseable float falls back to the documented
+// default rather than to 0 (which would silently disable a leg).
+func TestGeofenceConfigFromEnv(t *testing.T) {
+	cases := []struct {
+		name       string
+		env        map[string]string
+		wantOn     bool
+		wantNearby float64
+		wantArrive float64
+		wantHyst   float64
+		wantMinMov float64
+	}{
+		{
+			name:       "defaults_on",
+			wantOn:     true,
+			wantNearby: 300,
+			wantArrive: 80,
+			wantHyst:   30,
+			wantMinMov: 10,
+		},
+		{
+			name:       "explicit_on",
+			env:        map[string]string{"GEOFENCE_ENABLED": "on"},
+			wantOn:     true,
+			wantNearby: 300,
+			wantArrive: 80,
+			wantHyst:   30,
+			wantMinMov: 10,
+		},
+		{
+			name:       "explicit_off",
+			env:        map[string]string{"GEOFENCE_ENABLED": "off"},
+			wantOn:     false,
+			wantNearby: 300,
+			wantArrive: 80,
+			wantHyst:   30,
+			wantMinMov: 10,
+		},
+		{
+			// A typo must fail CLOSED (off), never open.
+			name:       "typo_fails_closed",
+			env:        map[string]string{"GEOFENCE_ENABLED": "maybe"},
+			wantOn:     false,
+			wantNearby: 300,
+			wantArrive: 80,
+			wantHyst:   30,
+			wantMinMov: 10,
+		},
+		{
+			name: "radii_override",
+			env: map[string]string{
+				"GEOFENCE_NEARBY_RADIUS_M": "500",
+				"GEOFENCE_ARRIVE_RADIUS_M": "120",
+				"GEOFENCE_HYSTERESIS_M":    "45",
+				"GEOFENCE_MIN_MOVE_M":      "5",
+			},
+			wantOn:     true,
+			wantNearby: 500,
+			wantArrive: 120,
+			wantHyst:   45,
+			wantMinMov: 5,
+		},
+		{
+			// Garbage falls back to the documented default, never to 0.
+			name: "garbage_radius_falls_back_to_default",
+			env: map[string]string{
+				"GEOFENCE_NEARBY_RADIUS_M": "close",
+				"GEOFENCE_ARRIVE_RADIUS_M": "at the kerb",
+			},
+			wantOn:     true,
+			wantNearby: 300,
+			wantArrive: 80,
+			wantHyst:   30,
+			wantMinMov: 10,
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			for _, k := range []string{
+				"GEOFENCE_ENABLED", "GEOFENCE_NEARBY_RADIUS_M", "GEOFENCE_ARRIVE_RADIUS_M",
+				"GEOFENCE_HYSTERESIS_M", "GEOFENCE_MIN_MOVE_M",
+			} {
+				t.Setenv(k, "")
+			}
+			for k, v := range tc.env {
+				t.Setenv(k, v)
+			}
+
+			a := Load().Arrival
+			if a.Enabled != tc.wantOn {
+				t.Errorf("Enabled = %v, want %v", a.Enabled, tc.wantOn)
+			}
+			if a.NearbyRadiusM != tc.wantNearby {
+				t.Errorf("NearbyRadiusM = %v, want %v", a.NearbyRadiusM, tc.wantNearby)
+			}
+			if a.ArriveRadiusM != tc.wantArrive {
+				t.Errorf("ArriveRadiusM = %v, want %v", a.ArriveRadiusM, tc.wantArrive)
+			}
+			if a.HysteresisM != tc.wantHyst {
+				t.Errorf("HysteresisM = %v, want %v", a.HysteresisM, tc.wantHyst)
+			}
+			if a.MinMoveM != tc.wantMinMov {
+				t.Errorf("MinMoveM = %v, want %v", a.MinMoveM, tc.wantMinMov)
+			}
+		})
+	}
+}

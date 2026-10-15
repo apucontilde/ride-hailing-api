@@ -6,10 +6,15 @@ import 'package:flutter_test/flutter_test.dart';
 /// `RateSheet`): pumps a `ProviderScope` whose only UI is an "open" button that
 /// shows [builder] as a scroll-controlled modal sheet, then opens it and
 /// settles the entrance animation.
+///
+/// [isDismissible]/[enableDrag] mirror the production call site's options; the
+/// offer sheet blocks both, the rate sheet keeps the Flutter defaults.
 Future<void> pumpModalSheet(
   WidgetTester tester, {
   required List<Override> overrides,
   required WidgetBuilder builder,
+  bool isDismissible = true,
+  bool enableDrag = true,
 }) async {
   await tester.pumpWidget(
     ProviderScope(
@@ -22,6 +27,8 @@ Future<void> pumpModalSheet(
                 onPressed: () => showModalBottomSheet<void>(
                   context: context,
                   isScrollControlled: true,
+                  isDismissible: isDismissible,
+                  enableDrag: enableDrag,
                   builder: builder,
                 ),
                 child: const Text('open'),

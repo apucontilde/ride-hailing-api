@@ -27,6 +27,9 @@ class _RegisterScreenState extends ConsumerState<RegisterScreen> {
   }
 
   Future<void> _submit() async {
+    // `onFieldSubmitted` fires regardless of the button's disabled state, so a
+    // second Enter while a registration is in flight must be a no-op.
+    if (ref.read(authProvider).isLoading) return;
     if (!_formKey.currentState!.validate()) return;
     await ref.read(authProvider.notifier).register(
           _emailController.text.trim(),
@@ -63,6 +66,7 @@ class _RegisterScreenState extends ConsumerState<RegisterScreen> {
                 label: 'Email',
                 hint: 'Enter your email',
                 keyboardType: TextInputType.emailAddress,
+                textInputAction: TextInputAction.next,
                 prefixIcon: const Icon(Icons.email_outlined),
                 validator: Validators.validateEmail,
               ),
@@ -72,6 +76,7 @@ class _RegisterScreenState extends ConsumerState<RegisterScreen> {
                 label: 'Phone',
                 hint: 'Enter your phone number',
                 keyboardType: TextInputType.phone,
+                textInputAction: TextInputAction.next,
                 prefixIcon: const Icon(Icons.phone_outlined),
                 validator: Validators.validatePhone,
               ),
@@ -81,6 +86,8 @@ class _RegisterScreenState extends ConsumerState<RegisterScreen> {
                 label: 'Password',
                 hint: 'Enter your password',
                 obscureText: _obscurePassword,
+                textInputAction: TextInputAction.done,
+                onFieldSubmitted: (_) => _submit(),
                 prefixIcon: const Icon(Icons.lock_outlined),
                 suffixIcon: IconButton(
                   icon: Icon(_obscurePassword

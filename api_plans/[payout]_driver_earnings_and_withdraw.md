@@ -1,16 +1,16 @@
 ---
 tag: payout
 depends_on: []
-status: deferred
+status: open
 ---
 
 # Driver earnings ledger + `GET /driver/me/earnings` + `POST /driver/earnings/withdraw`
 
-> **Status: 🟠 DEFERRED (2026-09-29).** The design below is settled and the decisions are recorded
-> in `api_plans/STATUS.md`, but **no implementation is scheduled**. This is the server half of
-> `driver_app_plans/STATUS.md` bug #6 ("No withdraw UI — `POST /driver/earnings/withdraw` is a
-> stub"); bug #6 stays a kept-open, backend-blocked bug until this is picked up. Picking it up is
-> gated on a product call (commission model + whether a real payout provider is ever integrated).
+> **Status: 🟢 OPEN (promoted 2026-10-15; was deferred 2026-09-29).** The design below is settled
+> and the decisions are recorded in `api_plans/STATUS.md`; this is now scheduled as the server
+> half of `driver_app_plans/STATUS.md` bug **#5** ("No withdraw UI — `POST /driver/earnings/withdraw`
+> is a stub"). (Note the numbering drift: `api_plans/STATUS.md` historically called this
+> "driver-app bug #6"; the driver domain records it as #5.)
 > Everything below is the ready-to-execute spec.
 
 **Read first:**

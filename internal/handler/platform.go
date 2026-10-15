@@ -6,13 +6,10 @@ import (
 	"log"
 	"net/http"
 	"strconv"
-	"time"
 
 	"ride-hailing-api/internal/model"
 	"ride-hailing-api/internal/repository"
 	"ride-hailing-api/internal/service"
-	"ride-hailing-api/internal/service/push"
-	"ride-hailing-api/internal/websocket"
 
 	"github.com/gin-gonic/gin"
 )
@@ -23,9 +20,6 @@ type PlatformHandler struct {
 	placesRepo   repository.PlacesRepository
 	deviceRepo   repository.DeviceTokenRepository
 	feedbackRepo repository.FeedbackRepository
-	rideRepo     repository.RideRepository
-	hub          *websocket.Hub
-	pushSvc      *push.Service
 	maxRadiusM   float64
 	defaultLimit int
 	// maxStops is config RIDE_MAX_STOPS, shared with the create path via
@@ -39,9 +33,6 @@ func NewPlatformHandler(
 	placesRepo repository.PlacesRepository,
 	deviceRepo repository.DeviceTokenRepository,
 	feedbackRepo repository.FeedbackRepository,
-	rideRepo repository.RideRepository,
-	hub *websocket.Hub,
-	pushSvc *push.Service,
 	maxRadiusM float64,
 	defaultLimit int,
 	maxStops int,
@@ -52,9 +43,6 @@ func NewPlatformHandler(
 		placesRepo:   placesRepo,
 		deviceRepo:   deviceRepo,
 		feedbackRepo: feedbackRepo,
-		rideRepo:     rideRepo,
-		hub:          hub,
-		pushSvc:      pushSvc,
 		maxRadiusM:   maxRadiusM,
 		defaultLimit: defaultLimit,
 		maxStops:     maxStops,
@@ -624,71 +612,6 @@ func (h *PlatformHandler) DriverRideQueue(c *gin.Context) {
 //	@Router		/api/v1/driver/rides/{id}/rider [get]
 func (h *PlatformHandler) DriverRiderInfo(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"rider": gin.H{"name": "Rider", "rating": 5.0}})
-}
-
-// ArrivalNotification godoc
-//
-//	@Summary		Notify the rider that the driver has arrived
-//	@Description	Sends the live `ride.updated` update to a connected rider, or
-//	@Description	a backgrounded push when the rider is not connected.
-//	@Description	Ancillary: it never changes the ride's stored status.
-//	@Tags			driver
-//	@Produce		json
-//	@Security		BearerAuth
-//	@Param			id	path		string	true	"Ride ID"
-//	@Success		200	{object}	MessageResponse
-//	@Failure		404	{object}	ErrorResponse	"Ride not found for this driver"
-//	@Failure		500	{object}	ErrorResponse	"Notification could not be sent"
-//	@Router			/api/v1/driver/rides/{id}/notify-arrival [post]
-func (h *PlatformHandler) ArrivalNotification(c *gin.Context) {
-	userID, _ := c.Get("user_id")
-	driverID, _ := userID.(string)
-	rideID := c.Param("id")
-
-	if h.rideRepo == nil {
-		fail(c, http.StatusInternalServerError, "INTERNAL", "failed to notify rider of arrival",
-			errors.New("ride repository is not configured"))
-		return
-	}
-
-	ride, err := h.rideRepo.FindByID(rideID)
-	if err != nil {
-		respondRepo(c, err, "ride not found", "", "failed to notify rider of arrival")
-		return
-	}
-	// Only the driver actually assigned to the ride may notify its rider. A
-	// 404 (not 403) avoids confirming that somebody else's ride exists.
-	if ride.DriverID == nil || *ride.DriverID != driverID {
-		fail(c, http.StatusNotFound, "NOT_FOUND", "ride not found", nil)
-		return
-	}
-
-	msg := websocket.OutgoingMessage{
-		Type: "ride.updated",
-		Data: websocket.RideUpdateData{
-			RideID:    rideID,
-			Status:    "driver_arrived",
-			Timestamp: time.Now(),
-		},
-	}
-	// A connected rider gets the live update; a backgrounded one gets a push.
-	// SendToUser is a no-op when the rider has no socket.
-	if h.hub != nil {
-		h.hub.SendToUser(ride.RiderID, msg)
-	}
-	if (h.hub == nil || !h.hub.IsConnected(ride.RiderID)) && h.pushSvc != nil {
-		go h.pushSvc.NotifyUser(ride.RiderID, push.Message{
-			Title: "Driver arrived",
-			Body:  "Your driver has arrived at the pickup point.",
-			Data: map[string]string{
-				"type":    "ride.updated",
-				"status":  "driver_arrived",
-				"ride_id": rideID,
-			},
-		})
-	}
-
-	c.JSON(http.StatusOK, gin.H{"message": "rider notified of arrival"})
 }
 
 // Version godoc

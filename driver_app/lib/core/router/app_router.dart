@@ -1,7 +1,9 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
+import '../app_bootstrap.dart';
 import '../auth/auth_provider.dart';
+import 'post_auth_route.dart';
 import '../../features/auth/presentation/splash_screen.dart';
 import '../../features/auth/presentation/login_screen.dart';
 import '../../features/auth/presentation/register_screen.dart';
@@ -25,31 +27,20 @@ final _shellKey = GlobalKey<NavigatorState>();
 /// - authenticated but role `rider` (registered, not yet a driver) → /onboarding;
 /// - authenticated `driver` → /home.
 final routerProvider = Provider<GoRouter>((ref) {
+  // The one-time bootstrap authenticates (and restores a live trip) before any
+  // route decision; passing it as `refreshListenable` re-runs `redirect` when it
+  // settles, so a web reload cannot bounce on the transient default state.
+  final bootstrap = ref.read(sessionBootstrapProvider);
   return GoRouter(
     navigatorKey: _shellKey,
     initialLocation: '/splash',
-    redirect: (context, state) {
-      final authState = ref.read(authProvider);
-      final isAuthenticated = authState.isAuthenticated;
-      final isDriver = authState.isDriver;
-      final loc = state.matchedLocation;
-
-      final isSplash = loc == '/splash';
-      final isAuthRoute =
-          loc == '/login' ||
-          loc == '/register' ||
-          loc == '/forgot-password' ||
-          loc == '/reset-password';
-      final isOnboarding = loc == '/onboarding';
-
-      if (isSplash) return null;
-      if (!isAuthenticated) return isAuthRoute ? null : '/login';
-      // Authenticated but not yet a driver → force onboarding.
-      if (!isDriver && !isOnboarding) return '/onboarding';
-      if (!isDriver && isAuthRoute) return '/onboarding';
-      if (isDriver && (isAuthRoute || isOnboarding)) return '/home';
-      return null;
-    },
+    refreshListenable: bootstrap,
+    redirect: (context, state) => resolveRedirect(
+      bootstrapComplete: bootstrap.complete,
+      consumeTripRestore: bootstrap.consumeTripRestore,
+      auth: ref.read(authProvider),
+      location: state.matchedLocation,
+    ),
     routes: [
       GoRoute(
         path: '/splash',

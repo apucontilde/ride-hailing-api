@@ -1,6 +1,7 @@
 package handler
 
 import (
+	"errors"
 	"log"
 	"net/http"
 	"strconv"
@@ -8,18 +9,29 @@ import (
 
 	"github.com/gin-gonic/gin"
 
+	"ride-hailing-api/internal/model"
 	"ride-hailing-api/internal/repository"
 	"ride-hailing-api/internal/websocket"
 )
+
+// ArrivalEvaluator is the narrow seam the geo hot path uses to run the
+// proximity arrival geofence (api_plans/[arrival]_proximity_arrival_geofence.md).
+// *service.RideService implements it. It returns the additive nearby fields to
+// carry on the driver.location event; it never returns an error, because a
+// geofence failure must not fail the location update.
+type ArrivalEvaluator interface {
+	EvaluateArrival(ride *model.Ride, driverID string, lat, lng float64) (nearPickup bool, distanceToPickupM float64)
+}
 
 type GeoHandler struct {
 	geoRepo  repository.GeoRepository
 	rideRepo repository.RideRepository
 	wsHub    *websocket.Hub
+	arrival  ArrivalEvaluator
 }
 
-func NewGeoHandler(geoRepo repository.GeoRepository, rideRepo repository.RideRepository, wsHub *websocket.Hub) *GeoHandler {
-	return &GeoHandler{geoRepo: geoRepo, rideRepo: rideRepo, wsHub: wsHub}
+func NewGeoHandler(geoRepo repository.GeoRepository, rideRepo repository.RideRepository, wsHub *websocket.Hub, arrival ArrivalEvaluator) *GeoHandler {
+	return &GeoHandler{geoRepo: geoRepo, rideRepo: rideRepo, wsHub: wsHub, arrival: arrival}
 }
 
 type locationUpdate struct {
@@ -27,6 +39,23 @@ type locationUpdate struct {
 	Lng     float64 `json:"lng" binding:"required"`
 	Heading float64 `json:"heading"`
 	Speed   float64 `json:"speed"`
+}
+
+// findActiveRide resolves the caller's active ride for the derive-after-write
+// path (track points + proximity arrival geofence). It enforces the plan §2.5
+// honesty invariant: "no active ride" (ErrNotFound) is benign and silent, but
+// any OTHER repository error is logged and treated the same way — no active
+// ride, so the geofence is skipped. A down ride repo must never fabricate an
+// arrival, and a lookup failure must never fail the location update.
+func (h *GeoHandler) findActiveRide(driverID string) *model.Ride {
+	ride, err := h.rideRepo.FindCurrentRideByDriver(driverID)
+	if err != nil {
+		if !errors.Is(err, repository.ErrNotFound) {
+			log.Printf("driver %s: failed to load active ride for location update: %v", driverID, err)
+		}
+		return nil
+	}
+	return ride
 }
 
 // UpdateDriverLocation godoc
@@ -59,8 +88,8 @@ func (h *GeoHandler) UpdateDriverLocation(c *gin.Context) {
 		return
 	}
 
-	activeRide, err := h.rideRepo.FindCurrentRideByDriver(driverID.(string))
-	if err == nil {
+	activeRide := h.findActiveRide(driverID.(string))
+	if activeRide != nil {
 		// Actual driven distance seam (migration 021,
 		// api_plans/[tracking]_actual_trip_distance.md): while the ride is
 		// in_progress, persist the fix as part of the ride's trace. Only
@@ -76,20 +105,34 @@ func (h *GeoHandler) UpdateDriverLocation(c *gin.Context) {
 			}
 		}
 
-		h.wsHub.SendToUser(activeRide.RiderID, websocket.OutgoingMessage{
-			Type: "driver.location",
-			Data: websocket.DriverLocationData{
-				RideID:   activeRide.ID,
-				DriverID: driverID.(string),
-				Lat:      req.Lat,
-				Lng:      req.Lng,
-				Heading:  req.Heading,
-				Speed:    req.Speed,
-			},
-		})
+		h.emitDriverLocation(activeRide, driverID.(string), req)
 	}
 
 	c.Status(http.StatusNoContent)
+}
+
+// emitDriverLocation builds the driver.location event for one fix and streams it
+// to the ride's rider. It runs the proximity arrival geofence for the fix first
+// (which may advance the ride to driver_arrived and broadcast ride.updated) and
+// carries the evaluator's additive nearby fields on the event. It never fails
+// the location update: the evaluator swallows its own errors and the hub send is
+// best-effort.
+func (h *GeoHandler) emitDriverLocation(ride *model.Ride, driverID string, fix locationUpdate) {
+	data := websocket.DriverLocationData{
+		RideID:   ride.ID,
+		DriverID: driverID,
+		Lat:      fix.Lat,
+		Lng:      fix.Lng,
+		Heading:  fix.Heading,
+		Speed:    fix.Speed,
+	}
+	if h.arrival != nil {
+		data.NearPickup, data.DistanceToPickupM = h.arrival.EvaluateArrival(ride, driverID, fix.Lat, fix.Lng)
+	}
+	h.wsHub.SendToUser(ride.RiderID, websocket.OutgoingMessage{
+		Type: "driver.location",
+		Data: data,
+	})
 }
 
 // UpdateDriverLocationBatch godoc
@@ -118,6 +161,17 @@ func (h *GeoHandler) UpdateDriverLocationBatch(c *gin.Context) {
 		if err := h.geoRepo.UpsertDriverPosition(driverID.(string), r.Lat, r.Lng, r.Heading, r.Speed, "online"); err != nil {
 			fail(c, http.StatusInternalServerError, "INTERNAL", "failed to update location", err)
 			return
+		}
+	}
+
+	// Batch-path geofence (plan §3 D7): the loop above upserts every fix
+	// position-only; the arrival/nearby evaluation runs ONCE on the FINAL fix —
+	// one evaluation, one possible transition, one driver.location event. The
+	// intermediate fixes stay position-only, exactly as before.
+	if len(reqs) > 0 {
+		last := reqs[len(reqs)-1]
+		if activeRide := h.findActiveRide(driverID.(string)); activeRide != nil {
+			h.emitDriverLocation(activeRide, driverID.(string), last)
 		}
 	}
 

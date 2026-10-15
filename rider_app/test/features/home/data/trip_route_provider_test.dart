@@ -209,6 +209,40 @@ void main() {
     expect(clocked.state.fetchedAt, fixed);
   });
 
+  test('exposes the ordered itinerary pins and booked vehicle type', () async {
+    mockRide({
+      'ride': {...rideJson(), 'vehicle_type': 'suv'},
+      'stops': [
+        stopJson(1, 'stop', 9.93, -84.095),
+        stopJson(2, 'destination', 9.94, -84.10),
+      ],
+    });
+    mockRoute(200, roadRoute);
+
+    await notifier.load('ride-1');
+
+    expect(notifier.state.pickup, const LatLng(9.9281, -84.0907));
+    expect(notifier.state.dropoff, const LatLng(9.94, -84.10));
+    // Intermediate stops only — the destination row mirrors `dropoff`.
+    expect(notifier.state.stopPoints, hasLength(1));
+    expect(notifier.state.stopPoints.single, const LatLng(9.93, -84.095));
+    expect(notifier.state.vehicleType, 'suv');
+    // Route-honesty fields are unchanged.
+    expect(notifier.state.hasRoadRoute, isTrue);
+  });
+
+  test('a ride without stops keeps pickup/dropoff and empty stopPoints', () async {
+    mockRide({'ride': rideJson()});
+    mockRoute(200, roadRoute);
+
+    await notifier.load('ride-1');
+
+    expect(notifier.state.pickup, const LatLng(9.9281, -84.0907));
+    expect(notifier.state.dropoff, const LatLng(9.94, -84.10));
+    expect(notifier.state.stopPoints, isEmpty);
+    expect(notifier.state.vehicleType, isNull);
+  });
+
   group('etaLabel', () {
     test('the 300 s backend placeholder is unknown, never "5 min"', () {
       expect(etaLabel(unknownEtaSeconds), isNull);

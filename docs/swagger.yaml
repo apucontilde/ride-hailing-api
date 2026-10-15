@@ -1508,39 +1508,6 @@ paths:
             summary: POST /api/v1/driver/rides/{id}/decline
             tags:
                 - driver
-    /api/v1/driver/rides/{id}/notify-arrival:
-        post:
-            description: |-
-                Sends the live `ride.updated` update to a connected rider, or
-                a backgrounded push when the rider is not connected.
-                Ancillary: it never changes the ride's stored status.
-            operationId: postDriver-rides-ByID-notify-arrival
-            parameters:
-                - description: Ride ID
-                  in: path
-                  name: id
-                  required: true
-                  type: string
-            produces:
-                - application/json
-            responses:
-                "200":
-                    description: OK
-                    schema:
-                        $ref: '#/definitions/handler.MessageResponse'
-                "404":
-                    description: Ride not found for this driver
-                    schema:
-                        $ref: '#/definitions/handler.ErrorResponse'
-                "500":
-                    description: Notification could not be sent
-                    schema:
-                        $ref: '#/definitions/handler.ErrorResponse'
-            security:
-                - BearerAuth: []
-            summary: Notify the rider that the driver has arrived
-            tags:
-                - driver
     /api/v1/driver/rides/{id}/rate:
         post:
             operationId: postDriver-rides-ByID-rate

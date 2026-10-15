@@ -29,6 +29,17 @@ class TripRouteState {
   final double totalDistanceM;
   final double totalDurationS;
 
+  /// The itinerary pins read from the same `GET /rides/:id` call. They are
+  /// markers, not route geometry: [stopPoints] holds the ordered **intermediate**
+  /// stops only (never the destination row, which `dropoff` mirrors).
+  final LatLng? pickup;
+  final LatLng? dropoff;
+  final List<LatLng> stopPoints;
+
+  /// The booked vehicle type, so the mid-trip change-destination estimate can
+  /// pick the rider's own card.
+  final String? vehicleType;
+
   /// Why the route is an estimate (coverage gap / cross-region) or why it is
   /// unavailable (the API's own error message). Rendered verbatim.
   final String? message;
@@ -39,6 +50,10 @@ class TripRouteState {
     this.polyline = const [],
     this.totalDistanceM = 0,
     this.totalDurationS = 0,
+    this.pickup,
+    this.dropoff,
+    this.stopPoints = const [],
+    this.vehicleType,
     this.message,
     this.fetchedAt,
   });
@@ -151,12 +166,25 @@ class TripRouteNotifier extends StateNotifier<TripRouteState> {
           .toList()
         ..sort((a, b) => a.sequence.compareTo(b.sequence));
 
-      final points = <LatLng>[LatLng(pickupLat, pickupLng)];
+      // The ordered intermediate itinerary pins (the destination row mirrors
+      // `dropoff_lat/lng`, so it is excluded and drawn separately).
+      final stopPoints = <LatLng>[];
+      for (final stop in stops) {
+        if (stop.isDestination) continue;
+        final point = LatLng(stop.lat, stop.lng);
+        if (stopPoints.isEmpty || stopPoints.last != point) {
+          stopPoints.add(point);
+        }
+      }
+      final pickup = LatLng(pickupLat, pickupLng);
+      final dropoff = LatLng(dropoffLat, dropoffLng);
+      final vehicleType = ride['vehicle_type'] as String?;
+
+      final points = <LatLng>[pickup];
       for (final stop in stops) {
         final point = LatLng(stop.lat, stop.lng);
         if (points.last != point) points.add(point);
       }
-      final dropoff = LatLng(dropoffLat, dropoffLng);
       // The destination stop mirrors `dropoff_lat/lng`; do not duplicate it.
       if (points.last != dropoff) points.add(dropoff);
 
@@ -201,6 +229,10 @@ class TripRouteNotifier extends StateNotifier<TripRouteState> {
         polyline: List<LatLng>.unmodifiable(polyline),
         totalDistanceM: distance,
         totalDurationS: duration,
+        pickup: pickup,
+        dropoff: dropoff,
+        stopPoints: List<LatLng>.unmodifiable(stopPoints),
+        vehicleType: vehicleType,
         message: estimate ? _estimateReason : null,
         fetchedAt: _now(),
       );
@@ -228,8 +260,15 @@ class TripRouteNotifier extends StateNotifier<TripRouteState> {
 
   void _fail(int token, String message) {
     if (_disposed || token != _loadToken) return;
+    // Keep any itinerary pins already read (they are the ride's own data, not
+    // route geometry) so a failed re-route does not blank the stop/destination
+    // markers; the polyline is still dropped, as the honesty contract requires.
     state = TripRouteState(
       status: TripRouteStatus.unavailable,
+      pickup: state.pickup,
+      dropoff: state.dropoff,
+      stopPoints: state.stopPoints,
+      vehicleType: state.vehicleType,
       message: message,
       fetchedAt: _now(),
     );

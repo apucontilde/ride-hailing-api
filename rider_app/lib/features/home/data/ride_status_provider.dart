@@ -14,6 +14,21 @@ class RideState {
   final DriverLocation? driverLocation;
   final String? cancelledBy;
   final int? etaSeconds;
+
+  /// The straight-line distance the last live ETA was computed over, when
+  /// `/geo/eta` supplied one. Null means "unknown" — never rendered as `0`.
+  final double? etaDistanceM;
+
+  /// The driver id from a `GET /rides/current` payload, which carries
+  /// `driver_id` without a nested `driver` object. Lets the location poll attach
+  /// after a cold start even when the accept `ride.updated` was missed.
+  final String? driverId;
+
+  /// `driver.location` proximity flag forwarded by the API (`near_pickup`,
+  /// `distance_to_pickup_m`). Advisory only; the server owns the geofence.
+  final bool nearPickup;
+  final double? nearPickupDistanceM;
+
   final Fare? fare;
   final Map<String, dynamic>? rideData;
 
@@ -24,9 +39,18 @@ class RideState {
     this.driverLocation,
     this.cancelledBy,
     this.etaSeconds,
+    this.etaDistanceM,
+    this.driverId,
+    this.nearPickup = false,
+    this.nearPickupDistanceM,
     this.fare,
     this.rideData,
   });
+
+  /// The driver id to poll `GET /drivers/{id}/location` with, whichever channel
+  /// supplied it: the nested accept payload (`driver.id`) or the REST
+  /// `driver_id` from `/rides/current`.
+  String? get effectiveDriverId => driver?.id ?? driverId;
 
   RideState copyWith({
     RideStatus? status,
@@ -35,6 +59,11 @@ class RideState {
     DriverLocation? driverLocation,
     String? cancelledBy,
     int? etaSeconds,
+    double? etaDistanceM,
+    String? driverId,
+    bool? nearPickup,
+    double? nearPickupDistanceM,
+    bool resetNearby = false,
     Fare? fare,
     Map<String, dynamic>? rideData,
   }) {
@@ -45,6 +74,12 @@ class RideState {
       driverLocation: driverLocation ?? this.driverLocation,
       cancelledBy: cancelledBy ?? this.cancelledBy,
       etaSeconds: etaSeconds ?? this.etaSeconds,
+      etaDistanceM: etaDistanceM ?? this.etaDistanceM,
+      driverId: driverId ?? this.driverId,
+      nearPickup: resetNearby ? false : (nearPickup ?? this.nearPickup),
+      nearPickupDistanceM: resetNearby
+          ? null
+          : (nearPickupDistanceM ?? this.nearPickupDistanceM),
       fare: fare ?? this.fare,
       rideData: rideData ?? this.rideData,
     );
@@ -95,6 +130,11 @@ class RideStatusNotifier extends StateNotifier<RideState> {
 
     final driverJson = data['driver'];
     final fareJson = data['fare'];
+    final nextDriverId = data['driver_id'] as String? ??
+        (driverJson is Map<String, dynamic>
+            ? driverJson['id'] as String?
+            : null);
+    final approaching = status == RideStatus.driverApproaching;
 
     state = state.copyWith(
       status: status,
@@ -102,8 +142,12 @@ class RideStatusNotifier extends StateNotifier<RideState> {
       driver: driverJson is Map<String, dynamic>
           ? DriverInfo.fromJson(driverJson)
           : state.driver,
+      driverId: nextDriverId,
       cancelledBy: data['cancelled_by'] as String?,
       etaSeconds: (data['eta_seconds'] as num?)?.toInt(),
+      // A stale "nearby" flag must not survive arrival or trip start; the
+      // server's hysteresis handles the within-`accepted` flicker.
+      resetNearby: !approaching,
       fare: fareJson is Map<String, dynamic> ? Fare.fromJson(fareJson) : null,
       rideData: data,
     );
@@ -121,9 +165,18 @@ class RideStatusNotifier extends StateNotifier<RideState> {
 
   void _handleDriverLocation(Map<String, dynamic>? data) {
     if (data == null) return;
+    final location = DriverLocation.fromJson(data);
+    // The API omits both fields when there is no `accepted` active ride and
+    // omits `near_pickup` while false, so absence clears the notice. A genuine
+    // `0.0` is also dropped by Go `omitempty`; null therefore means "unknown".
+    final hasNearby =
+        location.nearPickup || location.distanceToPickupM != null;
     state = state.copyWith(
       rideId: data['ride_id'] as String? ?? state.rideId,
-      driverLocation: DriverLocation.fromJson(data),
+      driverLocation: location,
+      nearPickup: location.nearPickup,
+      nearPickupDistanceM: location.distanceToPickupM,
+      resetNearby: !hasNearby,
     );
   }
 
@@ -137,6 +190,17 @@ class RideStatusNotifier extends StateNotifier<RideState> {
   /// which channel fed it.
   void applyDriverLocation(DriverLocation location) {
     state = state.copyWith(driverLocation: location);
+  }
+
+  /// Writes a live driver→pickup ETA computed by the rider (`GET /geo/eta`),
+  /// preserving status/driver/fare.
+  ///
+  /// Only ever called with a trustworthy value: the caller refuses to write the
+  /// backend `300` placeholder or a non-positive number, and on a failed compute
+  /// it simply does not call this, so `copyWith`'s `??` keeps the last known
+  /// value (per the `[ontrip]` ETA honesty contract).
+  void applyLiveEta(int seconds, {double? distanceM}) {
+    state = state.copyWith(etaSeconds: seconds, etaDistanceM: distanceM);
   }
 
   /// Merges the authoritative `GET /rides/:id` object into the live state.
@@ -174,12 +238,6 @@ class RideStatusNotifier extends StateNotifier<RideState> {
       default:
         return null;
     }
-  }
-
-  void restore(String? rideId, String? backendStatus) {
-    final status = _statusFromBackend(backendStatus);
-    if (status == null) return;
-    state = RideState(status: status, rideId: rideId);
   }
 
   void reset() {

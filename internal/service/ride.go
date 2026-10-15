@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"sync"
 	"time"
 
 	"ride-hailing-api/internal/config"
@@ -26,6 +27,15 @@ type RideService struct {
 	hub         *websocket.Hub
 	fareService *FareService
 	push        PushNotifier
+
+	// Proximity arrival geofence (api_plans/[arrival]_proximity_arrival_geofence.md).
+	// arrival is the config; the zero value (Enabled=false) is "off". The nearby
+	// map is process-local and mutex-guarded (plan §3 D9): stage 1 is single-pod,
+	// arrival itself is DB-idempotent through the state machine.
+	arrival          config.ArrivalGeofence
+	arrivalClampOnce sync.Once
+	nearMu           sync.Mutex
+	nearStates       map[string]*nearState
 }
 
 func NewRideService(rideRepo repository.RideRepository, userRepo repository.UserRepository, hub *websocket.Hub, fareSvc *FareService) *RideService {

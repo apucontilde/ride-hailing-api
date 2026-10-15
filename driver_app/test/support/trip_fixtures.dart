@@ -12,13 +12,20 @@ const tripDropoffLng = -84.1000;
 ///
 /// [includePlaces] adds the nested pickup/dropoff objects the dispatch accept
 /// path delivers; a status-only patch omits them (the notifier merges onto the
-/// held ride).
+/// held ride). [pickupLat]/[pickupLng]/[dropoffLat]/[dropoffLng] override the
+/// fixture coordinates for a destination-only change.
 WsEvent rideUpdated({
   String rideId = 'r1',
   String status = 'accepted',
   Map<String, dynamic>? fare,
   String? cancelledBy,
   bool includePlaces = false,
+  double? pickupLat,
+  double? pickupLng,
+  String? pickupAddress,
+  double? dropoffLat,
+  double? dropoffLng,
+  String? dropoffAddress,
 }) {
   return WsEvent(
     type: WsEventType.updated,
@@ -29,15 +36,15 @@ WsEvent rideUpdated({
       'cancelled_by': ?cancelledBy,
       if (includePlaces)
         'pickup': {
-          'lat': tripPickupLat,
-          'lng': tripPickupLng,
-          'address': 'Central Park',
+          'lat': pickupLat ?? tripPickupLat,
+          'lng': pickupLng ?? tripPickupLng,
+          'address': pickupAddress ?? 'Central Park',
         },
       if (includePlaces)
         'dropoff': {
-          'lat': tripDropoffLat,
-          'lng': tripDropoffLng,
-          'address': 'Airport',
+          'lat': dropoffLat ?? tripDropoffLat,
+          'lng': dropoffLng ?? tripDropoffLng,
+          'address': dropoffAddress ?? 'Airport',
         },
     },
   );

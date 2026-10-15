@@ -16,9 +16,11 @@ import '../providers/trip_notifier.dart';
 /// screen for a completed or cancelled trip.
 ///
 /// Route origin is the driver's own live GPS fix ([lastPositionProvider]); the
-/// target is the pickup until the trip starts, then the dropoff. A route that
-/// the backend cannot road-follow (500, or an `is_estimate` straight line) is
-/// drawn as a dashed overlay instead.
+/// target is the immediate next waypoint (the pickup until the trip starts,
+/// then the next stop/destination). A route that the backend cannot road-follow
+/// (500, or an `is_estimate` straight line) is drawn as a dashed overlay
+/// instead. The map marks only the next waypoint; the bottom drawer lists the
+/// whole itinerary.
 class TripScreen extends ConsumerStatefulWidget {
   const TripScreen({super.key});
 
@@ -36,15 +38,16 @@ class _TripScreenState extends ConsumerState<TripScreen> {
     WidgetsBinding.instance.addPostFrameCallback((_) => _syncRoute());
   }
 
-  /// Requests the road route to the current target. Safe to call on every
-  /// position update: the notifier's 200 m cache collapses repeats, and
+  /// Requests the road route to the current next waypoint. Safe to call on
+  /// every position update: the notifier's 200 m cache collapses repeats, and
   /// `fetchRoute` itself dedupes concurrent calls.
   void _syncRoute() {
     final trip = ref.read(tripNotifierProvider);
     final position = ref.read(lastPositionProvider);
     final ride = trip.currentRide;
     if (ride == null || position == null) return;
-    final target = _targetFor(trip.stage, ride);
+    final target =
+        ref.read(tripNotifierProvider.notifier).nextWaypoint(trip.stage, ride);
     if (target == null) return;
     ref.read(tripNotifierProvider.notifier).fetchRoute(
           fromLat: position.lat,
@@ -54,31 +57,6 @@ class _TripScreenState extends ConsumerState<TripScreen> {
           currentLat: position.lat,
           currentLng: position.lng,
         );
-  }
-
-  /// Where the driver is heading at this stage, or `null` when the trip is
-  /// over and no route is needed.
-  static ({double lat, double lng, String address})? _targetFor(
-    TripStage stage,
-    Ride ride,
-  ) {
-    switch (stage) {
-      case TripStage.driving:
-        final lat = ride.dropoffLat;
-        final lng = ride.dropoffLng;
-        if (lat == null || lng == null) return null;
-        return (lat: lat, lng: lng, address: ride.dropoffAddress ?? 'Dropoff');
-      case TripStage.pre:
-      case TripStage.enrouteToPickup:
-      case TripStage.arrived:
-        final lat = ride.pickupLat;
-        final lng = ride.pickupLng;
-        if (lat == null || lng == null) return null;
-        return (lat: lat, lng: lng, address: ride.pickupAddress ?? 'Pickup');
-      case TripStage.post:
-      case TripStage.cancelled:
-        return null;
-    }
   }
 
   void _fitTo(List<LatLng> points, String key) {
@@ -174,13 +152,29 @@ class _TripScreenState extends ConsumerState<TripScreen> {
         ride.id.isNotEmpty &&
         ratingStatus.canPrompt;
 
-    // Refetch on GPS moves (collapsed by the 200 m cache) and when the target
-    // flips from pickup to dropoff as the trip starts.
+    // The ordered itinerary and the immediate next waypoint (map marker + route
+    // target). Reading through the notifier keeps the proximity heuristic in one
+    // place; the screen rebuilds on the state/position changes below.
+    final notifier = ref.read(tripNotifierProvider.notifier);
+    final waypoints = ride == null ? const <TripWaypoint>[] : notifier.waypointsFor(ride);
+    final next = ride == null ? null : notifier.nextWaypoint(stage, ride);
+
+    // Refetch on GPS moves (collapsed by the 200 m cache), when the target
+    // flips from pickup to dropoff as the trip starts, and when a `ride.updated`
+    // moves the destination or pickup (the stage alone does not change on a
+    // destination-only patch).
     ref.listen<GeoPoint?>(lastPositionProvider, (previous, next) {
       if (previous != next) _syncRoute();
     });
     ref.listen<TripState>(tripNotifierProvider, (previous, next) {
-      if (previous?.stage != next.stage) _syncRoute();
+      final prevRide = previous?.currentRide;
+      final nextRide = next.currentRide;
+      final stageChanged = previous?.stage != next.stage;
+      final destinationChanged = prevRide?.dropoffLat != nextRide?.dropoffLat ||
+          prevRide?.dropoffLng != nextRide?.dropoffLng ||
+          prevRide?.pickupLat != nextRide?.pickupLat ||
+          prevRide?.pickupLng != nextRide?.pickupLng;
+      if (stageChanged || destinationChanged) _syncRoute();
     });
 
     return PopScope(
@@ -208,9 +202,7 @@ class _TripScreenState extends ConsumerState<TripScreen> {
                   ? const Center(child: Text('No active trip'))
                   : _MapView(
                       controller: _mapController,
-                      stage: stage,
-                      pickup: (lat: ride.pickupLat, lng: ride.pickupLng),
-                      dropoff: (lat: ride.dropoffLat, lng: ride.dropoffLng),
+                      next: next,
                       driverPosition: position,
                       route: trip.route,
                       onFit: _fitTo,
@@ -224,6 +216,8 @@ class _TripScreenState extends ConsumerState<TripScreen> {
                   stage: stage,
                   ride: ride,
                   route: trip.route,
+                  waypoints: waypoints,
+                  next: next,
                   cancelledBy: trip.cancelledBy,
                   routeError: trip.routeError,
                   canCancel: trip.canCancel,
@@ -260,30 +254,39 @@ class _TripScreenState extends ConsumerState<TripScreen> {
 
 class _MapView extends ConsumerWidget {
   final MapController controller;
-  final TripStage stage;
-  final ({double? lat, double? lng}) pickup;
-  final ({double? lat, double? lng}) dropoff;
+
+  /// The immediate next waypoint the map should point at, or `null` when the
+  /// trip is over. Only this waypoint (and the driver) is marked; the full
+  /// itinerary lives in the bottom drawer.
+  final TripWaypoint? next;
   final GeoPoint? driverPosition;
   final RouteCache? route;
   final void Function(List<LatLng> points, String key) onFit;
 
   const _MapView({
     required this.controller,
-    required this.stage,
-    required this.pickup,
-    required this.dropoff,
+    required this.next,
     required this.driverPosition,
     required this.route,
     required this.onFit,
   });
 
-  bool get _hasPickup => pickup.lat != null && pickup.lng != null;
-  bool get _hasDropoff => dropoff.lat != null && dropoff.lng != null;
+  LatLng? get _nextPoint =>
+      next == null ? null : LatLng(next!.lat, next!.lng);
 
-  LatLng? get _pickupPoint =>
-      _hasPickup ? LatLng(pickup.lat!, pickup.lng!) : null;
-  LatLng? get _dropoffPoint =>
-      _hasDropoff ? LatLng(dropoff.lat!, dropoff.lng!) : null;
+  IconData get _nextIcon {
+    if (next == null) return Icons.place;
+    if (next!.isPickup) return Icons.location_pin;
+    if (next!.isDestination) return Icons.flag;
+    return Icons.circle;
+  }
+
+  Color get _nextColor {
+    if (next == null) return AppColors.info;
+    if (next!.isPickup) return AppColors.success;
+    if (next!.isDestination) return AppColors.danger;
+    return AppColors.info;
+  }
 
   /// The road-following points, or an empty list when there is no usable
   /// route (so the straight-line fallback draws instead).
@@ -296,13 +299,16 @@ class _MapView extends ConsumerWidget {
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
-    final pickupPoint = _pickupPoint;
-    final dropoffPoint = _dropoffPoint;
+    final nextPoint = _nextPoint;
+    final driverPoint = driverPosition == null
+        ? null
+        : LatLng(driverPosition!.lat, driverPosition!.lng);
     final road = _roadPoints;
     // The straight line is the honest fallback: the request failed, or the
-    // backend answered with its own estimate.
+    // backend answered with its own estimate. It follows the same
+    // driver → next-waypoint leg the road route does.
     final useFallback = road.length < 2 || (route?.isEstimate ?? false);
-    final straight = <LatLng>[?pickupPoint, ?dropoffPoint];
+    final straight = <LatLng>[?driverPoint, ?nextPoint];
 
     final polylines = <Polyline>[
       if (straight.length == 2)
@@ -321,15 +327,18 @@ class _MapView extends ConsumerWidget {
     ];
 
     final focus = <LatLng>[
-      if (driverPosition != null) LatLng(driverPosition!.lat, driverPosition!.lng),
-      ?pickupPoint,
-      ?dropoffPoint,
+      ?driverPoint,
+      ?nextPoint,
     ];
-    final initialCenter = driverPosition != null
-        ? LatLng(driverPosition!.lat, driverPosition!.lng)
-        : (pickupPoint ?? const LatLng(9.9281, -84.0907));
+    final initialCenter = driverPoint ?? const LatLng(9.9281, -84.0907);
     if (focus.length >= 2) {
-      onFit(focus, '${stage.name}:${route?.fetchedAt.millisecondsSinceEpoch}');
+      // The destination is part of the key so a destination-only `ride.updated`
+      // re-fits the camera even if the route request failed and `fetchedAt`
+      // never changed.
+      onFit(
+        focus,
+        '${next?.lat},${next?.lng}:${route?.fetchedAt.millisecondsSinceEpoch}',
+      );
     }
 
     final tileConfig = ref.watch(driverMapTileConfigProvider);
@@ -345,19 +354,14 @@ class _MapView extends ConsumerWidget {
         PolylineLayer(polylines: polylines),
         MarkerLayer(
           markers: [
-            if (pickupPoint != null)
+            if (nextPoint != null)
               Marker(
-                point: pickupPoint,
-                child: const Icon(Icons.location_pin, color: AppColors.success),
+                point: nextPoint,
+                child: Icon(_nextIcon, color: _nextColor),
               ),
-            if (dropoffPoint != null)
+            if (driverPoint != null)
               Marker(
-                point: dropoffPoint,
-                child: const Icon(Icons.flag, color: AppColors.danger),
-              ),
-            if (driverPosition != null)
-              Marker(
-                point: LatLng(driverPosition!.lat, driverPosition!.lng),
+                point: driverPoint,
                 child: const Icon(Icons.navigation, color: AppColors.info),
               ),
           ],
@@ -372,6 +376,13 @@ class _StageControls extends StatelessWidget {
   final TripStage stage;
   final Ride? ride;
   final RouteCache? route;
+
+  /// The full ordered itinerary (pickup, intermediate stops, destination).
+  final List<TripWaypoint> waypoints;
+
+  /// The immediate next waypoint, marked in the itinerary list.
+  final TripWaypoint? next;
+
   final String? cancelledBy;
   final String? routeError;
   final bool canCancel;
@@ -388,6 +399,8 @@ class _StageControls extends StatelessWidget {
     required this.stage,
     required this.ride,
     required this.route,
+    required this.waypoints,
+    required this.next,
     required this.cancelledBy,
     required this.routeError,
     required this.canCancel,
@@ -520,11 +533,6 @@ class _StageControls extends StatelessWidget {
       );
     }
 
-    final target = switch (stage) {
-      TripStage.driving => ride?.dropoffAddress ?? 'Dropoff',
-      _ => ride?.pickupAddress ?? 'Pickup',
-    };
-
     return Column(
       crossAxisAlignment: CrossAxisAlignment.stretch,
       children: [
@@ -545,7 +553,7 @@ class _StageControls extends StatelessWidget {
                   style: Theme.of(context).textTheme.headlineSmall,
                 ),
                 const SizedBox(height: 4),
-                Text(target, style: Theme.of(context).textTheme.bodyMedium),
+                _ItineraryList(waypoints: waypoints, next: next),
                 if (route != null && route!.distance > 0) ...[
                   const SizedBox(height: 4),
                   Text(
@@ -563,11 +571,14 @@ class _StageControls extends StatelessWidget {
         ),
         const SizedBox(height: 8),
         // One primary button per stage, matching the server's transition map.
+        // `enrouteToPickup` deliberately has no button: arrival is server-owned
+        // (the proximity geofence broadcasts `driver_arrived`), so the driver
+        // never sends `driver_arrived` itself.
         switch (stage) {
-          TripStage.enrouteToPickup => AppButton(
-              key: const Key('trip-primary-button'),
-              label: 'Arrived at pickup',
-              onPressed: onAdvance,
+          TripStage.enrouteToPickup => Text(
+              'Waiting for arrival…',
+              textAlign: TextAlign.center,
+              style: Theme.of(context).textTheme.bodySmall,
             ),
           TripStage.arrived => AppButton(
               key: const Key('trip-primary-button'),
@@ -669,5 +680,60 @@ class _StageControls extends StatelessWidget {
     final minutes = (route.duration / 60).ceil();
     final prefix = route.isEstimate ? 'Estimated ' : '';
     return '$prefix$km km · about $minutes min';
+  }
+}
+
+/// The bottom drawer's ordered itinerary: pickup, intermediate stops, then the
+/// destination, with the immediate next waypoint marked. The map shows only
+/// that next waypoint.
+class _ItineraryList extends StatelessWidget {
+  final List<TripWaypoint> waypoints;
+  final TripWaypoint? next;
+
+  const _ItineraryList({required this.waypoints, required this.next});
+
+  @override
+  Widget build(BuildContext context) {
+    if (waypoints.isEmpty) {
+      return Text('—', style: Theme.of(context).textTheme.bodyMedium);
+    }
+    return Column(
+      key: const Key('trip-itinerary'),
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        for (final waypoint in waypoints)
+          _row(context, waypoint, next != null && waypoint == next),
+      ],
+    );
+  }
+
+  Widget _row(BuildContext context, TripWaypoint waypoint, bool isNext) {
+    final icon = waypoint.isPickup
+        ? Icons.location_pin
+        : waypoint.isDestination
+            ? Icons.flag
+            : Icons.circle;
+    final color = waypoint.isPickup
+        ? AppColors.success
+        : waypoint.isDestination
+            ? AppColors.danger
+            : AppColors.info;
+    return Padding(
+      padding: const EdgeInsets.symmetric(vertical: 2),
+      child: Row(
+        children: [
+          Icon(icon, size: 16, color: color),
+          const SizedBox(width: 8),
+          Expanded(
+            child: Text(
+              waypoint.address,
+              overflow: TextOverflow.ellipsis,
+              style: Theme.of(context).textTheme.bodyMedium,
+            ),
+          ),
+          if (isNext) AppBadge(label: 'Next', color: AppColors.info),
+        ],
+      ),
+    );
   }
 }

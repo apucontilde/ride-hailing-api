@@ -250,5 +250,106 @@ void main() {
       expect(notifier.state.rideId, isNull);
       expect(notifier.state.driver, isNull);
     });
+
+    test('driver.location parses near_pickup and its distance', () async {
+      await emitAndSettle(rideUpdated(acceptedData()));
+
+      await emitAndSettle({
+        'type': 'driver.location',
+        'data': {
+          'ride_id': 'ride-1',
+          'driver_id': 'driver-1',
+          'lat': 9.9285,
+          'lng': -84.091,
+          'near_pickup': true,
+          'distance_to_pickup_m': 120.0,
+        },
+      });
+
+      expect(notifier.state.nearPickup, isTrue);
+      expect(notifier.state.nearPickupDistanceM, 120.0);
+    });
+
+    test('absent near fields clear the notice, never defaulting to 0 m', () async {
+      await emitAndSettle(rideUpdated(acceptedData()));
+      await emitAndSettle({
+        'type': 'driver.location',
+        'data': {
+          'ride_id': 'ride-1',
+          'driver_id': 'driver-1',
+          'lat': 9.9285,
+          'lng': -84.091,
+          'near_pickup': true,
+          'distance_to_pickup_m': 120.0,
+        },
+      });
+
+      // A later fix that omits the pair (the legacy shape) clears both.
+      await emitAndSettle({
+        'type': 'driver.location',
+        'data': {
+          'ride_id': 'ride-1',
+          'driver_id': 'driver-1',
+          'lat': 9.94,
+          'lng': -84.10,
+        },
+      });
+
+      expect(notifier.state.nearPickup, isFalse);
+      expect(notifier.state.nearPickupDistanceM, isNull);
+    });
+
+    test('arrival clears a stale nearby flag', () async {
+      await emitAndSettle(rideUpdated(acceptedData()));
+      await emitAndSettle({
+        'type': 'driver.location',
+        'data': {
+          'ride_id': 'ride-1',
+          'driver_id': 'driver-1',
+          'lat': 9.9285,
+          'lng': -84.091,
+          'near_pickup': true,
+          'distance_to_pickup_m': 120.0,
+        },
+      });
+      expect(notifier.state.nearPickup, isTrue);
+
+      await emitAndSettle(
+        rideUpdated({'ride_id': 'ride-1', 'status': 'driver_arrived'}),
+      );
+
+      expect(notifier.state.status, RideStatus.driverArrived);
+      expect(notifier.state.nearPickup, isFalse);
+      expect(notifier.state.nearPickupDistanceM, isNull);
+    });
+
+    test('applyLiveEta writes the ETA and distance', () async {
+      await emitAndSettle(rideUpdated(acceptedData()));
+
+      notifier.applyLiveEta(240, distanceM: 2300);
+
+      expect(notifier.state.etaSeconds, 240);
+      expect(notifier.state.etaDistanceM, 2300);
+      // Status/driver are preserved by the additive merge path.
+      expect(notifier.state.status, RideStatus.driverApproaching);
+      expect(notifier.state.driver?.id, 'driver-1');
+    });
+
+    test('updateFromCurrentRide exposes driver_id for the tracker', () async {
+      notifier.updateFromCurrentRide({
+        'id': 'ride-9',
+        'status': 'accepted',
+        'driver_id': 'driver-9',
+        'pickup_lat': 9.9281,
+        'pickup_lng': -84.0907,
+      });
+
+      expect(notifier.state.rideId, 'ride-9');
+      expect(notifier.state.status, RideStatus.driverApproaching);
+      // A cold-start payload has no nested `driver`, so the id must come from
+      // the flat `driver_id`.
+      expect(notifier.state.driver, isNull);
+      expect(notifier.state.effectiveDriverId, 'driver-9');
+    });
   });
 }

@@ -29,6 +29,7 @@ class _ForgotPasswordScreenState extends ConsumerState<ForgotPasswordScreen> {
   }
 
   Future<void> _submit() async {
+    if (_isLoading) return;
     if (!_formKey.currentState!.validate()) return;
     setState(() {
       _isLoading = true;
@@ -76,6 +77,8 @@ class _ForgotPasswordScreenState extends ConsumerState<ForgotPasswordScreen> {
                 label: 'Email',
                 hint: 'Enter your account email',
                 keyboardType: TextInputType.emailAddress,
+                textInputAction: TextInputAction.done,
+                onFieldSubmitted: (_) => _submit(),
                 prefixIcon: const Icon(Icons.email_outlined),
                 validator: Validators.validateEmail,
               ),

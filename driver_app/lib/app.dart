@@ -1,16 +1,32 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'core/app_bootstrap.dart';
 import 'core/auth/auth_provider.dart';
 import 'core/location/location_service.dart';
 import 'core/push/device_token_service.dart';
 import 'core/router/app_router.dart';
 import 'core/theme/app_theme.dart';
 
-class DriverApp extends ConsumerWidget {
+class DriverApp extends ConsumerStatefulWidget {
   const DriverApp({super.key});
 
   @override
-  Widget build(BuildContext context, WidgetRef ref) {
+  ConsumerState<DriverApp> createState() => _DriverAppState();
+}
+
+class _DriverAppState extends ConsumerState<DriverApp> {
+  @override
+  void initState() {
+    super.initState();
+    // Authenticate + restore the in-progress ride exactly once, before the
+    // router reads the session. The splash route shows the spinner while this
+    // is in flight; the router redirect is gated on it (`core/app_bootstrap.dart`).
+    final bootstrap = ref.read(sessionBootstrapProvider);
+    Future<void>.microtask(bootstrap.run);
+  }
+
+  @override
+  Widget build(BuildContext context) {
     // Lifecycle: manage location stream based on auth/profile state.
     final authState = ref.watch(authProvider);
     final service = ref.read(locationServiceProvider);

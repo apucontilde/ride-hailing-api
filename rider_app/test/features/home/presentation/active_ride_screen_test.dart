@@ -156,6 +156,22 @@ Map<String, dynamic> driverLocationEvent(double lat, double lng) => {
   },
 };
 
+/// The default `POST /estimates/price` row used by the change-destination
+/// confirmation (the booked `sedan`).
+const Map<String, dynamic> _defaultEstimate = {
+  'vehicle_type': 'sedan',
+  'base_fare': 1.0,
+  'distance_fare': 2.0,
+  'time_fare': 1.0,
+  'surge_multiplier': 1.0,
+  'total': 4.0,
+  'currency': '\$',
+  'is_estimate': false,
+  'legs': [
+    {'distance_m': 1500, 'duration_s': 240, 'distance_fare': 2.0, 'time_fare': 1.0},
+  ],
+};
+
 void main() {
   late FakeWebSocketService ws;
   late RideStatusNotifier rideNotifier;
@@ -190,6 +206,9 @@ void main() {
   void fixture({
     RouteMock route = RouteMock.road,
     List<Map<String, dynamic>>? stops,
+    Map<String, dynamic>? etaReply,
+    List<Map<String, dynamic>>? estimates,
+    int estimateStatus = 200,
   }) {
     ws = FakeWebSocketService();
     rideNotifier = RideStatusNotifier(ws);
@@ -214,6 +233,34 @@ void main() {
         'per_page': 50,
         'total_pages': 0,
       }),
+    );
+    // `[ontrip]` R1: the client ETA compute. The default answers the `300`
+    // placeholder so it never overwrites the accept-time value (and the two
+    // existing ETA-honesty assertions stay meaningful); a test that wants a
+    // fresh live number passes `etaReply`.
+    dioAdapter.onGet(
+      '/api/v1/geo/eta',
+      (server) => server.reply(
+        200,
+        etaReply ??
+            {'eta_seconds': 300, 'distance_meters': 0, 'is_estimate': false},
+      ),
+    );
+    // `[ontrip]` R-1: the change-destination confirmation estimate.
+    dioAdapter.onPost(
+      '/api/v1/estimates/price',
+      (server) => server.reply(
+        estimateStatus,
+        estimateStatus == 200
+            ? {'estimates': estimates ?? [_defaultEstimate]}
+            : {
+                'error': {
+                  'code': 'INTERNAL',
+                  'message': 'failed to price route',
+                },
+              },
+      ),
+      data: Matchers.any,
     );
     dioAdapter.onGet('/api/v1/navigation/route', (server) {
       final status = switch (route) {
@@ -1192,8 +1239,31 @@ void main() {
     await tester.tap(button);
     await tester.pump();
     await tester.pump();
+    await tester.pump(const Duration(milliseconds: 10));
+    await tester.pump();
+
+    // The confirmation shows the fresh estimate before any mutation; only
+    // Confirm fires the PUT.
+    expect(
+      find.byKey(const ValueKey<String>('change-destination-dialog')),
+      findsOneWidget,
+    );
+    expect(
+      find.byKey(const ValueKey<String>('change-destination-estimate')),
+      findsOneWidget,
+    );
+    expect(
+      putBodies,
+      isEmpty,
+      reason: 'the ride must be untouched until Confirm',
+    );
+
+    await tester.tap(
+      find.byKey(const ValueKey<String>('change-destination-confirm')),
+    );
     await tester.pump();
     await tester.pump(const Duration(milliseconds: 10));
+    await tester.pump();
 
     expect(putBodies, hasLength(1));
     expect(putBodies.single, {'lat': 9.97, 'lng': -84.14, 'address': 'New Rd'});
@@ -1247,15 +1317,29 @@ void main() {
       );
       await tester.pump();
       await tester.pump();
-      await tester.pump();
       await tester.pump(const Duration(milliseconds: 10));
+      await tester.pump();
 
-      // The search opened with a non-null bias (the fallback center) and the
-      // picked place was PUT.
+      // The search opened with a non-null bias (the fallback center); with no
+      // routeable pickup the confirmation is honest about the missing estimate
+      // and still offers Confirm.
       expect(searchExtras, hasLength(1));
       expect(searchExtras.single['hint'], 'Where to?');
       expect(searchExtras.single['lat'], isNotNull);
       expect(searchExtras.single['lng'], isNotNull);
+      expect(
+        find.byKey(const ValueKey<String>('change-destination-no-estimate')),
+        findsOneWidget,
+      );
+      expect(putBodies, isEmpty);
+
+      await tester.tap(
+        find.byKey(const ValueKey<String>('change-destination-confirm')),
+      );
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 10));
+      await tester.pump();
+
       expect(putBodies, hasLength(1));
       expect(putBodies.single, {
         'lat': 9.97,
@@ -1404,5 +1488,394 @@ void main() {
     await tester.pump();
 
     expect(tripRoute.isPolling, isFalse);
+  });
+
+  // ---------------------------------------------------------------------------
+  // [ontrip] status labels (Known bug #29) — the chip must be truthful per
+  // status, never the generic `Matching`.
+  // ---------------------------------------------------------------------------
+
+  testWidgets('driver_arrived renders "Driver arrived", not "Matching"', (
+    WidgetTester tester,
+  ) async {
+    fixture();
+    emit(acceptedEvent());
+
+    await tester.pumpWidget(buildRouter());
+    await tester.pump();
+
+    await emitAndSettle(tester, {
+      'type': 'ride.updated',
+      'data': {'ride_id': 'ride-1', 'status': 'driver_arrived'},
+    });
+
+    expect(find.text('Driver arrived'), findsOneWidget);
+    expect(find.text('Matching'), findsNothing);
+    // No countdown to an event that already happened; the arrived row instead.
+    expect(find.byKey(const ValueKey<String>('trip-eta')), findsNothing);
+    expect(find.byKey(const ValueKey<String>('trip-arrived')), findsOneWidget);
+
+    await settleAndDispose(tester);
+  });
+
+  testWidgets('matching renders "Finding your driver", not "Matching"', (
+    WidgetTester tester,
+  ) async {
+    fixture();
+    emit({
+      'type': 'ride.updated',
+      'data': {'ride_id': 'ride-1', 'status': 'pending'},
+    });
+
+    await tester.pumpWidget(buildRouter());
+    await tester.pump();
+
+    expect(find.text('Finding your driver'), findsOneWidget);
+    expect(find.text('Matching'), findsNothing);
+
+    await settleAndDispose(tester);
+  });
+
+  testWidgets('no_driver_available renders "No drivers found"', (
+    WidgetTester tester,
+  ) async {
+    fixture();
+    emit(acceptedEvent());
+
+    await tester.pumpWidget(buildRouter());
+    await tester.pump();
+
+    await emitAndSettle(tester, {
+      'type': 'ride.updated',
+      'data': {'ride_id': 'ride-1', 'status': 'no_driver_available'},
+    });
+
+    expect(find.text('No drivers found'), findsOneWidget);
+    expect(find.text('Matching'), findsNothing);
+
+    await settleAndDispose(tester);
+  });
+
+  testWidgets('onTrip renders the status with no arrival countdown', (
+    WidgetTester tester,
+  ) async {
+    fixture();
+    emit(acceptedEvent());
+
+    await tester.pumpWidget(buildRouter());
+    await tester.pump();
+
+    await emitAndSettle(tester, {
+      'type': 'ride.updated',
+      'data': {'ride_id': 'ride-1', 'status': 'in_progress'},
+    });
+
+    expect(find.text('On Trip'), findsOneWidget);
+    expect(find.byKey(const ValueKey<String>('trip-eta')), findsNothing);
+    expect(find.byKey(const ValueKey<String>('trip-arrived')), findsNothing);
+
+    await settleAndDispose(tester);
+  });
+
+  // ---------------------------------------------------------------------------
+  // [ontrip] R-3 — ordered stop + destination markers on the active map.
+  // ---------------------------------------------------------------------------
+
+  testWidgets('the active map marks intermediate stops and the destination', (
+    WidgetTester tester,
+  ) async {
+    fixture(stops: [
+      {
+        'id': 'stop-1',
+        'ride_id': 'ride-1',
+        'sequence': 1,
+        'kind': 'stop',
+        'lat': 9.93,
+        'lng': -84.095,
+        'address': 'Stop 1',
+      },
+      {
+        'id': 'stop-2',
+        'ride_id': 'ride-1',
+        'sequence': 2,
+        'kind': 'destination',
+        'lat': 9.94,
+        'lng': -84.10,
+        'address': 'Airport Rd',
+      },
+    ]);
+    emit(acceptedEvent());
+    emit(driverLocationEvent(9.93, -84.09));
+
+    await tester.pumpWidget(buildRouter());
+    await pumpRoute(tester);
+
+    final layer = tester.widget<MarkerLayer>(find.byType(MarkerLayer));
+    final stops = layer.markers
+        .where((m) =>
+            m.child is Icon &&
+            (m.child as Icon).icon == Icons.trip_origin)
+        .toList();
+    final destinations = layer.markers
+        .where((m) =>
+            m.child is Icon && (m.child as Icon).icon == Icons.location_on)
+        .toList();
+
+    expect(stops, hasLength(1));
+    expect(stops.single.point, const LatLng(9.93, -84.095));
+    expect(destinations, hasLength(1));
+    expect(destinations.single.point, const LatLng(9.94, -84.10));
+    // The rider/driver markers are untouched.
+    expect(driverMarkerPoint(tester), const LatLng(9.93, -84.09));
+
+    await settleAndDispose(tester);
+  });
+
+  testWidgets('without stops the active map draws no itinerary markers', (
+    WidgetTester tester,
+  ) async {
+    fixture();
+    emit(acceptedEvent());
+
+    await tester.pumpWidget(buildRouter());
+    await pumpRoute(tester);
+
+    final layer = tester.widget<MarkerLayer>(find.byType(MarkerLayer));
+    expect(
+      layer.markers.where(
+        (m) => m.child is Icon && (m.child as Icon).icon == Icons.trip_origin,
+      ),
+      isEmpty,
+    );
+
+    await settleAndDispose(tester);
+  });
+
+  // ---------------------------------------------------------------------------
+  // [ontrip] R-1 — change-destination confirmation only mutates on Confirm.
+  // ---------------------------------------------------------------------------
+
+  testWidgets('cancelling the change-destination confirmation leaves the ride', (
+    WidgetTester tester,
+  ) async {
+    fixture();
+    const newDestination = Place(
+      id: 'new-dest',
+      name: 'New Destination',
+      address: 'New Rd',
+      lat: 9.97,
+      lng: -84.14,
+    );
+    final putBodies = <Map<String, dynamic>>[];
+    dioAdapter.onPut(
+      '/api/v1/rides/ride-1/destination',
+      (server) => server.replyCallback(200, (options) {
+        putBodies.add(Map<String, dynamic>.from(options.data as Map));
+        return {'ride': rideJson(status: 'in_progress')};
+      }),
+      data: Matchers.any,
+    );
+    emit(acceptedEvent());
+
+    await tester.pumpWidget(
+      buildRouter(changeDestinationResult: newDestination),
+    );
+    await tester.pump();
+
+    await tester.tap(
+      find.byKey(const ValueKey<String>('change-destination-button')),
+    );
+    await tester.pump();
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 10));
+    await tester.pump();
+
+    expect(
+      find.byKey(const ValueKey<String>('change-destination-dialog')),
+      findsOneWidget,
+    );
+
+    await tester.tap(
+      find.byKey(const ValueKey<String>('change-destination-cancel')),
+    );
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 10));
+    await tester.pump();
+
+    expect(putBodies, isEmpty, reason: 'Cancel must not mutate the ride');
+    expect(
+      find.byKey(const ValueKey<String>('change-destination-dialog')),
+      findsNothing,
+    );
+    // Still on the trip.
+    expect(find.text('Cancel Ride'), findsOneWidget);
+
+    await settleAndDispose(tester);
+  });
+
+  testWidgets('an estimate outage still offers Confirm and then PUTs', (
+    WidgetTester tester,
+  ) async {
+    fixture(estimateStatus: 500);
+    const newDestination = Place(
+      id: 'new-dest',
+      name: 'New Destination',
+      address: 'New Rd',
+      lat: 9.97,
+      lng: -84.14,
+    );
+    final putBodies = <Map<String, dynamic>>[];
+    dioAdapter.onPut(
+      '/api/v1/rides/ride-1/destination',
+      (server) => server.replyCallback(200, (options) {
+        putBodies.add(Map<String, dynamic>.from(options.data as Map));
+        return {'ride': rideJson(status: 'in_progress')};
+      }),
+      data: Matchers.any,
+    );
+    emit(acceptedEvent());
+
+    await tester.pumpWidget(
+      buildRouter(changeDestinationResult: newDestination),
+    );
+    await tester.pump();
+
+    await tester.tap(
+      find.byKey(const ValueKey<String>('change-destination-button')),
+    );
+    await tester.pump();
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 10));
+    await tester.pump();
+
+    // No advisory number must veto the rider's legitimate action.
+    expect(
+      find.byKey(const ValueKey<String>('change-destination-no-estimate')),
+      findsOneWidget,
+    );
+    expect(putBodies, isEmpty);
+
+    await tester.tap(
+      find.byKey(const ValueKey<String>('change-destination-confirm')),
+    );
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 10));
+    await tester.pump();
+
+    expect(putBodies, hasLength(1));
+
+    await settleAndDispose(tester);
+  });
+
+  // ---------------------------------------------------------------------------
+  // [ontrip] R1 — client-computed live arrival ETA.
+  // ---------------------------------------------------------------------------
+
+  testWidgets('a live /geo/eta result updates the ETA row with distance', (
+    WidgetTester tester,
+  ) async {
+    fixture(
+      etaReply: {
+        'eta_seconds': 240,
+        'distance_meters': 2300,
+        'is_estimate': false,
+      },
+    );
+    // The accept payload carries the unknown placeholder; the client compute
+    // must replace it with the real live number.
+    emit(acceptedEvent(etaSeconds: 300));
+
+    await tester.pumpWidget(buildRouter());
+    await pumpRoute(tester);
+
+    final eta = tester.widget<Text>(
+      find.byKey(const ValueKey<String>('trip-eta')),
+    );
+    expect(eta.data, '2.3 km · ETA 4 min');
+
+    await settleAndDispose(tester);
+  });
+
+  // ---------------------------------------------------------------------------
+  // [arrival] — the "driver is nearby" notice consumes the server flag only.
+  // ---------------------------------------------------------------------------
+
+  testWidgets('near_pickup shows the nearby notice with the distance', (
+    WidgetTester tester,
+  ) async {
+    fixture();
+    emit(acceptedEvent());
+
+    await tester.pumpWidget(buildRouter());
+    await tester.pump();
+
+    // Before any near fix, no notice is invented.
+    expect(
+      find.byKey(const ValueKey<String>('driver-nearby-notice')),
+      findsNothing,
+    );
+
+    await emitAndSettle(tester, {
+      'type': 'driver.location',
+      'data': {
+        'ride_id': 'ride-1',
+        'driver_id': 'driver-1',
+        'lat': 9.9285,
+        'lng': -84.091,
+        'heading': 0,
+        'speed': 0,
+        'near_pickup': true,
+        'distance_to_pickup_m': 120.0,
+      },
+    });
+
+    expect(
+      find.byKey(const ValueKey<String>('driver-nearby-notice')),
+      findsOneWidget,
+    );
+    expect(find.textContaining('120 m away'), findsOneWidget);
+
+    await settleAndDispose(tester);
+  });
+
+  testWidgets('arrival clears the nearby notice and shows the arrived row', (
+    WidgetTester tester,
+  ) async {
+    fixture();
+    emit(acceptedEvent());
+
+    await tester.pumpWidget(buildRouter());
+    await tester.pump();
+
+    await emitAndSettle(tester, {
+      'type': 'driver.location',
+      'data': {
+        'ride_id': 'ride-1',
+        'driver_id': 'driver-1',
+        'lat': 9.9285,
+        'lng': -84.091,
+        'heading': 0,
+        'speed': 0,
+        'near_pickup': true,
+        'distance_to_pickup_m': 120.0,
+      },
+    });
+    expect(
+      find.byKey(const ValueKey<String>('driver-nearby-notice')),
+      findsOneWidget,
+    );
+
+    await emitAndSettle(tester, {
+      'type': 'ride.updated',
+      'data': {'ride_id': 'ride-1', 'status': 'driver_arrived'},
+    });
+
+    expect(
+      find.byKey(const ValueKey<String>('driver-nearby-notice')),
+      findsNothing,
+    );
+    expect(find.byKey(const ValueKey<String>('trip-arrived')), findsOneWidget);
+
+    await settleAndDispose(tester);
   });
 }

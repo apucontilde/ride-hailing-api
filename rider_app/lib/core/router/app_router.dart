@@ -1,7 +1,10 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
+import '../app_bootstrap.dart';
 import '../auth/auth_provider.dart';
+import '../../features/home/data/current_ride_provider.dart';
+import 'post_auth_route.dart';
 import '../../features/auth/presentation/splash_screen.dart';
 import '../../features/auth/presentation/login_screen.dart';
 import '../../features/auth/presentation/register_screen.dart';
@@ -23,20 +26,15 @@ final routerProvider = Provider<GoRouter>((ref) {
   return GoRouter(
     navigatorKey: _shellKey,
     initialLocation: '/splash',
-    redirect: (context, state) {
-      final authState = ref.read(authProvider);
-      final isAuthenticated = authState.isAuthenticated;
-      final isSplash = state.matchedLocation == '/splash';
-      final isAuthRoute =
-          state.matchedLocation.startsWith('/login') ||
-          state.matchedLocation.startsWith('/register') ||
-          state.matchedLocation.startsWith('/forgot-password');
-
-      if (isSplash) return null;
-      if (!isAuthenticated && !isAuthRoute) return '/login';
-      if (isAuthenticated && isAuthRoute) return '/home';
-      return null;
-    },
+    // Re-run `redirect` once the async bootstrap settles, even though the
+    // bootstrap itself triggers no navigation.
+    refreshListenable: ref.read(sessionBootstrapProvider),
+    redirect: (context, state) => resolveRedirect(
+      bootstrapComplete: ref.read(sessionBootstrapProvider).complete,
+      auth: ref.read(authProvider),
+      ride: ref.read(currentRideProvider),
+      location: state.matchedLocation,
+    ),
     routes: [
       GoRoute(
         path: '/splash',

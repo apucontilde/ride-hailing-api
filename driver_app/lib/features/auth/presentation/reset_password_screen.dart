@@ -31,6 +31,7 @@ class _ResetPasswordScreenState extends ConsumerState<ResetPasswordScreen> {
   }
 
   Future<void> _submit() async {
+    if (_isLoading) return;
     if (!_formKey.currentState!.validate()) return;
     setState(() {
       _isLoading = true;
@@ -80,6 +81,7 @@ class _ResetPasswordScreenState extends ConsumerState<ResetPasswordScreen> {
                 controller: _tokenController,
                 label: 'Reset token',
                 hint: 'Paste the token from your recovery link',
+                textInputAction: TextInputAction.next,
                 prefixIcon: const Icon(Icons.vpn_key_outlined),
                 validator: (value) =>
                     Validators.validateRequired(value, 'Reset token'),
@@ -90,6 +92,8 @@ class _ResetPasswordScreenState extends ConsumerState<ResetPasswordScreen> {
                 label: 'New password',
                 hint: 'Enter a new password',
                 obscureText: true,
+                textInputAction: TextInputAction.done,
+                onFieldSubmitted: (_) => _submit(),
                 prefixIcon: const Icon(Icons.lock_outlined),
                 validator: Validators.validatePassword,
               ),

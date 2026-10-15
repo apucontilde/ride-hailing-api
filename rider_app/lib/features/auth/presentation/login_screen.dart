@@ -5,6 +5,8 @@ import 'package:go_router/go_router.dart';
 import 'package:ride_hailing_shared/ride_hailing_shared.dart';
 import '../../../core/auth/auth_provider.dart';
 import '../../../core/platform/enter_to_submit.dart';
+import '../../../core/router/post_auth_route.dart';
+import '../../home/data/current_ride_provider.dart';
 
 class LoginScreen extends ConsumerStatefulWidget {
   const LoginScreen({super.key});
@@ -89,7 +91,16 @@ class _LoginScreenState extends ConsumerState<LoginScreen> {
       if (!mounted) return;
       final authState = ref.read(authProvider);
       if (authState.isAuthenticated) {
-        context.go('/home');
+        // A fresh login can happen while an earlier ride is still active (e.g.
+        // the app was reloaded and the rider signed back in). Restore the ride
+        // before choosing the route — `resolvePostAuthRoute` sends a matched
+        // ride to the matching screen, an accepted one to the active trip, and
+        // an empty session home.
+        await ref.read(currentRideProvider.notifier).checkOnce();
+        if (!mounted) return;
+        context.go(
+          resolvePostAuthRoute(authState, ref.read(currentRideProvider)),
+        );
       }
     } finally {
       _isSubmitting = false;

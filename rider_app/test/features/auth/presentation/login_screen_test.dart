@@ -10,6 +10,7 @@ import 'package:rider_app/core/auth/auth_provider.dart';
 import 'package:rider_app/core/auth/auth_storage.dart';
 import 'package:rider_app/core/api/api_client.dart';
 import 'package:rider_app/core/api/api_exceptions.dart';
+import 'package:rider_app/core/api/endpoints.dart';
 import 'package:rider_app/core/network/websocket_service.dart';
 import 'package:rider_app/features/auth/presentation/login_screen.dart';
 
@@ -80,6 +81,16 @@ void main() {
               path: '/forgot-password',
               builder: (context, state) =>
                   const Scaffold(body: Text('Forgot Password')),
+            ),
+            GoRoute(
+              path: '/active-ride',
+              builder: (context, state) =>
+                  const Scaffold(body: Text('Active Ride')),
+            ),
+            GoRoute(
+              path: '/driver-matching',
+              builder: (context, state) =>
+                  const Scaffold(body: Text('Matching')),
             ),
           ],
         ),
@@ -327,6 +338,92 @@ void main() {
     expect(logoutIndex, isNonNegative);
     expect(switchLoginIndex, greaterThan(logoutIndex));
     expect(container.read(authProvider).user?.email, 'other@test.com');
+    expect(find.text('Home'), findsOneWidget);
+  });
+
+  // ---------------------------------------------------------------------------
+  // [trip] post-auth restore — a fresh login lands on the in-progress ride.
+  // ---------------------------------------------------------------------------
+
+  testWidgets('a successful login restores an in-progress ride', (
+    WidgetTester tester,
+  ) async {
+    when(
+      () => mockDio.post(any(), data: any(named: 'data')),
+    ).thenAnswer((_) async => Response(
+          requestOptions: RequestOptions(path: '/auth/login'),
+          statusCode: 200,
+          data: {
+            'access_token': 'token',
+            'refresh_token': 'refresh',
+            'user': {'id': '1', 'email': 'test@test.com'},
+          },
+        ));
+    when(() => mockDio.get(ApiEndpoints.currentRide)).thenAnswer(
+      (_) async => Response(
+        requestOptions: RequestOptions(path: ApiEndpoints.currentRide),
+        statusCode: 200,
+        data: {
+          'ride': {'id': 'ride-1', 'status': 'accepted'},
+          'stops': <dynamic>[],
+        },
+      ),
+    );
+
+    await tester.pumpWidget(createApp());
+    await tester.pump();
+
+    await tester.enterText(
+      find.widgetWithText(TextFormField, 'Email'),
+      'test@test.com',
+    );
+    await tester.enterText(
+      find.widgetWithText(TextFormField, 'Password'),
+      'Password1',
+    );
+    await tester.tap(find.widgetWithText(ElevatedButton, 'Log In'));
+    await tester.pumpAndSettle();
+
+    expect(find.text('Active Ride'), findsOneWidget);
+    expect(find.text('Home'), findsNothing);
+  });
+
+  testWidgets('a successful login with no active ride lands on home', (
+    WidgetTester tester,
+  ) async {
+    when(
+      () => mockDio.post(any(), data: any(named: 'data')),
+    ).thenAnswer((_) async => Response(
+          requestOptions: RequestOptions(path: '/auth/login'),
+          statusCode: 200,
+          data: {
+            'access_token': 'token',
+            'refresh_token': 'refresh',
+            'user': {'id': '1', 'email': 'test@test.com'},
+          },
+        ));
+    when(() => mockDio.get(ApiEndpoints.currentRide)).thenAnswer(
+      (_) async => Response(
+        requestOptions: RequestOptions(path: ApiEndpoints.currentRide),
+        statusCode: 200,
+        data: {'ride': null, 'stops': <dynamic>[]},
+      ),
+    );
+
+    await tester.pumpWidget(createApp());
+    await tester.pump();
+
+    await tester.enterText(
+      find.widgetWithText(TextFormField, 'Email'),
+      'test@test.com',
+    );
+    await tester.enterText(
+      find.widgetWithText(TextFormField, 'Password'),
+      'Password1',
+    );
+    await tester.tap(find.widgetWithText(ElevatedButton, 'Log In'));
+    await tester.pumpAndSettle();
+
     expect(find.text('Home'), findsOneWidget);
   });
 

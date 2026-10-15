@@ -90,12 +90,21 @@ class DriverLocation {
   final double heading;
   final double speed;
 
+  /// `driver.location` proximity fields, additive in the API's `[arrival]`
+  /// geofence work. `nearPickup` defaults to false when absent (omitempty);
+  /// `distanceToPickupM` is nullable because Go `omitempty` also drops a genuine
+  /// `0.0` — null means "unknown", never `0 m`.
+  final bool nearPickup;
+  final double? distanceToPickupM;
+
   const DriverLocation({
     required this.driverId,
     required this.lat,
     required this.lng,
     this.heading = 0,
     this.speed = 0,
+    this.nearPickup = false,
+    this.distanceToPickupM,
   });
 
   factory DriverLocation.fromJson(Map<String, dynamic> json) {
@@ -105,6 +114,8 @@ class DriverLocation {
       lng: (json['lng'] as num?)?.toDouble() ?? 0.0,
       heading: (json['heading'] as num?)?.toDouble() ?? 0,
       speed: (json['speed'] as num?)?.toDouble() ?? 0,
+      nearPickup: json['near_pickup'] as bool? ?? false,
+      distanceToPickupM: (json['distance_to_pickup_m'] as num?)?.toDouble(),
     );
   }
 }

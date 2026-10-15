@@ -179,7 +179,6 @@ Update status:
 | PUT | `/api/v1/driver/rides/:id/status` | Yes, role driver | Advances ride status |
 | POST | `/api/v1/driver/rides/:id/cancel` | Yes, role driver | Cancels ride when allowed |
 | POST | `/api/v1/driver/rides/:id/rate` | Yes, role driver | Rates the rider |
-| POST | `/api/v1/driver/rides/:id/notify-arrival` | Yes, role driver | Sends a live `ride.updated` (`driver_arrived`) to a connected rider, or a backgrounded push when the rider is offline. Ancillary: it does not change the stored status. 404 for another driver's / an unknown ride |
 
 ## Ride Endpoints
 
@@ -316,6 +315,15 @@ dropoff with `status` unchanged.
 
 `cancelled` is allowed from `pending`, `accepted`, or `driver_arrived`.
 
+The `accepted -> driver_arrived` edge is **server-owned** (proximity arrival geofence): while the
+ride is `accepted`, every driver location fix measures the straight-line distance to the pickup,
+and the server advances the ride automatically once the driver is inside the arrival radius
+(default 80 m). Both parties then receive the `ride.updated {status: "driver_arrived"}` broadcast —
+the driver app no longer calls a notify endpoint.
+`PUT /api/v1/driver/rides/:id/status {status: "driver_arrived"}` stays available as a manual
+override. There is **no** `POST /api/v1/driver/rides/:id/notify-arrival` route any more; it was
+removed.
+
 On ride creation, the backend also sends a `ride.updated` websocket event with `status: pending` and starts dispatching nearby drivers.
 
 ### Fare receipt and the booked-card snapshot
@@ -418,8 +426,8 @@ A repository failure answers `500 INTERNAL` with `"failed to load ratings"`.
 
 | Method | Path | Auth | Notes |
 |---|---|---|---|
-| PUT | `/api/v1/geo/driver/location` | Yes, role driver | Upserts driver location and pushes `driver.location` to the active rider |
-| PUT | `/api/v1/geo/driver/location/batch` | Yes, role driver | Batch location upsert |
+| PUT | `/api/v1/geo/driver/location` | Yes, role driver | Upserts driver location, streams `driver.location` to the active rider (with the proximity fields below), and auto-advances an `accepted` ride once inside the arrive radius |
+| PUT | `/api/v1/geo/driver/location/batch` | Yes, role driver | Batch location upsert; the proximity geofence runs on the **final** fix only |
 | PUT | `/api/v1/geo/rider/location` | Yes, role rider | Upserts rider location |
 | GET | `/api/v1/geo/nearby-drivers` | Yes | Returns nearby drivers |
 | GET | `/api/v1/geo/eta` | Yes | Route-based ETA `{eta_seconds, distance_meters}` (same handler as `estimates/eta`) |
@@ -670,9 +678,21 @@ Auth: Bearer token required before upgrade.
 | Type | Notes |
 |---|---|
 | `ride.offer` | Sent to connected drivers during dispatch |
-| `ride.updated` | Sent on ride create, accept, cancel, status changes, completion, and a destination change |
-| `driver.location` | Sent to the rider during an active ride |
+| `ride.updated` | Sent on ride create, accept, cancel, status changes (including the automatic proximity `accepted -> driver_arrived`), completion, and a destination change |
+| `driver.location` | Sent to the rider during an active ride; carries the additive proximity fields below while the ride is `accepted` |
 | `pong` | Reply to `ping` |
+
+**Proximity arrival fields on `driver.location`** (additive; omitted when there is no `accepted`
+active ride for the caller, so the legacy shape is unchanged otherwise):
+
+| Field | Type | Meaning |
+|---|---|---|
+| `near_pickup` | bool | `true` once the driver has crossed into the nearby radius (default 300 m); stays `true` until the driver is past nearby + hysteresis (default 30 m), then clears. Omitted while `false` |
+| `distance_to_pickup_m` | number | Straight-line (haversine) metres from the driver fix to the ride pickup. Omitted when `0` |
+
+A backgrounded rider (no live `/ws` socket) instead gets a `ride.nearby` push the first time the
+driver crosses into the nearby radius, and the usual `driver_arrived` push on arrival. Nearby is
+advisory only: it **never** changes `ride.status`, which stays `accepted` until the arrive gate.
 
 ## Current Behavior Notes
 
@@ -681,6 +701,7 @@ Auth: Bearer token required before upgrade.
 - `POST /api/v1/rides` calculates fare using the current fare service, including distance, time, and surge heuristics.
 - `POST /api/v1/driver/rides/:id/accept` is the HTTP accept path; websocket `ride.accept` is the live driver channel used by dispatch.
 - If dispatch finds no driver, the ride can move to `no_driver_available`.
+- Driver arrival is automatic and server-owned: the `PUT /api/v1/geo/driver/location` hot path advances an `accepted` ride to `driver_arrived` when the driver is inside the arrive radius (env `GEOFENCE_*`, default 80 m), and emits the nearby fields on `driver.location`. `POST /api/v1/driver/rides/:id/notify-arrival` was removed; `PUT /api/v1/driver/rides/:id/status` stays as the manual override.
 - Backgrounded push is best-effort: `POST /api/v1/devices` registers the token, and ride status changes (`driver_arrived`, `in_progress`, `completed`, `cancelled`) are pushed only when the rider has no live `/ws` socket. A push that cannot be delivered is logged and never fails the ride transition. With no provider credentials configured the default is a log-and-continue no-op.
 
 ## Recommended Rider Flow

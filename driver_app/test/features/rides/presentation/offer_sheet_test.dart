@@ -43,7 +43,11 @@ void main() {
     await tester.pump();
   }
 
-  Future<void> pumpSheet(WidgetTester tester) {
+  Future<void> pumpSheet(
+    WidgetTester tester, {
+    bool isDismissible = false,
+    bool enableDrag = false,
+  }) {
     return pumpModalSheet(
       tester,
       overrides: [
@@ -52,6 +56,8 @@ void main() {
         driverWebSocketServiceProvider.overrideWithValue(mockWs),
       ],
       builder: (context) => const OfferSheet(),
+      isDismissible: isDismissible,
+      enableDrag: enableDrag,
     );
   }
 
@@ -72,6 +78,72 @@ void main() {
       ),
     );
   }
+
+  void stubEstimate({
+    double distanceM = 4200,
+    int durationS = 420,
+    bool isEstimate = false,
+  }) {
+    when(() => mockRepo.routeEstimate(
+          fromLat: any(named: 'fromLat'),
+          fromLng: any(named: 'fromLng'),
+          toLat: any(named: 'toLat'),
+          toLng: any(named: 'toLng'),
+        )).thenAnswer(
+      (_) async => RouteEstimate(
+        distanceM: distanceM,
+        durationS: durationS,
+        isEstimate: isEstimate,
+      ),
+    );
+  }
+
+  testWidgets('renders the trip distance and estimated time', (tester) async {
+    await seedOffer(tester, 'r1');
+    stubRide();
+    stubEstimate();
+    await pumpSheet(tester);
+    await tester.pump();
+
+    expect(find.text('Distance'), findsOneWidget);
+    expect(find.text('4.2 km'), findsOneWidget);
+    expect(find.text('Est. time'), findsOneWidget);
+    expect(find.text('about 7 min'), findsOneWidget);
+
+    await drainModalTimers(tester);
+  });
+
+  testWidgets('labels an out-of-coverage estimate', (tester) async {
+    await seedOffer(tester, 'r1');
+    stubRide();
+    stubEstimate(distanceM: 2900, durationS: 260, isEstimate: true);
+    await pumpSheet(tester);
+    await tester.pump();
+
+    expect(find.text('Estimated 2.9 km'), findsOneWidget);
+    expect(find.text('Estimated about 5 min'), findsOneWidget);
+
+    await drainModalTimers(tester);
+  });
+
+  testWidgets('a failed estimate shows the placeholder, never a number',
+      (tester) async {
+    await seedOffer(tester, 'r1');
+    stubRide();
+    when(() => mockRepo.routeEstimate(
+          fromLat: any(named: 'fromLat'),
+          fromLng: any(named: 'fromLng'),
+          toLat: any(named: 'toLat'),
+          toLng: any(named: 'toLng'),
+        )).thenThrow(Exception('no route'));
+    await pumpSheet(tester);
+    await tester.pump();
+
+    // Both estimate rows fall back to the placeholder; no fabricated values.
+    expect(find.text('—'), findsNWidgets(2));
+
+    await drainModalTimers(tester);
+  });
 
   testWidgets('renders the real cents, never rounded to whole dollars',
       (tester) async {
@@ -113,32 +185,97 @@ void main() {
     await drainModalTimers(tester);
   });
 
-  testWidgets('countdown reaches 0 and disables both buttons', (tester) async {
+  testWidgets('expiry replaces the actions with a single Dismiss',
+      (tester) async {
     await seedOffer(tester, 'r1');
     stubRide();
     await pumpSheet(tester);
     await tester.pump();
 
     expect(find.text('Accept'), findsOneWidget);
-    expect(find.text('Decline'), findsOneWidget);
+    expect(find.text('Pass'), findsOneWidget);
 
     await tester.pump(const Duration(seconds: 31));
 
     expect(find.text('Offer expired'), findsOneWidget);
-    final accept = tester.widget<ElevatedButton>(
-      find.ancestor(
-        of: find.text('Accept'),
-        matching: find.byType(ElevatedButton),
-      ),
-    );
-    final decline = tester.widget<OutlinedButton>(
-      find.ancestor(
-        of: find.text('Decline'),
-        matching: find.byType(OutlinedButton),
-      ),
-    );
-    expect(accept.onPressed, isNull);
-    expect(decline.onPressed, isNull);
+    expect(find.byKey(const Key('offer-dismiss-button')), findsOneWidget);
+    expect(find.text('Accept'), findsNothing);
+    expect(find.text('Pass'), findsNothing);
+
+    await tester.tap(find.byKey(const Key('offer-dismiss-button')));
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 300));
+
+    expect(find.byType(OfferSheet), findsNothing);
+
+    await drainModalTimers(tester);
+  });
+
+  testWidgets('the held offer clearing pins the sheet to its expired Dismiss',
+      (tester) async {
+    await seedOffer(tester, 'r1');
+    stubRide();
+    await pumpSheet(tester);
+    await tester.pump();
+
+    expect(find.text('Accept'), findsOneWidget);
+
+    // The server's 30 s window (or an acceptance elsewhere) clears the offer.
+    notifier.declineOffer();
+    await tester.pump();
+
+    expect(find.text('Offer expired'), findsOneWidget);
+    expect(find.byKey(const Key('offer-dismiss-button')), findsOneWidget);
+    expect(find.byType(OfferSheet), findsOneWidget);
+
+    await tester.tap(find.byKey(const Key('offer-dismiss-button')));
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 300));
+    expect(find.byType(OfferSheet), findsNothing);
+
+    await drainModalTimers(tester);
+  });
+
+  testWidgets(
+      'a replaced live offer closes the previous sheet instead of stacking',
+      (tester) async {
+    await seedOffer(tester, 'r1');
+    stubRide();
+    await pumpSheet(tester);
+    await tester.pump();
+    expect(find.byType(OfferSheet), findsOneWidget);
+
+    // The first offer ends (the server's window, or an acceptance elsewhere),
+    // pinning this sheet to its expired Dismiss state. A new live offer then
+    // arrives. The stale sheet must actually pop — under `PopScope(canPop:
+    // false)` `maybePop` was a no-op, so it stayed stacked under the second
+    // sheet the parent opened.
+    notifier.declineOffer();
+    await tester.pump();
+    expect(find.text('Offer expired'), findsOneWidget);
+
+    events.add(WsEvent(type: WsEventType.offer, data: {'ride_id': 'r2'}));
+    await tester.pump();
+    // Let the modal exit animation finish.
+    await tester.pump(const Duration(milliseconds: 300));
+
+    expect(find.byType(OfferSheet), findsNothing);
+
+    // Cancel the second offer's outstanding expiry timer before teardown.
+    notifier.declineOffer();
+    await drainModalTimers(tester);
+  });
+
+  testWidgets('a live offer survives the system back gesture', (tester) async {
+    await seedOffer(tester, 'r1');
+    stubRide();
+    await pumpSheet(tester);
+    await tester.pump();
+
+    await tester.binding.handlePopRoute();
+    await tester.pumpAndSettle();
+
+    expect(find.byType(OfferSheet), findsOneWidget);
 
     await drainModalTimers(tester);
   });
@@ -202,13 +339,13 @@ void main() {
     await drainModalTimers(tester);
   });
 
-  testWidgets('decline sends WS decline and closes the sheet', (tester) async {
+  testWidgets('Pass sends WS decline and closes the sheet', (tester) async {
     await seedOffer(tester, 'r1');
     stubRide();
     await pumpSheet(tester);
     await tester.pump();
 
-    await tester.tap(find.text('Decline'));
+    await tester.tap(find.text('Pass'));
     await tester.pump();
     await tester.pump(const Duration(milliseconds: 300));
 

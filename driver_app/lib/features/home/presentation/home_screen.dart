@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
 import 'package:ride_hailing_shared/ride_hailing_shared.dart';
+import '../../../core/app_bootstrap.dart';
 import '../../../core/auth/auth_provider.dart';
 import '../../../core/ride/ride_state_notifier.dart';
 import '../../../core/location/location_service.dart';
@@ -56,9 +57,15 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
 
   /// Adopts the server's active ride (if any) so the trip screen can be
   /// entered straight away after a cold start or a crash.
+  ///
+  /// The session bootstrap (`core/app_bootstrap.dart`) owns this restore on
+  /// every entry path now; this stays as the fallback for a Home mount that did
+  /// not run the bootstrap (e.g. a standalone widget test), and skips when the
+  /// bootstrap already attempted it so the endpoint is never polled twice.
   Future<void> _restoreActiveTrip() async {
     if (_restoreTried) return;
     _restoreTried = true;
+    if (ref.read(sessionBootstrapProvider).restoreAttempted) return;
     try {
       final ride = await ref.read(ridesRepositoryProvider).currentRide();
       if (ride == null || !mounted) return;
@@ -99,6 +106,10 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
         showModalBottomSheet(
           context: context,
           isScrollControlled: true,
+          // A live offer must only end on an explicit Accept/Pass (or the
+          // in-sheet Dismiss on expiry) — never a scrim tap or a drag-down.
+          isDismissible: false,
+          enableDrag: false,
           builder: (context) => const OfferSheet(),
         );
       });

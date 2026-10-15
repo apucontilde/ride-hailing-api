@@ -147,6 +147,10 @@ func SetupWithRepos(cfg *config.Config, userRepo repository.UserRepository, ride
 	// Backgrounded push for ride status transitions; the WS path stays
 	// authoritative for a connected client (see RideService.notifyOffline).
 	rideService.SetPushNotifier(pushService)
+	// Server-owned proximity arrival geofence on the geo hot path
+	// (api_plans/[arrival]_proximity_arrival_geofence.md). The nil/zero config
+	// (off) is the documented legacy shape.
+	rideService.SetArrivalGeofence(cfg.Arrival)
 	dispatchService := service.NewDispatchService(rideRepo, geoRepo, userRepo, wsHub, navService)
 	wsHub.SetDispatchHandler(dispatchService)
 
@@ -155,10 +159,10 @@ func SetupWithRepos(cfg *config.Config, userRepo repository.UserRepository, ride
 	authHandler := handler.NewAuthHandler(authService)
 	riderHandler := handler.NewRiderHandler(riderService, userRepo)
 	driverHandler := handler.NewDriverHandlerWithGeo(userRepo, geoRepo)
-	geoHandler := handler.NewGeoHandler(geoRepo, rideRepo, wsHub)
+	geoHandler := handler.NewGeoHandler(geoRepo, rideRepo, wsHub, rideService)
 	rideHandler := handler.NewRideHandler(rideService, dispatchService, rideRepo, cfg.RideMaxStops)
 	platformHandler := handler.NewPlatformHandler(navService, fareService, placesRepo,
-		deviceRepo, feedbackRepo, rideRepo, wsHub, pushService, cfg.PlacesMaxRadiusM, cfg.PlacesDefaultLimit,
+		deviceRepo, feedbackRepo, cfg.PlacesMaxRadiusM, cfg.PlacesDefaultLimit,
 		cfg.RideMaxStops)
 
 	// Middleware
@@ -232,7 +236,6 @@ func SetupWithRepos(cfg *config.Config, userRepo repository.UserRepository, ride
 	driverRides.PUT("/:id/status", rideHandler.AdvanceStatus)
 	driverRides.POST("/:id/cancel", rideHandler.CancelRide)
 	driverRides.POST("/:id/rate", rideHandler.RateRide)
-	driverRides.POST("/:id/notify-arrival", platformHandler.ArrivalNotification)
 
 	// Geo
 	geo := r.Group("/api/v1/geo")

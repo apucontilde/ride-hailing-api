@@ -4,7 +4,10 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:ride_hailing_shared/ride_hailing_shared.dart';
 import '../../../core/auth/auth_provider.dart';
 import '../../../core/api/endpoints.dart';
+import '../../../core/location/location_service.dart';
 import '../../../core/ride/ride_state_notifier.dart';
+import '../../rides/data/rides_repository.dart';
+import '../model/ride_stop.dart';
 
 /// Trip stages, one per server-enforced ride status
 /// (`internal/service/ride.go` `validTransitions`):
@@ -58,6 +61,36 @@ class RouteCache {
   });
 }
 
+/// One ordered waypoint the trip screen renders and routes toward: the pickup,
+/// any intermediate stops, then the destination.
+class TripWaypoint {
+  final double lat;
+  final double lng;
+  final String address;
+  final bool isPickup;
+  final bool isDestination;
+
+  const TripWaypoint({
+    required this.lat,
+    required this.lng,
+    required this.address,
+    this.isPickup = false,
+    this.isDestination = false,
+  });
+
+  @override
+  bool operator ==(Object other) =>
+      other is TripWaypoint &&
+      other.lat == lat &&
+      other.lng == lng &&
+      other.address == address &&
+      other.isPickup == isPickup &&
+      other.isDestination == isDestination;
+
+  @override
+  int get hashCode => Object.hash(lat, lng, address, isPickup, isDestination);
+}
+
 class TripState {
   final TripStage stage;
   final Ride? currentRide;
@@ -65,12 +98,18 @@ class TripState {
   final String? routeError;
   final RouteCache? route;
 
+  /// The sibling `stops` itinerary from `GET /driver/rides/:id` (ordered by
+  /// `sequence`, pickup excluded, destination last). Empty until loaded and for
+  /// a pre-multi-stop ride.
+  final List<RideStop> stops;
+
   const TripState({
     this.stage = TripStage.pre,
     this.currentRide,
     this.cancelledBy,
     this.routeError,
     this.route,
+    this.stops = const [],
   });
 
   /// The server only allows cancelling from `pending`, `accepted` and
@@ -92,6 +131,7 @@ class TripState {
     bool clearRouteError = false,
     String? routeError,
     RouteCache? route,
+    List<RideStop>? stops,
   }) {
     return TripState(
       stage: stage ?? this.stage,
@@ -99,6 +139,7 @@ class TripState {
       cancelledBy: cancelledBy ?? this.cancelledBy,
       routeError: clearRouteError ? null : routeError ?? this.routeError,
       route: route ?? this.route,
+      stops: stops ?? this.stops,
     );
   }
 }
@@ -108,6 +149,11 @@ class TripNotifier extends StateNotifier<TripState> {
   /// requested at before a fresh road route is worth fetching.
   static const double refetchThresholdM = 200;
 
+  /// Default radius within which an intermediate stop counts as reached, so the
+  /// next waypoint advances. Overridable in tests via
+  /// [nextStopArrivalRadiusProvider].
+  static const double defaultNextStopArrivalRadiusM = 120;
+
   final Ref _ref;
 
   /// Keyed by destination (`toLat,toLng`): the origin is the driver's own
@@ -115,6 +161,11 @@ class TripNotifier extends StateNotifier<TripState> {
   /// map on every GPS fix.
   final Map<String, RouteCache> _routeCache = {};
   bool _routeInFlight = false;
+
+  /// The ride id whose `stops` have been loaded (or attempted), so the sibling
+  /// itinerary is fetched once per journey.
+  String? _loadedStopsForRideId;
+  bool _stopsInFlight = false;
 
   TripNotifier(this._ref) : super(const TripState()) {
     // Seed from the ride already held — `ref.listen` only fires on *later*
@@ -146,17 +197,122 @@ class TripNotifier extends StateNotifier<TripState> {
       }
       return;
     }
-    // A different ride is a different journey: the cached route belonged to
-    // the previous trip's destination.
-    if (state.currentRide?.id != ride.id) {
+    // A different ride is a different journey: the cached route and the
+    // itinerary belonged to the previous trip.
+    final rideChanged = state.currentRide?.id != ride.id;
+    if (rideChanged) {
       _routeCache.clear();
+      _loadedStopsForRideId = null;
     }
     final stage = _stageFromStatus(ride.status);
     state = state.copyWith(
       stage: stage,
       currentRide: ride,
       cancelledBy: ride.cancelledBy,
+      // Drop the previous trip's itinerary immediately; `_ensureStopsLoaded`
+      // repopulates it for the new ride.
+      stops: rideChanged ? const [] : null,
     );
+    _ensureStopsLoaded(ride);
+  }
+
+  /// Loads the sibling `stops` once per ride id. Non-fatal: a failure leaves
+  /// [TripState.stops] empty and the map/drawer still degrade to the ride's own
+  /// pickup/dropoff.
+  Future<void> _ensureStopsLoaded(Ride ride) async {
+    if (ride.id.isEmpty) return;
+    if (_loadedStopsForRideId == ride.id || _stopsInFlight) return;
+    _stopsInFlight = true;
+    try {
+      final itinerary =
+          await _ref.read(ridesRepositoryProvider).fetchRideItinerary(ride.id);
+      // The ride may have changed while the request was in flight.
+      if (state.currentRide?.id != ride.id) return;
+      _loadedStopsForRideId = ride.id;
+      state = state.copyWith(stops: itinerary.stops);
+    } catch (_) {
+      // Non-fatal: the map still draws pickup/dropoff from the held ride.
+      _loadedStopsForRideId = ride.id;
+    } finally {
+      _stopsInFlight = false;
+    }
+  }
+
+  /// The ordered waypoints of the trip: pickup, the intermediate stops, then the
+  /// destination. The destination always comes from the held ride's own
+  /// `dropoff_*`, so a destination-only `ride.updated` moves it without a stop
+  /// refetch.
+  List<TripWaypoint> waypointsFor(Ride ride) {
+    final points = <TripWaypoint>[];
+    final pickupLat = ride.pickupLat;
+    final pickupLng = ride.pickupLng;
+    if (pickupLat != null && pickupLng != null) {
+      points.add(TripWaypoint(
+        lat: pickupLat,
+        lng: pickupLng,
+        address: ride.pickupAddress ?? 'Pickup',
+        isPickup: true,
+      ));
+    }
+    for (final stop in state.stops) {
+      // The destination row is replaced by the live dropoff below.
+      if (stop.isDestination) continue;
+      points.add(TripWaypoint(
+        lat: stop.lat,
+        lng: stop.lng,
+        address: stop.address.isEmpty ? 'Stop' : stop.address,
+      ));
+    }
+    final dropoffLat = ride.dropoffLat;
+    final dropoffLng = ride.dropoffLng;
+    if (dropoffLat != null && dropoffLng != null) {
+      points.add(TripWaypoint(
+        lat: dropoffLat,
+        lng: dropoffLng,
+        address: ride.dropoffAddress ?? 'Destination',
+        isDestination: true,
+      ));
+    }
+    return points;
+  }
+
+  /// The immediate next waypoint the driver is heading toward at [stage], or
+  /// `null` when the trip is over. On `driving`, the first waypoint farther than
+  /// [nextStopArrivalRadiusProvider] from the last fix, with the destination
+  /// always last. The server exposes no per-stop completion signal, so this is a
+  /// documented local heuristic.
+  TripWaypoint? nextWaypoint(TripStage stage, Ride ride) {
+    switch (stage) {
+      case TripStage.pre:
+      case TripStage.enrouteToPickup:
+      case TripStage.arrived:
+        final lat = ride.pickupLat;
+        final lng = ride.pickupLng;
+        if (lat == null || lng == null) return null;
+        return TripWaypoint(
+          lat: lat,
+          lng: lng,
+          address: ride.pickupAddress ?? 'Pickup',
+          isPickup: true,
+        );
+      case TripStage.driving:
+        final points =
+            waypointsFor(ride).where((point) => !point.isPickup).toList();
+        if (points.isEmpty) return null;
+        final position = _ref.read(lastPositionProvider);
+        if (position == null) return points.first;
+        final radius = _ref.read(nextStopArrivalRadiusProvider);
+        for (final point in points) {
+          if (_distanceM(position.lat, position.lng, point.lat, point.lng) >
+              radius) {
+            return point;
+          }
+        }
+        return points.last;
+      case TripStage.post:
+      case TripStage.cancelled:
+        return null;
+    }
   }
 
   /// Advance the trip one step through the server-enforced state machine.
@@ -168,7 +324,10 @@ class TripNotifier extends StateNotifier<TripState> {
     final ride = state.currentRide;
     if (ride == null || ride.id.isEmpty) return;
     final nextStatus = switch (state.stage) {
-      TripStage.enrouteToPickup => 'driver_arrived',
+      // Arrival is server-owned (`api_plans/[arrival]_proximity_arrival_geofence.md`):
+      // the geofence advances accepted -> driver_arrived and broadcasts
+      // `ride.updated`, so the driver never sends `driver_arrived` itself.
+      TripStage.enrouteToPickup => null,
       TripStage.arrived => 'in_progress',
       TripStage.driving => 'completed',
       // `pending` has no driver-side transition (the server allows
@@ -315,3 +474,9 @@ class TripNotifier extends StateNotifier<TripState> {
 final tripNotifierProvider = StateNotifierProvider<TripNotifier, TripState>((ref) {
   return TripNotifier(ref);
 });
+
+/// Radius within which an intermediate stop is considered reached, so the
+/// "next waypoint" advances. Overridable in tests; the server has no per-stop
+/// completion signal yet (`driver_app_plans/[ontrip]_itinerary_next_stop.md`).
+final nextStopArrivalRadiusProvider =
+    Provider<double>((ref) => TripNotifier.defaultNextStopArrivalRadiusM);

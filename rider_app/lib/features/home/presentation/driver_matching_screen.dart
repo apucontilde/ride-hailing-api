@@ -63,6 +63,9 @@ class _DriverMatchingScreenState extends ConsumerState<DriverMatchingScreen>
     if (_navigating) return;
     _navigating = true;
     markTripReturn(ref, restorePickup: true);
+    // Drop the poll's active status so the router's restore redirect cannot
+    // bounce the rider back to the matching screen after they leave it.
+    ref.read(currentRideProvider.notifier).reset();
     context.go('/home');
   }
 
