@@ -1,5 +1,4 @@
 import 'package:ride_hailing_shared/ride_hailing_shared.dart';
-import '../../config.dart';
 
 /// The driver's sidebar destinations — the only navigation data the driver owns.
 ///
@@ -14,14 +13,17 @@ import '../../config.dart';
 /// earnings are a driver-only concept. Both apps' suites assert their own exact
 /// string, so the divergence stays deliberate and greppable.
 ///
-/// [includeVehicle] is a parameter rather than a hardcoded `if` so the gated case
-/// is testable without fighting a `const`: `ApiConfig.vehicleFeatureEnabled` is
-/// `false` while `GET/PUT /driver/me/vehicle` and the documents endpoints are
-/// STUBs, and a sidebar row that opens a "coming soon" screen is worse than no
-/// row at all. When the vehicle backend lands, flip the flag and the row appears
-/// in both the sidebar and the profile card with no other change.
+/// [includeVehicle] defaults to `true`: the vehicle row is **unconditional**
+/// (driver bug #6) — both surfaces that read this list, the drawer
+/// (`DriverShell`) and the profile card, link to `/vehicle`, so the section is
+/// no longer deep-link-only. What stays gated is the *screen's* details/save
+/// half: `ApiConfig.vehicleFeatureEnabled` (still `false` while `GET/PUT
+/// /driver/me/vehicle` and `GET/POST /driver/me/documents` are backend stubs)
+/// picks `_ComingSoon` over `_VehicleDetails` inside `VehicleScreen`, so the nav
+/// entry never grows a saving UI on a stub. The parameter keeps its `true`
+/// default solely so the omitted-row case stays unit-testable.
 List<AppNavItem> buildDriverNavItems({
-  bool includeVehicle = ApiConfig.vehicleFeatureEnabled,
+  bool includeVehicle = true,
 }) {
   return [
     AppNavItem(

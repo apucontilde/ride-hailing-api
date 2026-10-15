@@ -4,7 +4,9 @@ class ApiConfig {
     defaultValue: 'http://localhost:8080',
   );
 
-  /// Feature gate for vehicle & documents. The backend endpoints
+  /// Feature gate for the vehicle & documents **details/save surface** — it is
+  /// deliberately NOT a nav gate: the drawer/profile-card row to `/vehicle` is
+  /// unconditional (see `buildDriverNavItems`). The backend endpoints
   /// `GET/PUT /driver/me/vehicle` and `GET/POST /driver/me/documents` are
   /// STUBs, so the app must not build a saving surface on them. When `false`
   /// the vehicle & documents screen shows a "coming soon" empty state. Flip to

@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"math"
 	"sync"
 	"time"
 
@@ -28,6 +29,15 @@ type RideService struct {
 	fareService *FareService
 	push        PushNotifier
 
+	// Earnings ledger (api_plans/[payout]_driver_earnings_and_withdraw.md).
+	// A completed ride credits the driver's ledger ONCE, net of the payout
+	// commission. Unlike ride_events this is NOT best-effort: a failed credit
+	// fails the completion request with a 5xx (a failed money write never
+	// answers success). nil disables the credit (legacy wiring / db-less
+	// harnesses that do not inject the ledger).
+	earnings             repository.EarningsRepository
+	payoutCommissionRate float64
+
 	// Proximity arrival geofence (api_plans/[arrival]_proximity_arrival_geofence.md).
 	// arrival is the config; the zero value (Enabled=false) is "off". The nearby
 	// map is process-local and mutex-guarded (plan §3 D9): stage 1 is single-pod,
@@ -47,6 +57,17 @@ func NewRideService(rideRepo repository.RideRepository, userRepo repository.User
 // compiling; a nil notifier is the documented "no push" mode.
 func (s *RideService) SetPushNotifier(n PushNotifier) {
 	s.push = n
+}
+
+// SetEarnings installs the driver earnings ledger and the payout commission
+// rate (api_plans/[payout]). Separate from the constructor for the same
+// reason as SetPushNotifier; a nil repository documents "no ledger" and the
+// completion credit is skipped. commissionRate is config
+// PAYOUT_COMMISSION_RATE, already parsed fail-closed to [0, 1] by
+// config.Load.
+func (s *RideService) SetEarnings(repo repository.EarningsRepository, commissionRate float64) {
+	s.earnings = repo
+	s.payoutCommissionRate = commissionRate
 }
 
 // notifyOffline fires a push for userID only when they have no live WebSocket.
@@ -108,6 +129,15 @@ var validTransitions = map[string][]string{
 // A state conflict the caller can act on (pick a different ride), so the
 // handler maps it to 409 CONFLICT — NOT a 4xx for an outage.
 var ErrDestinationLocked = errors.New("ride destination cannot be changed in current status")
+
+// ErrInvalidTransition: the state machine rejects the requested edge (e.g.
+// completed → completed). It is the ONE client-actionable failure of
+// AdvanceStatus, so the handler keeps answering it 400; everything else the
+// service returns — including a failed earnings credit — is an outage and
+// must answer 5xx, never a misleading 400 (api_plans/STATUS.md Invariants:
+// a genuine outage is 5xx, never 4xx; a failed money write never answers
+// success).
+var ErrInvalidTransition = errors.New("invalid ride status transition")
 
 // ErrNotRideRider: the ride exists but belongs to somebody else. Modelled as
 // its own sentinel so the handler can report it without inventing a third
@@ -408,7 +438,7 @@ func (s *RideService) AdvanceStatus(rideID, newStatus, actor string) (*model.Rid
 
 	allowed := validTransitions[ride.Status]
 	if !contains(allowed, newStatus) {
-		return nil, fmt.Errorf("cannot transition from %s to %s", ride.Status, newStatus)
+		return nil, fmt.Errorf("%w: cannot transition from %s to %s", ErrInvalidTransition, ride.Status, newStatus)
 	}
 
 	now := time.Now()
@@ -435,6 +465,11 @@ func (s *RideService) AdvanceStatus(rideID, newStatus, actor string) (*model.Rid
 			Timestamp: time.Now(),
 		},
 	}
+	// creditErr carries a failed completion credit past the broadcast/push
+	// below so the request can answer 5xx AFTER clients learned the committed
+	// status (see the credit block for the full rationale). It is only ever
+	// set on the completed transition.
+	var creditErr error
 	if newStatus == "completed" {
 		// Actuals (migration 021, api_plans/[tracking]_actual_trip_distance.md).
 		// Duration is derived from the status timestamps; driven distance is
@@ -510,6 +545,33 @@ func (s *RideService) AdvanceStatus(rideID, newStatus, actor string) (*model.Rid
 			ride.QuotedGradeUpliftPct = bookedGradeUplift
 		}
 
+		// Credit the driver's earnings ledger (api_plans/[payout]_
+		// driver_earnings_and_withdraw.md). amount_cents is integer cents,
+		// net of PAYOUT_COMMISSION_RATE — the float fare is converted ONCE,
+		// here. The partial unique index on ride_id makes the credit
+		// exactly-once; CreditRideEarning treats a duplicate as a no-op.
+		//
+		// This is deliberately NOT best-effort like ride_events: a failed
+		// money write must never answer success, so the error is captured
+		// below and the completion request answers 5xx. But the status row
+		// is ALREADY committed and is a fact: the ride.updated broadcast and
+		// the offline pushes still run before the error is returned, so both
+		// clients learn about the committed completion even when the credit
+		// fails (otherwise the driver app's advance() would wait forever for
+		// a broadcast that never comes — the first committed-status path in
+		// the codebase that would skip it). The state machine rejects
+		// completed→completed, so an ops retry is a ledger `adjustment`,
+		// never a second credit.
+		if s.earnings != nil && ride.DriverID != nil {
+			creditCents := int64(math.Round(ride.TotalFare * (1 - s.payoutCommissionRate) * 100))
+			if creditCents > 0 {
+				if cerr := s.earnings.CreditRideEarning(*ride.DriverID, rideID, creditCents); cerr != nil {
+					creditErr = fmt.Errorf("failed to credit driver earning: %w", cerr)
+					log.Printf("ride %s: completed but earnings credit failed (clients are still notified; settle via a ledger adjustment): %v", rideID, cerr)
+				}
+			}
+		}
+
 		fare := &websocket.FareInfo{
 			BaseFare:        ride.BaseFare,
 			DistanceFare:    ride.DistanceFare,
@@ -551,6 +613,14 @@ func (s *RideService) AdvanceStatus(rideID, newStatus, actor string) (*model.Rid
 	s.notifyOffline(ride.RiderID, pushMessageForStatus(newStatus, rideID))
 	if ride.DriverID != nil {
 		s.notifyOffline(*ride.DriverID, pushMessageForStatus(newStatus, rideID))
+	}
+
+	// The credit failure is reported LAST: the committed status was already
+	// broadcast and pushed above, and the request still answers 5xx so the
+	// failure is never mistaken for success (api_plans/STATUS.md [payout]
+	// invariant: a failed write never answers success).
+	if creditErr != nil {
+		return nil, creditErr
 	}
 
 	return ride, nil

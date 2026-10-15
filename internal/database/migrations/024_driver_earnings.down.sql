@@ -1,0 +1,10 @@
+-- 024_driver_earnings.down.sql
+--
+-- Documentation only: the migration runner executes *.up.sql exclusively
+-- (internal/database/migrate.go; api_plans/STATUS.md Invariants — migrations
+-- are append-only). To drop the ledger by hand, reverse the dependency order:
+--
+-- DROP INDEX IF EXISTS idx_driver_earnings_withdrawal_key;
+-- DROP INDEX IF EXISTS idx_driver_earnings_ride_earning;
+-- DROP INDEX IF EXISTS idx_driver_earnings_driver;
+-- DROP TABLE IF EXISTS driver_earnings;

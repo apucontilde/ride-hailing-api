@@ -24,6 +24,21 @@ status: open
 > landed capability, not an open plan it must extend. The scope below (foreground service, persistent
 > notification, Play Store declaration, battery/lifecycle design) is unchanged; the "Decisions to
 > surface" section still records the mechanism choices to settle at implementation time.
+>
+> **IMPLEMENTATION STATUS (2026-10-15, WIP — NOT LANDED).** The driver-side mechanics are implemented
+> in-tree against decision #2's **first choice** (the `geolocator` `foregroundNotificationConfig`):
+> the driver-local stream factory `driver_app/lib/core/location/driver_location_stream.dart`, the
+> availability-driven `LocationService.setForegroundTracking` + `onResumed` hook, the app-level
+> `WidgetsBindingObserver` (`driver_app/lib/core/location/app_lifecycle_notifier.dart`,
+> `driver_app/lib/app.dart`), the coupled permissions in the main manifest, and the first-run notice
+> with an `openAppSettings()` deep-link. `melos run analyze` is clean and `melos run test` is green
+> (driver 408, shared 205 +1 skipped, rider 452). **This does NOT close bug #18:** every Android
+> on-device behavior below is UNVERIFIABLE in this WSL harness, so the row stays OPEN/WIP pending the
+> closing commands in §Verification and `antagonistic-reviewer`. The durable background-isolate
+> fallback (decision #2) and the Play Store declaration (decision #1) remain open. Also open:
+> `POST_NOTIFICATIONS` is **declared but not requested at runtime** (no permission plugin was added —
+> `geolocator` only requests location), so the notice's "Open settings" deep-link is the grant path; the
+> service still runs without it, but the notification is hidden. A programmatic prompt is a follow-up.
 
 ## Goal
 
@@ -178,20 +193,48 @@ Add to `driver_app/android/app/src/main/AndroidManifest.xml`:
 
 ## Verification
 
+**On-host (this WSL harness — run and report):**
 ```bash
 export PATH=~/fvm/default/bin:$HOME/.pub-cache/bin:$PATH   # Linux FVM SDK + Melos 8
-melos run analyze
-melos run test
+melos run analyze     # driver/shared/rider clean
+melos run test        # driver 408, shared 205 (+1 skipped), rider 452 — all passed
+```
+Manifest correctness is verifiable by inspection only (no emulator/Gradle in WSL).
+
+**UNVERIFIABLE in this WSL tree — the exact on-host closing commands (run on an Android host).**
+These are the commands the human runs to finish verification; nothing here is claimed as verified
+until they pass:
+
+```bash
+# 1. Build a debug APK (works without a device) and confirm the merged manifest.
+flutter build apk --debug
+# The merged manifest is under build/app/intermediates/merged_manifests/debug/AndroidManifest.xml:
+#   - ACCESS_BACKGROUND_LOCATION, FOREGROUND_SERVICE, FOREGROUND_SERVICE_LOCATION, POST_NOTIFICATIONS
+#   - <service android:name="com.baseflow.geolocator.GeolocatorLocationService"
+#              android:foregroundServiceType="location"/> (contributed by geolocator_android)
+# Inspect the merged (text) manifest directly:
+#   cat build/app/intermediates/merged_manifests/debug/AndroidManifest.xml
+
+# 2. Install + observe the live behavior on a connected device/emulator.
+flutter devices
+flutter run -d <device-id>
+# In-app manual steps:
+#   a. Log in, tap the online switch. The first-run notice appears -> "Open settings",
+#      set Location to "Allow all the time" (and allow notifications on Android 13+).
+#   b. Confirm the ongoing "You're online / Sharing your location with dispatch" notification.
+#   c. Background the app / lock the screen for >60 s.
+#   d. On the server, confirm PUT /api/v1/driver/location keeps arriving (row younger than 30 s).
+#   e. Confirm a ride offer is still delivered while backgrounded.
+#   f. Toggle offline in the app; confirm the notification is gone and fixes stop.
+
+# 3. Simulate the lifecycle transitions from adb (alternative to physically locking):
+adb shell input keyevent KEYCODE_HOME        # background
+adb shell dumpsys activity services com.example.driver_app   # service + notification live
+adb shell input keyevent KEYCODE_WAKEUP      # resume; the app re-publishes a fix on resume
+adb shell dumpsys notification --noredact | grep -A2 "You're online"
 ```
 
-- `melos run analyze` / `melos run test` over `shared/` + `driver_app/` must be green (Linux FVM SDK).
-- **UNVERIFIABLE in this WSL tree:** the Android foreground service and background behavior. On an
-  Android host, close with:
-  - `flutter build apk --release` and inspect the **merged** manifest for `ACCESS_BACKGROUND_LOCATION`,
-    `FOREGROUND_SERVICE`, `FOREGROUND_SERVICE_LOCATION`, and a
-    `android:foregroundServiceType="location"` service;
-  - install, go online, grant "Allow all the time", background/lock the phone, and confirm
-    `PUT /driver/me/location` keeps receiving fixes and the ongoing notification is visible;
-  - confirm the driver is still offered a ride while backgrounded;
-  - confirm the service stops (notification gone, fixes stop) when the driver goes offline;
-  - confirm Play's background-location declaration prerequisites are recorded before release.
+- Only after the above pass may bug #18 be marked resolved. Play Console: record the
+  background-location **declaration + justification** and the review-approval step before release.
+- The Android foreground service itself is not Dart-testable; the pure-Dart seam
+  (`shouldUseForegroundService`, `AppLifecycleNotifier`, `setForegroundTracking`) is unit-tested on-host.

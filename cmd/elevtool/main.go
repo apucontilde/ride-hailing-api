@@ -21,6 +21,8 @@ import (
 
 	"github.com/jmoiron/sqlx"
 	_ "github.com/lib/pq" // the postgres driver
+
+	"ride-hailing-api/internal/config"
 )
 
 const skadiBaseURL = "https://elevation-tiles-prod.s3.amazonaws.com/skadi"
@@ -46,21 +48,43 @@ func main() {
 	}
 }
 
+// elevFlags holds elevtool's command-line flags. They are registered by
+// registerFlags so a test can pin the defaults on a fresh FlagSet without
+// touching the global flag.CommandLine — most importantly that -min-coverage's
+// default is the ONE shared config.DefaultElevationMinCoverage, the same
+// constant the runtime ROUTING_ELEV_MIN_COVERAGE gate defaults to (api_plans
+// bug #24: the two gates used to drift, 0.98 ingest vs 0.99 runtime).
+type elevFlags struct {
+	databaseURL *string
+	demDir      *string
+	source      *string
+	fetch       *bool
+	dryRun      *bool
+	region      *string
+	minCoverage *float64
+}
+
+func registerFlags(fs *flag.FlagSet) elevFlags {
+	var f elevFlags
+	f.databaseURL = fs.String("database-url", envDatabaseURL(), "Postgres connection URL")
+	f.demDir = fs.String("dem-dir", "data/dem", "directory to cache downloaded .hgt.gz tiles")
+	f.source = fs.String("source", "skadi", "DEM source tag (recorded as elevation_source prefix)")
+	f.fetch = fs.Bool("fetch", false, "download missing tiles over HTTPS")
+	f.dryRun = fs.Bool("dry-run", false, "print the work set and coverage, do not write")
+	f.region = fs.String("region", "", "scope to one routing_regions row (region_id column required)")
+	f.minCoverage = fs.Float64("min-coverage", config.DefaultElevationMinCoverage, "minimum matched fraction; exit non-zero below it")
+	return f
+}
+
 func run() error {
-	databaseURL := flag.String("database-url", envDatabaseURL(), "Postgres connection URL")
-	demDir := flag.String("dem-dir", "data/dem", "directory to cache downloaded .hgt.gz tiles")
-	source := flag.String("source", "skadi", "DEM source tag (recorded as elevation_source prefix)")
-	fetch := flag.Bool("fetch", false, "download missing tiles over HTTPS")
-	dryRun := flag.Bool("dry-run", false, "print the work set and coverage, do not write")
-	region := flag.String("region", "", "scope to one routing_regions row (region_id column required)")
-	minCoverage := flag.Float64("min-coverage", 0.98, "minimum matched fraction; exit non-zero below it")
+	f := registerFlags(flag.CommandLine)
 	flag.Parse()
 
-	if *databaseURL == "" {
+	if *f.databaseURL == "" {
 		return fmt.Errorf("no database URL: pass -database-url or set DB_HOST/DB_PORT/DB_USER/DB_PASSWORD/DB_NAME")
 	}
 
-	db, err := sqlx.Open("postgres", *databaseURL)
+	db, err := sqlx.Open("postgres", *f.databaseURL)
 	if err != nil {
 		return fmt.Errorf("open database: %w", err)
 	}
@@ -74,13 +98,13 @@ func run() error {
 	if err != nil {
 		return fmt.Errorf("probe schema: %w", err)
 	}
-	if *region != "" && !probe.regionID {
+	if *f.region != "" && !probe.regionID {
 		return fmt.Errorf("-region was passed but road_network_vertices_pgr has no region_id column; " +
 			"refusing to silently sample every region and overwrite (apply the region migration first)")
 	}
 
 	// Determine the work set from the vertices themselves.
-	verts, err := loadVertices(db, probe, *region)
+	verts, err := loadVertices(db, probe, *f.region)
 	if err != nil {
 		return fmt.Errorf("load vertices: %w", err)
 	}
@@ -99,7 +123,7 @@ func run() error {
 	// Load (or fetch) each tile.
 	loaded := make(map[string]*Tile, len(tileNames))
 	for _, name := range tileNames {
-		b, err := loadTile(*demDir, name, *fetch)
+		b, err := loadTile(*f.demDir, name, *f.fetch)
 		if err != nil {
 			// A tile that 404s is reported, not fatal; its vertices stay NULL.
 			log.Printf("WARNING: tile %s not loaded: %v", name, err)
@@ -128,7 +152,7 @@ func run() error {
 			unmatched++
 			continue
 		}
-		matched = append(matched, sample{id: v.ID, ele: ele, source: *source + ":" + name})
+		matched = append(matched, sample{id: v.ID, ele: ele, source: *f.source + ":" + name})
 	}
 
 	frac := 0.0
@@ -141,16 +165,16 @@ func run() error {
 		reportRange(matched)
 	}
 
-	if *dryRun {
+	if *f.dryRun {
 		log.Printf("dry-run: not writing")
-		if frac < *minCoverage {
-			return fmt.Errorf("coverage %.4f below -min-coverage %.4f; aborting", frac, *minCoverage)
+		if frac < *f.minCoverage {
+			return fmt.Errorf("coverage %.4f below -min-coverage %.4f; aborting", frac, *f.minCoverage)
 		}
 		return nil
 	}
 
-	if frac < *minCoverage {
-		return fmt.Errorf("matched fraction %.4f below -min-coverage %.4f; aborting (a broken DEM must not half-apply)", frac, *minCoverage)
+	if frac < *f.minCoverage {
+		return fmt.Errorf("matched fraction %.4f below -min-coverage %.4f; aborting (a broken DEM must not half-apply)", frac, *f.minCoverage)
 	}
 	if len(matched) == 0 {
 		return fmt.Errorf("nothing matched; refusing to write an empty elevation backfill")

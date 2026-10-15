@@ -2,6 +2,22 @@
     <uses-permission android:name="android.permission.INTERNET"/>
     <uses-permission android:name="android.permission.ACCESS_FINE_LOCATION"/>
     <uses-permission android:name="android.permission.ACCESS_COARSE_LOCATION"/>
+    <!-- Background screen-off tracking (bug #18, owned by
+         driver_app_plans/[location]_background_tracking.md). ACCESS_BACKGROUND_LOCATION
+         is the coupled permission for the ongoing location foreground service;
+         FOREGROUND_SERVICE + FOREGROUND_SERVICE_LOCATION are required on Android 14+.
+         The foreground service element itself is contributed by the geolocator
+         plugin manifest (com.baseflow.geolocator.GeolocatorLocationService,
+         android:foregroundServiceType="location"). POST_NOTIFICATIONS is declared for
+         the persistent notification on Android 13+; no plugin here requests it at
+         runtime, so the driver grants it via the first-run notice's "Open settings"
+         deep-link (without it the service still runs but the notification is hidden).
+         WAKE_LOCK is intentionally NOT requested: the foreground notification config
+         keeps enableWakeLock=false. -->
+    <uses-permission android:name="android.permission.ACCESS_BACKGROUND_LOCATION"/>
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE"/>
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_LOCATION"/>
+    <uses-permission android:name="android.permission.POST_NOTIFICATIONS"/>
     <uses-feature android:name="android.hardware.location.gps" android:required="true"/>
     <application
         android:label="driver_app"

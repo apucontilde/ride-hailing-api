@@ -161,9 +161,81 @@ Update status:
 | POST | `/api/v1/driver/me/documents` | Yes, role driver | Stub |
 | GET | `/api/v1/driver/me/vehicle` | Yes, role driver | Stub |
 | PUT | `/api/v1/driver/me/vehicle` | Yes, role driver | Stub |
-| GET | `/api/v1/driver/me/earnings` | Yes, role driver | Stub |
+| GET | `/api/v1/driver/me/earnings` | Yes, role driver | Ledger summary in cents (see `## Driver Earnings`) |
 | GET | `/api/v1/driver/ratings` | Yes, role driver | Paginated ratings the driver submitted |
-| POST | `/api/v1/driver/earnings/withdraw` | Yes, role driver | Stub |
+| POST | `/api/v1/driver/earnings/withdraw` | Yes, role driver | Records a pending withdrawal debit in cents (see `## Driver Earnings`) |
+
+## Driver Earnings
+
+Two endpoints over the driver earnings ledger (a completed ride credits the
+driver's ledger once, net of the payout commission — see the final-charge note
+below). Two rules shape every field here:
+
+- **All money fields are integer cents** (`*_cents`): `1250` = 12.50. This is
+  the documented exception to the ride JSON's major-units rule — convert once
+  at render time (`cents / 100.0`).
+- **The ledger IS the wallet**: there is no balance column. `available` is
+  computed from the rows themselves, so credit and debit cannot drift apart.
+
+### `GET /api/v1/driver/me/earnings`
+
+Returns the summary; a driver with no earnings gets a zeroed `200`, never a
+`404`. Month buckets are `YYYY-MM` in **UTC**, newest first.
+
+```json
+{
+  "earnings": {
+    "available_cents": 4500,
+    "pending_cents": 0,
+    "withdrawn_cents": 3000,
+    "lifetime_cents": 10000,
+    "currency": "USD",
+    "month_total_cents": 4500,
+    "month_trips": 3,
+    "completed_trips": 4,
+    "months": [{ "month": "2026-09", "total_cents": 4500, "trips": 3 }]
+  }
+}
+```
+
+- `available_cents` — withdrawable now: available credits plus every counted
+  withdrawal debit (pending **and** paid, which are negative). Only a `failed`
+  or `reversed` withdrawal restores the balance.
+- `pending_cents` — credits not yet finalized (empty until tip/adjustment
+  flows exist).
+- `withdrawn_cents` — total already withdrawn (pending + paid).
+- `lifetime_cents` / `month_total_cents` — gross credits (a withdrawal never
+  reduces lifetime earnings).
+
+### `POST /api/v1/driver/earnings/withdraw`
+
+Header `Idempotency-Key` is recommended: replaying the same key returns the
+first withdrawal instead of debiting twice (the ledger enforces this even if
+the replay middleware is bypassed).
+
+```json
+{ "amount_cents": 2000 }
+```
+
+```json
+{
+  "withdrawal": {
+    "id": "...", "kind": "withdrawal", "amount_cents": -2000,
+    "status": "pending", "currency": "USD", "created_at": "..."
+  },
+  "earnings": { "available_cents": 2500, "withdrawn_cents": 2000, "...": "..." }
+}
+```
+
+- A withdrawal is a **recorded ledger debit, not a bank transfer** — no
+  external payout provider is wired; a later ops/provider step moves
+  `pending` → `paid`. The amount is a NEGATIVE debit on the ledger.
+- Success `200`; malformed body `400`; `amount_cents` missing, `<= 0`, or
+  below the configured minimum (`PAYOUT_MIN_WITHDRAW_CENTS`, default 500)
+  → `422 VALIDATION_ERROR`; more than the available balance → `409 CONFLICT`
+  with message `insufficient balance`; a failed write → `500 INTERNAL` (a
+  failed money write never answers success).
+
 
 ## Driver Ride Endpoints
 
@@ -400,6 +472,11 @@ actual below charges less.
 - **Idempotency:** completion is once-only (the status machine rejects
   `completed -> completed`) and the finalization UPDATE is guarded, so retrying a
   completion never moves a finalized fare.
+- **Driver earnings credit:** after the final fare is persisted, the driver's
+  earnings ledger is credited **once** with the final total converted to integer
+  cents and net of the payout commission (`PAYOUT_COMMISSION_RATE`, default 0).
+  If that credit fails the completion answers `500` — a failed money write never
+  answers success (see `## Driver Earnings`).
 
 ### Submitted ratings
 

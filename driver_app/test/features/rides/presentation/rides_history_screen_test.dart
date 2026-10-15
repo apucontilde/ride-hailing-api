@@ -6,6 +6,9 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:mocktail/mocktail.dart';
 import 'package:ride_hailing_shared/ride_hailing_shared.dart';
 
+import 'package:driver_app/features/payout/data/payout_repository.dart';
+import 'package:driver_app/features/payout/model/driver_earnings.dart';
+import 'package:driver_app/features/payout/providers/payout_providers.dart';
 import 'package:driver_app/features/rides/data/rides_repository.dart';
 import 'package:driver_app/features/rides/presentation/rate_sheet.dart';
 import 'package:driver_app/features/rides/data/rated_rides_provider.dart';
@@ -13,6 +16,8 @@ import 'package:driver_app/features/rides/presentation/rides_history_screen.dart
 import 'package:driver_app/features/rides/providers/history_provider.dart';
 
 class MockRidesRepository extends Mock implements RidesRepository {}
+
+class MockPayoutRepository extends Mock implements PayoutRepository {}
 
 /// The earnings card compares against the *real* current month, so the fixtures
 /// are anchored to "now" rather than to a hard-coded date that would quietly
@@ -106,8 +111,36 @@ DriverRatingPage ratingsPage(List<String> rideIds) {
   );
 }
 
+/// A server earnings summary for the card. Defaults are the honest empty
+/// ledger: zero everywhere and no currency (so amounts render bare rather than
+/// a fabricated `$`).
+DriverEarningsSummary earningsSummary({
+  int availableCents = 0,
+  int pendingCents = 0,
+  int withdrawnCents = 0,
+  int lifetimeCents = 0,
+  String? currency,
+  int monthTotalCents = 0,
+  int monthTrips = 0,
+  int completedTrips = 0,
+  List<DriverEarningsMonth> months = const [],
+}) {
+  return DriverEarningsSummary(
+    availableCents: availableCents,
+    pendingCents: pendingCents,
+    withdrawnCents: withdrawnCents,
+    lifetimeCents: lifetimeCents,
+    currency: currency,
+    monthTotalCents: monthTotalCents,
+    monthTrips: monthTrips,
+    completedTrips: completedTrips,
+    months: months,
+  );
+}
+
 void main() {
   late MockRidesRepository repo;
+  late MockPayoutRepository payout;
 
   /// [rides] become page 1; [next] becomes page 2.
   void stubHistory(List<Ride> rides, {List<Ride>? next, int total = 0}) {
@@ -147,8 +180,22 @@ void main() {
     return gate;
   }
 
+  /// Stubs the ledger the earnings card reads. Defaults to the empty summary.
+  void stubEarnings(DriverEarningsSummary summary) {
+    when(() => payout.fetchEarnings()).thenAnswer((_) async => summary);
+  }
+
+  /// Holds the earnings request open, so the in-flight window is observable.
+  Completer<DriverEarningsSummary> gateEarnings() {
+    final gate = Completer<DriverEarningsSummary>();
+    when(() => payout.fetchEarnings()).thenAnswer((_) => gate.future);
+    return gate;
+  }
+
   setUp(() {
     repo = MockRidesRepository();
+    payout = MockPayoutRepository();
+    stubEarnings(earningsSummary());
     // The prompt is server-gated: without this the list is `unknown` and no
     // tile offers a rating, which would silently change every case below.
     stubRatings(const []);
@@ -157,7 +204,10 @@ void main() {
   Future<void> pumpHistory(WidgetTester tester) async {
     await tester.pumpWidget(
       ProviderScope(
-        overrides: [ridesRepositoryProvider.overrideWith((ref) => repo)],
+        overrides: [
+          ridesRepositoryProvider.overrideWith((ref) => repo),
+          payoutRepositoryProvider.overrideWith((ref) => payout),
+        ],
         // Body-only since bug #10; host it in a Scaffold the way DriverShell
         // does in the app.
         child: const MaterialApp(home: Scaffold(body: RidesHistoryScreen())),
@@ -182,9 +232,12 @@ void main() {
       find.text('Completed trips and your fares will show up here.'),
       findsOneWidget,
     );
-    // No currency on the loaded fares: the amount renders bare, never a
-    // fabricated `$`.
-    expect(find.text('0.00'), findsOneWidget);
+    // The empty ledger renders bare amounts (no fabricated `$`); assert via the
+    // card keys, since both the balance and the month total are `0.00`.
+    expect(
+      tester.widget<Text>(find.byKey(const Key('earnings-available'))).data,
+      '0.00',
+    );
     expect(find.text('0 completed trips'), findsOneWidget);
 
     await tester.pumpWidget(const SizedBox());
@@ -216,44 +269,114 @@ void main() {
     await tester.pumpWidget(const SizedBox());
   });
 
-  testWidgets(
-    'the earnings card equals the sum of the loaded completed trips',
-    (tester) async {
-      stubHistory([
-        ride(
-          'r1',
-          status: 'completed',
-          fare: 10,
-          currency: 'USD',
-          completedAt: _thisMonth,
-        ),
-        ride(
-          'r2',
-          status: 'completed',
-          fare: 15.5,
-          currency: 'USD',
-          completedAt: _thisMonth,
-        ),
-        ride('r3', status: 'cancelled', fare: 99, cancelledBy: 'rider'),
-      ], total: 3);
+  testWidgets('the earnings card renders the server ledger figures', (
+    tester,
+  ) async {
+    stubHistory([
+      ride('r1', status: 'completed', fare: 10, currency: 'USD', completedAt: _thisMonth),
+    ], total: 1);
+    stubEarnings(
+      earningsSummary(
+        availableCents: 2000,
+        pendingCents: 500,
+        withdrawnCents: 1000,
+        lifetimeCents: 2500,
+        currency: 'USD',
+        monthTotalCents: 2550,
+        monthTrips: 2,
+        completedTrips: 5,
+      ),
+    );
 
-      await pumpHistory(tester);
+    await pumpHistory(tester);
 
-      // 10 + 15.5; the cancelled trip paid nothing. The aggregate uses the one
-      // currency every loaded fare agrees on, exactly like the tile below it.
-      expect(
-        tester.widget<Text>(find.byKey(const Key('earnings-month-total'))).data,
-        'USD25.50',
-      );
-      expect(find.text('2 completed trips'), findsOneWidget);
-      // A cancelled trip is listed, but greyed and without a fare.
-      expect(find.byKey(const Key('ride-tile-r3')), findsOneWidget);
-      expect(find.textContaining('Cancelled by rider'), findsOneWidget);
-      expect(find.text('—'), findsOneWidget);
+    // The card is the server's ledger — integer cents converted exactly once,
+    // never a sum over the rides loaded below it.
+    expect(
+      tester.widget<Text>(find.byKey(const Key('earnings-available'))).data,
+      'USD20.00',
+    );
+    expect(
+      tester.widget<Text>(find.byKey(const Key('earnings-month-total'))).data,
+      'USD25.50',
+    );
+    expect(find.text('2 completed trips'), findsOneWidget);
+    expect(
+      tester.widget<Text>(find.byKey(const Key('earnings-pending'))).data,
+      'USD5.00',
+    );
+    expect(
+      tester.widget<Text>(find.byKey(const Key('earnings-withdrawn'))).data,
+      'USD10.00',
+    );
+    expect(
+      tester.widget<Text>(find.byKey(const Key('earnings-lifetime'))).data,
+      'USD25.00',
+    );
+    // A positive balance offers the withdraw affordance.
+    expect(find.byKey(const Key('withdraw-button')), findsOneWidget);
 
-      await tester.pumpWidget(const SizedBox());
-    },
-  );
+    await tester.pumpWidget(const SizedBox());
+  });
+
+  testWidgets('the card shows a spinner, not a fabricated 0.00, while loading', (
+    tester,
+  ) async {
+    stubHistory(const []);
+    final gate = gateEarnings();
+
+    await pumpHistory(tester);
+
+    // Nothing invented while the ledger is unknown.
+    expect(find.byKey(const Key('earnings-available')), findsNothing);
+    expect(
+      find.descendant(
+        of: find.byType(AppCard),
+        matching: find.byType(CircularProgressIndicator),
+      ),
+      findsOneWidget,
+    );
+
+    gate.complete(earningsSummary(availableCents: 1500, currency: 'USD'));
+    await tester.pump();
+    await tester.pump();
+
+    expect(
+      tester.widget<Text>(find.byKey(const Key('earnings-available'))).data,
+      'USD15.00',
+    );
+
+    await tester.pumpWidget(const SizedBox());
+  });
+
+  testWidgets('a failed ledger shows a retry and recovers', (tester) async {
+    stubHistory(const []);
+    when(() => payout.fetchEarnings()).thenThrow(Exception('boom'));
+
+    await pumpHistory(tester);
+
+    expect(find.byKey(const Key('earnings-error')), findsOneWidget);
+    expect(find.text(earningsErrorMessage), findsOneWidget);
+    expect(find.byKey(const Key('earnings-available')), findsNothing);
+
+    stubEarnings(earningsSummary(availableCents: 700, currency: 'USD'));
+    await tester.tap(
+      find.descendant(
+        of: find.byKey(const Key('earnings-error')),
+        matching: find.byType(TextButton),
+      ),
+    );
+    await tester.pump();
+    await tester.pump();
+
+    expect(
+      tester.widget<Text>(find.byKey(const Key('earnings-available'))).data,
+      'USD7.00',
+    );
+    expect(find.byKey(const Key('earnings-error')), findsNothing);
+
+    await tester.pumpWidget(const SizedBox());
+  });
 
   testWidgets(
     'a completed tile renders the final fare at cents with its currency',
@@ -272,7 +395,7 @@ void main() {
 
       // The final charge from the API, at two decimals and prefixed with the
       // API's own currency code — never a rounded or invented value. Scoped to
-      // the tile: the earnings card shows the same sum for this one-ride month.
+      // the tile: the ledger card above it is the server's, not this sum.
       expect(
         find.descendant(
           of: find.byKey(const Key('ride-tile-r1')),
@@ -286,25 +409,29 @@ void main() {
     },
   );
 
-  testWidgets('a month breakdown lists the loaded months newest first', (
+  testWidgets('a month breakdown lists the ledger months newest first', (
     tester,
   ) async {
-    stubHistory([
-      ride(
-        'r1',
-        status: 'completed',
-        fare: 10,
+    stubHistory(const []);
+    stubEarnings(
+      earningsSummary(
         currency: 'USD',
-        completedAt: _thisMonth,
+        monthTotalCents: 1700,
+        monthTrips: 2,
+        months: [
+          DriverEarningsMonth(
+            month: DateTime(_now.year, _now.month),
+            totalCents: 1000,
+            trips: 1,
+          ),
+          DriverEarningsMonth(
+            month: DateTime(_now.year, _now.month - 1),
+            totalCents: 700,
+            trips: 1,
+          ),
+        ],
       ),
-      ride(
-        'r2',
-        status: 'completed',
-        fare: 7,
-        currency: 'USD',
-        completedAt: _lastMonth,
-      ),
-    ], total: 2);
+    );
 
     await pumpHistory(tester);
 
@@ -312,26 +439,19 @@ void main() {
     expect(find.text('1 · USD10.00'), findsOneWidget);
     expect(find.text(_lastMonthLabel), findsOneWidget);
     expect(find.text('1 · USD7.00'), findsOneWidget);
-    // No withdraw affordance: that endpoint is a backend stub, so the only
-    // mention of it is the disclaimer.
-    expect(find.textContaining('Withdraw'), findsOneWidget);
-    expect(find.widgetWithText(TextButton, 'Withdraw'), findsNothing);
+    // The withdraw affordance is live now that the endpoint is real, and the
+    // caveat still says the money is only a pending ledger entry.
+    expect(find.byKey(const Key('withdraw-button')), findsOneWidget);
+    expect(find.textContaining('pending ledger'), findsOneWidget);
 
     await tester.pumpWidget(const SizedBox());
   });
 
-  testWidgets('the aggregate card renders a non-USD region code, never \$', (
+  testWidgets('the ledger renders a non-USD region code, never \$', (
     tester,
   ) async {
-    stubHistory([
-      ride(
-        'r1',
-        status: 'completed',
-        fare: 8,
-        currency: 'CRC',
-        completedAt: _thisMonth,
-      ),
-    ], total: 1);
+    stubHistory(const []);
+    stubEarnings(earningsSummary(currency: 'CRC', monthTotalCents: 800));
 
     await pumpHistory(tester);
 
@@ -344,25 +464,11 @@ void main() {
     await tester.pumpWidget(const SizedBox());
   });
 
-  testWidgets('mixed-currency fares drop the symbol rather than invent one', (
+  testWidgets('a summary with no currency renders bare, never a guessed \$', (
     tester,
   ) async {
-    stubHistory([
-      ride(
-        'r1',
-        status: 'completed',
-        fare: 8,
-        currency: 'USD',
-        completedAt: _thisMonth,
-      ),
-      ride(
-        'r2',
-        status: 'completed',
-        fare: 2,
-        currency: 'CRC',
-        completedAt: _thisMonth,
-      ),
-    ], total: 2);
+    stubHistory(const []);
+    stubEarnings(earningsSummary(currency: null, monthTotalCents: 1000));
 
     await pumpHistory(tester);
 
@@ -371,7 +477,7 @@ void main() {
       '10.00',
     );
     expect(find.text('USD10.00'), findsNothing);
-    expect(find.text('CRC10.00'), findsNothing);
+    expect(find.text(r'$10.00'), findsNothing);
 
     await tester.pumpWidget(const SizedBox());
   });

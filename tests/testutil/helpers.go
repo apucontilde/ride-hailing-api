@@ -34,6 +34,10 @@ type TestServer struct {
 	// and feedback endpoints (api_plans/[push]).
 	DeviceRepo   *MockDeviceTokenRepo
 	FeedbackRepo *MockFeedbackRepo
+	// EarningsRepo is the in-memory driver earnings ledger behind
+	// GET /driver/me/earnings and POST /driver/earnings/withdraw
+	// (api_plans/[payout]).
+	EarningsRepo *MockEarningsRepo
 }
 
 type TestResponse struct {
@@ -89,11 +93,13 @@ func newTestServerE(geoRepo *MockGeoRepo, navRepo *MockNavigationRepo) (*TestSer
 	placesRepo := NewMockPlacesRepo()
 	deviceRepo := NewMockDeviceTokenRepo()
 	feedbackRepo := NewMockFeedbackRepo()
+	earningsRepo := NewMockEarningsRepo()
 
 	r := router.SetupWithRepos(cfg, userRepo, rideRepo, geoRepo, navRepo, placesRepo, nil,
 		router.WithDeviceTokenRepository(deviceRepo),
 		router.WithFeedbackRepository(feedbackRepo),
 		router.WithFareRepository(NewMockFareRepo()),
+		router.WithEarningsRepository(earningsRepo),
 	)
 
 	return &TestServer{
@@ -106,6 +112,7 @@ func newTestServerE(geoRepo *MockGeoRepo, navRepo *MockNavigationRepo) (*TestSer
 		PlacesRepo:   placesRepo,
 		DeviceRepo:   deviceRepo,
 		FeedbackRepo: feedbackRepo,
+		EarningsRepo: earningsRepo,
 	}, nil
 }
 

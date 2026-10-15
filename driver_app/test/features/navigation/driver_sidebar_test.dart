@@ -262,7 +262,13 @@ void main() {
       await pumpHome(tester, profileContainer());
       await openSidebar(tester);
 
-      for (final id in ['home', 'profile', 'ride-history', 'settings']) {
+      for (final id in [
+        'home',
+        'profile',
+        'vehicle',
+        'ride-history',
+        'settings',
+      ]) {
         expect(find.byKey(Key('sidebar-item-$id')), findsOneWidget, reason: id);
       }
     });
@@ -295,16 +301,25 @@ void main() {
       );
     });
 
-    testWidgets('no /vehicle row while the vehicle backend is a stub', (
+    testWidgets('the /vehicle row renders while the details stay gated', (
       tester,
     ) async {
       await pumpHome(tester, profileContainer());
       await openSidebar(tester);
 
-      // Half of the "neither surface links to /vehicle" assertion; the profile
-      // card's half lives in `profile_screen_test.dart`. Together they stop a
-      // later change re-adding one side and silently desyncing the other.
-      expect(find.byKey(const Key('sidebar-item-vehicle')), findsNothing);
+      // Drawer half of the "both surfaces link to /vehicle" assertion (driver
+      // bug #6 closed); the profile card's half lives in
+      // `profile_screen_test.dart`. The row's screen still renders "Coming
+      // soon" while the vehicle backend is a stub — the nav entry and the
+      // details/save gate are deliberately decoupled.
+      expect(find.byKey(const Key('sidebar-item-vehicle')), findsOneWidget);
+      expect(
+        find.descendant(
+          of: find.byKey(const Key('sidebar-item-vehicle')),
+          matching: find.text('Vehicle'),
+        ),
+        findsOneWidget,
+      );
     });
 
     testWidgets('the sign-out footer row is present', (tester) async {
@@ -347,6 +362,7 @@ void main() {
     testWidgets('every item routes to its own destination', (tester) async {
       const cases = <String, String>{
         'profile': 'Profile Page',
+        'vehicle': 'Vehicle Page',
         'ride-history': 'Rides History Page',
         'settings': 'Settings Page',
       };
@@ -359,6 +375,18 @@ void main() {
 
         expect(find.text(entry.value), findsOneWidget, reason: entry.key);
       }
+    });
+
+    testWidgets('the /vehicle item in the drawer routes to /vehicle',
+        (tester) async {
+      await pumpHome(tester, profileContainer());
+      await openSidebar(tester);
+
+      await tester.tap(find.byKey(const Key('sidebar-item-vehicle')));
+      await tester.pumpAndSettle();
+
+      expect(find.text('Vehicle Page'), findsOneWidget);
+      expect(find.byType(AppSidebar), findsNothing);
     });
 
     testWidgets(

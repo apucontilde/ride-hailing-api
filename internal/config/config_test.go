@@ -1,6 +1,9 @@
 package config
 
-import "testing"
+import (
+	"math"
+	"testing"
+)
 
 // Plan 06 knobs: the per-region graph budget and the per-city datasource pools.
 // Load() is exercised through the real environment, so these cases are exactly
@@ -303,6 +306,51 @@ func TestRoutingElevationConfigFromEnv(t *testing.T) {
 	}
 }
 
+// Bug #24 ([routing]_gate_correctness.md §A5): the elevation coverage gate is
+// ONE shared constant — DefaultElevationMinCoverage — used by BOTH the ingest
+// gate (elevtool's -min-coverage default imports it; cmd/elevtool pins that
+// half in TestMinCoverageFlagDefaultIsTheSharedConfigConstant) and the runtime
+// gate (ROUTING_ELEV_MIN_COVERAGE's default, wired in Load). The two used to
+// drift (ingest 0.98 vs runtime 0.99), so a region that passed ingest silently
+// degraded to FLAT routing at runtime. These cases pin the value, the wiring,
+// and that an operator override still wins.
+func TestElevationMinCoverageIsOneSharedIngestRuntimeGate(t *testing.T) {
+	cases := []struct {
+		name string
+		env  map[string]string
+		want float64
+	}{
+		{
+			// The runtime default must BE the shared constant, not a copy of
+			// its value: this is the wiring half of the regression pin.
+			name: "runtime_default_is_the_shared_constant",
+			want: DefaultElevationMinCoverage,
+		},
+		{
+			// And the shared constant's value is the measured gate (100.00%
+			// coverage on the SJ import), not something a rename can reset.
+			name: "shared_constant_is_0.99",
+			want: 0.99,
+		},
+		{
+			name: "env_override_still_wins",
+			env:  map[string]string{"ROUTING_ELEV_MIN_COVERAGE": "0.95"},
+			want: 0.95,
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Setenv("ROUTING_ELEV_MIN_COVERAGE", "")
+			for k, v := range tc.env {
+				t.Setenv(k, v)
+			}
+			if got := Load().RoutingElevation.MinCoverage; got != tc.want {
+				t.Errorf("RoutingElevation.MinCoverage = %v, want %v", got, tc.want)
+			}
+		})
+	}
+}
+
 // Fare knobs (api_plans/STATUS.md [fare]): FARE_CURRENCY is the
 // deployment-wide expected currency (default USD) and FARE_MAX_MULTIPLIER the
 // cap on the unified conditions multiplier (default 3.0). Both go through
@@ -514,6 +562,162 @@ func TestGeofenceConfigFromEnv(t *testing.T) {
 			}
 			if a.MinMoveM != tc.wantMinMov {
 				t.Errorf("MinMoveM = %v, want %v", a.MinMoveM, tc.wantMinMov)
+			}
+		})
+	}
+}
+
+// Payout knobs (api_plans/[payout]_driver_earnings_and_withdraw.md): the
+// withdrawal floor, the ledger currency and the platform commission.
+// MinWithdrawCents and Currency fall back to their documented defaults through
+// getInt/getEnv; the commission parser is the load-bearing one — it FAILS
+// CLOSED to 0 (no cut) for unset, empty, garbage, non-finite (NaN/±Inf) or
+// out-of-range input.
+//
+// The NaN/±Inf cases are the regression pin for the finding-2 fix:
+// strconv.ParseFloat("NaN") returns (NaN, nil) — no error — and both range
+// comparisons are false for NaN, so a naive `f < 0 || f > 1` check would let a
+// non-finite rate through. That rate would then make every completion credit
+// int64(math.Round(fare*(1-NaN)*100)) = min-int64, which is <= 0, so the ride
+// service would silently credit NOTHING. A finite in-range value is passed
+// through unchanged; the boundaries 0 and 1 are valid cuts.
+func TestPayoutConfigFromEnv(t *testing.T) {
+	cases := []struct {
+		name           string
+		env            map[string]string
+		wantMin        int64
+		wantCurrency   string
+		wantCommission float64
+	}{
+		{
+			name:           "unset_defaults",
+			wantMin:        DefaultPayoutMinWithdrawCents,
+			wantCurrency:   DefaultPayoutCurrency,
+			wantCommission: DefaultPayoutCommissionRate,
+		},
+		{
+			name: "valid_values",
+			env: map[string]string{
+				"PAYOUT_MIN_WITHDRAW_CENTS": "1000",
+				"PAYOUT_CURRENCY":           "eur",
+				"PAYOUT_COMMISSION_RATE":    "0.15",
+			},
+			wantMin:        1000,
+			wantCurrency:   "eur",
+			wantCommission: 0.15,
+		},
+		{
+			name:           "empty_commission_is_default",
+			env:            map[string]string{"PAYOUT_COMMISSION_RATE": ""},
+			wantMin:        DefaultPayoutMinWithdrawCents,
+			wantCurrency:   DefaultPayoutCurrency,
+			wantCommission: DefaultPayoutCommissionRate,
+		},
+		{
+			// The regression pin: NaN parses without error and is neither
+			// < 0 nor > 1, so only the IsNaN guard catches it.
+			name:           "nan_fails_closed",
+			env:            map[string]string{"PAYOUT_COMMISSION_RATE": "NaN"},
+			wantMin:        DefaultPayoutMinWithdrawCents,
+			wantCurrency:   DefaultPayoutCurrency,
+			wantCommission: 0,
+		},
+		{
+			name:           "positive_inf_fails_closed",
+			env:            map[string]string{"PAYOUT_COMMISSION_RATE": "+Inf"},
+			wantMin:        DefaultPayoutMinWithdrawCents,
+			wantCurrency:   DefaultPayoutCurrency,
+			wantCommission: 0,
+		},
+		{
+			name:           "negative_inf_fails_closed",
+			env:            map[string]string{"PAYOUT_COMMISSION_RATE": "-Inf"},
+			wantMin:        DefaultPayoutMinWithdrawCents,
+			wantCurrency:   DefaultPayoutCurrency,
+			wantCommission: 0,
+		},
+		{
+			name:           "negative_fails_closed",
+			env:            map[string]string{"PAYOUT_COMMISSION_RATE": "-0.1"},
+			wantMin:        DefaultPayoutMinWithdrawCents,
+			wantCurrency:   DefaultPayoutCurrency,
+			wantCommission: 0,
+		},
+		{
+			name:           "above_one_fails_closed",
+			env:            map[string]string{"PAYOUT_COMMISSION_RATE": "1.5"},
+			wantMin:        DefaultPayoutMinWithdrawCents,
+			wantCurrency:   DefaultPayoutCurrency,
+			wantCommission: 0,
+		},
+		{
+			name:           "garbage_fails_closed",
+			env:            map[string]string{"PAYOUT_COMMISSION_RATE": "half"},
+			wantMin:        DefaultPayoutMinWithdrawCents,
+			wantCurrency:   DefaultPayoutCurrency,
+			wantCommission: 0,
+		},
+		{
+			// 1 is the maximum valid cut (the driver is credited nothing).
+			name:           "one_is_accepted_boundary",
+			env:            map[string]string{"PAYOUT_COMMISSION_RATE": "1"},
+			wantMin:        DefaultPayoutMinWithdrawCents,
+			wantCurrency:   DefaultPayoutCurrency,
+			wantCommission: 1,
+		},
+		{
+			name:           "zero_is_accepted_and_equals_default",
+			env:            map[string]string{"PAYOUT_COMMISSION_RATE": "0"},
+			wantMin:        DefaultPayoutMinWithdrawCents,
+			wantCurrency:   DefaultPayoutCurrency,
+			wantCommission: 0,
+		},
+		{
+			name:           "garbage_min_falls_back",
+			env:            map[string]string{"PAYOUT_MIN_WITHDRAW_CENTS": "lots"},
+			wantMin:        DefaultPayoutMinWithdrawCents,
+			wantCurrency:   DefaultPayoutCurrency,
+			wantCommission: 0,
+		},
+		{
+			// getEnv has no whitelist, so a garbage currency is accepted
+			// verbatim — named so nobody reads this as validation that does
+			// not exist.
+			name:           "garbage_currency_is_accepted_verbatim_no_validation",
+			env:            map[string]string{"PAYOUT_CURRENCY": "not-a-currency"},
+			wantMin:        DefaultPayoutMinWithdrawCents,
+			wantCurrency:   "not-a-currency",
+			wantCommission: 0,
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			for _, k := range []string{
+				"PAYOUT_MIN_WITHDRAW_CENTS", "PAYOUT_CURRENCY", "PAYOUT_COMMISSION_RATE",
+			} {
+				t.Setenv(k, "")
+			}
+			for k, v := range tc.env {
+				t.Setenv(k, v)
+			}
+
+			p := Load().Payout
+			if p.MinWithdrawCents != tc.wantMin {
+				t.Errorf("MinWithdrawCents = %d, want %d", p.MinWithdrawCents, tc.wantMin)
+			}
+			if p.Currency != tc.wantCurrency {
+				t.Errorf("Currency = %q, want %q", p.Currency, tc.wantCurrency)
+			}
+			if p.CommissionRate != tc.wantCommission {
+				t.Errorf("CommissionRate = %v, want %v", p.CommissionRate, tc.wantCommission)
+			}
+			// NaN never equals itself, so the equality check above cannot be
+			// trusted alone: assert finiteness explicitly. The parser must
+			// never hand the ride service a non-finite cut.
+			if math.IsNaN(p.CommissionRate) || math.IsInf(p.CommissionRate, 0) {
+				t.Errorf("CommissionRate = %v is non-finite; the parser must fail closed to %v",
+					p.CommissionRate, DefaultPayoutCommissionRate)
 			}
 		})
 	}

@@ -51,7 +51,17 @@
   `00b2a5e` (2026-09-30, bug-fix item B "Uncovered pins returned 500; now 200 estimate").
   Pinned by `TestRadiusBoundaryBandBetweenTheTwoCoveragePredicates`
   (`internal/repository/pin_uncovered_test.go:116-178`) + `tests/route_uncovered_estimate_test.go:26`.
-  **No open work** — see `[routing]_gate_correctness.md` §A1 (kept for verification only).
+  This is the §A1 half; the §A5 elevation coverage gate landed alongside (next bullet). **No open
+  work.**
+- **Elevation coverage-gate correctness (bug #24, the §A5 half).** Ingest and runtime now share
+  the ONE gate constant `DefaultElevationMinCoverage = 0.99` (`internal/config/config.go:240`,
+  wired `:336`); `cmd/elevtool` registers its flags via `registerFlags` with `-min-coverage`
+  defaulting to that constant (`cmd/elevtool/main.go:65,75`), and
+  `scripts/import-elevation.sh` mirrors `0.99` (`:28`) and scopes the post-import assertion to
+  `--region`/`REGION` (`WHERE region_id = :'region'`, `:69-72`; the global form warns, `:78-79`).
+  Pinned by `TestElevationMinCoverageIsOneSharedIngestRuntimeGate` (`internal/config/config_test.go:317`)
+  and `TestMinCoverageFlagDefaultIsTheSharedConfigConstant` (`cmd/elevtool/main_test.go:18`). Closes
+  bug #24.
 - **Decision (bug #1): `native` is the intentional PERMANENT `ROUTING_ENGINE` default.** The
   benchmark gate is closed and is not being re-opened. Evidence re-measured 2026-09-29 on the
   shared 400×400 lattice workset (`internal/routing/benchmark_test.go:95` `BenchmarkRoute` vs
@@ -197,6 +207,26 @@
   (`internal/service/dispatch_test.go:620`) and `TestDispatchFailedTerminalWriteDoesNotPushTheRider`
   (`:653`). See `rider_app_plans/STATUS.md:22` for the client-side dependency. What the trace
   still cannot say is bug #19 below.
+- **Offer-path fixes (bug #11 server half + the HTTP decline mis-wire).** Hub presence is now
+  liveness-aware — `Hub.IsConnected` returns true only for a client seen within
+  `clientLivenessTTL = 28 s` (`internal/websocket/hub.go:23,54,209-220`; `lastSeen` refreshed on
+  every inbound frame incl. the protocol ping/pong, `:107-110`), so a stale/half-open entry stops
+  reading as connected. A candidate that fails the ~450 ms fast backoff is **parked** for the
+  bounded `socketRearmWindow = 3 s` and re-offered if it reconnects
+  (`internal/service/dispatch.go:194-201,225-275`; consts
+  `internal/service/dispatch_observability.go:188,200-210`); only a candidate that never
+  reconnects records one `skipSocketNotConnected`. `POST /api/v1/driver/rides/:id/decline` is now
+  bound to `rideHandler.DeclineRide` (`internal/router/router.go:254`), which funnels through
+  `DispatchService.DeclineOffer` (`internal/service/dispatch.go:358-395`, `ErrNoActiveOffer`) and
+  records `skipDriverDeclined` (`:347`): active offer → `200 {"status":"declined"}`; no active
+  offer → 404 `NOT_FOUND`; malformed id → 422 `VALIDATION_ERROR`
+  (`internal/handler/ride_decline.go:25-51`) — never the old `"status":"stub"`. Pinned by
+  `TestHubIsConnectedLiveness` (`internal/websocket/hub_test.go:23`),
+  `TestDispatchSocketRetrySucceedsWhenDriverConnectsDuringRearm` and
+  `TestDispatchRearmStillDropsDriverWhoNeverReconnects`
+  (`internal/service/dispatch_rearm_test.go:20,75`), and
+  `TestDispatchDeclineHTTPRecordsDriverDeclined` (`tests/dispatch_decline_test.go:17`). Closes bug
+  #11 (the driver-side keepalive half landed 2026-09-30, recorded in the bug's evidence).
 
 ### [fare]
 - Region-scoped, versioned DB pricing engine (chain head, landed 2026-10-05) — migration
@@ -417,15 +447,50 @@
   366 pass, `make lint` 0, `make test-integration` green. Closes bug #25; the rider/driver
   `01_[arrival]` consumers are condensed by their own owners.
 
+### [payout]
+- **Driver earnings ledger + `GET /driver/me/earnings` + idempotent `POST /driver/earnings/withdraw`
+  (server half of driver-app bug #5).** Append-only migration
+  `internal/database/migrations/024_driver_earnings.up.sql:12` (`driver_earnings`; integer
+  `amount_cents` credit +/debit −; status `available/pending/paid/failed/reversed`; a partial
+  unique index on `ride_id` for the exactly-once credit and one on `(driver_id, idempotency_key)`
+  for the double-debit guard). `EarningsRepo` (`internal/repository/earnings_repo.go:87`
+  `CreditRideEarning`, `:105` `GetEarningsSummary`, `:161` `CreateWithdrawal`): the ledger IS the
+  wallet — no balance column; available = credits − withdrawals in `pending` OR `paid`, from the
+  single `availableBalanceExpr`/`withdrawalCountedExpr` (`:78-85`); the withdrawal insert is a
+  **negative** debit (`-amountCents`, `:221`) under a per-driver advisory lock with an in-lock
+  balance re-check. Handlers `internal/handler/earnings.go:47,85`; routes
+  `internal/router/router.go:242` (`GET /driver/me/earnings`) and `:329`
+  (`POST /driver/earnings/withdraw` behind `idempotencyMw`). Completion credits once in
+  `RideService.AdvanceStatus` (`internal/service/ride.go:62-69` `SetEarnings`; `:548-570`), and a
+  failed credit is **not** best-effort (it returns 5xx). Config
+  `PAYOUT_COMMISSION_RATE`/`PAYOUT_MIN_WITHDRAW_CENTS`/`PAYOUT_CURRENCY`
+  (`internal/config/config.go:168-183`, wired `:351-353`, commission parsed fail-closed
+  `:425-445`). Docs `RIDER_API_GUIDE.md` `## Driver Earnings`; `docs/swagger.{json,yaml}`
+  regenerated. **Wire contract (cross-app, consumed by the driver app):** GET answers the
+  `{"earnings":{...}}` envelope and POST answers `{"withdrawal":{...},"earnings":{...}}`; every
+  money field is **integer cents** and a withdrawal debit is **negative**. Tests
+  `tests/payout_test.go`, `internal/repository/earnings_integration_test.go`; mock in lockstep
+  (`tests/testutil/mock_earnings_repo.go`). **Integration-tag caveat:** the production
+  `pending → paid` double-payout guard is pinned **only** by the `//go:build integration` DB test
+  `TestEarningsRepoPaidWithdrawalKeepsBalanceReduced`
+  (`internal/repository/earnings_integration_test.go:187`) — the unit
+  `TestEarningsWithdrawPaidKeepsBalanceReduced` (`tests/payout_test.go:173`) exercises the mock's
+  inline predicate, not the production SQL — so `make test-integration` (DB up) **must** stay part
+  of the gate or the guard ships effectively unpinned. **Cross-domain (both halves landed):** the
+  driver-app withdraw UI half has since landed too — `driver_app_plans/01_[payout]_withdraw_ui.md`
+  was condensed into `driver_app_plans/STATUS.md` → Landed `[payout]` (adversarially confirmed
+  2026-10-15) and deleted, closing driver bug #5.
+
 ## Known bugs & issues
 
 | # | Issue | Evidence | Severity | Owner |
 | --- | --- | --- | --- | --- |
 | 2 | ~~Estimate fallback dead by default~~ — **fixed**: `ROUTING_SNAP_RADIUS_M` ships at 50000, so a pin >50 km from any road answers 200 `is_estimate`; `0` stays the documented always-snap opt-in (recorded in Landed → [routing] stage 05) | `internal/config/config.go:130` (const + rationale `:117-130`), `:228` (the load). *No `service/navigation.go` citation here on purpose: that file is under a concurrent routing edit, so a line number written now would rot on landing* | closed | [routing] |
 | 3 | ~~Residual route-preview honesty gap~~ — **closed 2026-10-15 (no API fix needed).** The rider residual named here was fixed by rider bug #2 via `[map]_route_failure_honesty.md` (rider plan now landed/deleted): the `error: (_, _)` branch is gone, **no** polyline is drawn on *any* error status, and an `is_estimate` body renders the **API** geometry dashed + labelled. The earlier "confident/silent" wording had already been corrected. The API obligation is unchanged: answer outages as 5xx or 200+`is_estimate`, **never 4xx** | rider evidence: `rider_app_plans/STATUS.md:150` (`### [map]` honesty entry), `:455` (bug #2 FIXED); `rider_app/lib/features/home/data/home_route_preview.dart:68-115`, `rider_app/lib/features/home/presentation/home_screen.dart:210-222,505-522` | closed | [errors] (client landed: rider-planner) |
+| 5 | ~~**Driver-app bug #5 — no withdraw UI**~~ — **resolved 2026-10-15.** The API server half is landed (Landed → [payout]: `driver_earnings` ledger + `GET /driver/me/earnings` + idempotent `POST /driver/earnings/withdraw`), and the Flutter withdraw UI half landed too: `driver_app_plans/01_[payout]_withdraw_ui.md` was condensed into `driver_app_plans/STATUS.md` → Landed `[payout]` (adversarially confirmed 2026-10-15; bug #5 marked resolved there) and deleted — code at `driver_app/lib/features/payout/` | `internal/router/router.go:242,329`; `internal/handler/earnings.go`; `internal/repository/earnings_repo.go`; driver `driver_app_plans/STATUS.md` → Landed `[payout]` (bug #5 resolved) | closed | [payout] (client landed: driver-planner) |
 | 9 | ~~No unit test at all~~ — **fixed**: `internal/middleware/idempotency_test.go` covers the partial-read re-run, the implausible-status guard, the 200/201-only store rule, the 1 MiB capture cap and the blank-key bypass. The three statements in `sqlIdempotencyStore` are still DB-free-untested (no go-sqlmock, `tests/` runs with `db=nil`) | `internal/middleware/idempotency_test.go` | closed (SQL untested) | [errors] |
 | 10 | ~~`MarkStaleDriversOffline` is never called~~ — **fixed**: `run()` starts a `DriverLivenessSweeper`, which sweeps once at boot and then every `DefaultSweeperInterval` (10 s), so stale `driver_positions.status` rows are reconciled and the 30 s freshness window (`internal/repository/geo_repo.go:39`) is no longer the only bound. Scope is narrow and documented: it writes `driver_positions.status` only — `drivers.status` is untouched, and `GET /drivers/:id/location` is unchanged because its query selects no status column (`internal/repository/geo_repo.go:127-134`) | call site `cmd/server/main.go:82-84`; sweeper `internal/service/driver_liveness.go:36,55,87`; definition `internal/repository/geo_repo.go:172` | closed | [dispatch] |
-| 11 | A DB-fresh online driver whose socket is absent is now **retried before being dropped**: `waitForSocket` polls the hub 4 × 150 ms (~450 ms) and only the give-up is recorded as a skip (`internal/service/dispatch_observability.go:208-226`, backoff consts `:187-188`). Still open: (a) a driver genuinely not connected after that window is dropped (`internal/websocket/hub.go:120-125` is map presence only) — **fix scoped in `[dispatch]_offer_path_fixes.md` §A3** (liveness-aware presence + a bounded re-arm within the 30 s offer window). **Half (b) fixed 2026-09-30 cross-app** — the retired `driver_app_plans/01_[dispatch]_keepalive_and_offer_reliability.md` landed the driver-side keep-alive `ping()`: opt-in `heartbeatInterval` loop armed on every connect (`shared/lib/src/network/websocket_service.dart:37,54-58,112,148-156`), the driver opts into 25 s and re-arms on `setOnline`/reconnect with an immediate ping (`driver_app/lib/core/network/websocket_service.dart:17,32,45-55,78-86`), wired to presence + `publishLastPosition` (`driver_app/lib/core/location/location_service.dart:245,249`) | `internal/service/dispatch_observability.go:208-226`; `internal/websocket/hub.go:120-125` | medium | [dispatch] (client half landed, `driver-planner`) |
+| 11 | ~~A DB-fresh online driver whose socket is absent is dropped after the ~450 ms retry~~ — **fixed**: hub presence is now liveness-aware (`clientLivenessTTL`, refreshed on every frame incl. ping/pong), and a candidate that fails the fast backoff is **parked** for the bounded `socketRearmWindow` and re-offered on reconnect; only a driver who never reconnects records one `socket_not_connected` skip. **Half (b)** (the driver-side keepalive `ping()`) landed 2026-09-30 cross-app: opt-in `heartbeatInterval` loop armed on every connect (`shared/lib/src/network/websocket_service.dart:37,54-58,112,148-156`), the driver opts into 25 s and re-arms on `setOnline`/reconnect (`driver_app/lib/core/network/websocket_service.dart:17,32,45-55,78-86`), wired to presence + `publishLastPosition` (`driver_app/lib/core/location/location_service.dart:245,249`) | `internal/websocket/hub.go:23,209-220`; `internal/service/dispatch.go:194-275`; `internal/service/dispatch_observability.go:210` | closed | [dispatch] (client half landed, `driver-planner`) |
 | 12 | ~~`PUT /rides/:id/destination` is a stub~~ — **fixed**: real `RideHandler.UpdateDestination` mutates `rides.dropoff_*` + the itinerary's `kind='destination'` row in one transaction, with owner/locked checks (`404`/`409`) and a safe-retry `5xx`; the `platform.go` stub is gone | `internal/handler/ride.go:285`; `internal/service/ride.go:408`; `internal/repository/ride_repo.go:165`; route `internal/router/router.go:240` | closed | [multi] |
 | 15 | ~~Arrival notify is a no-op stub; `device_tokens` never written~~ — **fixed**: real backgrounded push pipeline — device register/unregister persist and `feedback.type` is stored (see Landed → [push]). The `ArrivalNotification` handler this bug was raised against was **later removed** by the `[arrival]` proximity geofence (see Landed → [arrival]); the device/feedback pipeline it fed is unchanged | `internal/handler/platform.go:164,198`; `internal/service/push/`; migration `018_push_pipeline.up.sql` | closed | [push] |
 | 16 | ~~Replay stored `json.Marshal(gin.H{})` = `{}` regardless of the handler's body~~ — **fixed**: `captureWriter` tees the real body and `replayableBody` normalises it for the `JSONB NOT NULL` column | `internal/middleware/idempotency.go:202-226` | closed | [errors] |
@@ -436,7 +501,7 @@
 | 21 | ~~Two pre-existing `make test-integration` failures~~ — **fixed 2026-09-30**: the coverage-gate fix (commit `00b2a5e`) made an out-of-radius pin report `ErrPinUncovered` (wrapped), but two integration tests still expected `ErrNoRoute`. They now assert `errors.Is(err, ErrPinUncovered)` — `TestPGRoutingRepoSnapRadius` (`internal/repository/pgrouting_repo_integration_test.go:179`) and `TestRouteInRegionPGRouting/dropoff_only_in_another_region` (`internal/repository/regions_integration_test.go:359`). The gate was correct; the test expectations were stale. `make test-integration` is green | `go test -tags=integration -run 'TestPGRoutingRepoSnapRadius\|TestRouteInRegionPGRouting' ./internal/repository/` | closed | [routing] |
 | 22 | ~~Idempotency replay residual: the JSON/empty content-type branch trims surrounding whitespace (`bytes.TrimSpace`), and an empty content-type with a non-JSON body replays JSON-quoted~~ — **fixed**: every content type is stored as a JSON string of the exact captured bytes and unwrapped uniformly, so JSONB canonicalisation cannot alter the replay; empty captures replay zero bytes (no `null` sentinel); pre-change raw-JSON rows replay via the fallback. See Landed → [errors] | `internal/middleware/idempotency.go:235-238,259-267`; `internal/middleware/idempotency_integration_test.go:100,166` | closed | [errors] |
 | 23 | ~~`POST /rides` binds the top-level `pickup_*`/`dropoff_*` with `binding:"required"`, so a literal `0` coordinate is rejected `422`; and none of the four top-level coords is range-checked (e.g. `999` is accepted and written to `rides.pickup_*`/`dropoff_*` verbatim), unlike stop coords, which `BuildItinerary` range-checks~~ — **fixed**: pointer fields + `required` distinguish absent from `0`, and all four are range-checked through the shared `service.CoordinateOutOfRange`. See Landed → [rides] | `internal/handler/ride.go:39-42,102-114,140-143`; `internal/service/ride.go:148-157,198`; tests `tests/multi_stop_test.go:639-764` | closed | [rides] |
-| 24 | **Coverage-gate mismatch (surfaced by the Stage-3 audit).** The ingest gate is **0.98** (`cmd/elevtool/main.go:56`, `scripts/import-elevation.sh:23`) but the runtime gate is **0.99** (`defaultElevationMinCoverage`, `internal/config/config.go:181`; wired `:277`). A region that imports at 0.98–0.989 passes ingest, then silently serves **flat routing on the now-default path**; the only signal is a per-graph log line. Before the flip this only meant "elevation off"; now it means the default path is flat for that region. **Fix decided + scoped in `[routing]_gate_correctness.md` §A5 (do not re-decide; extracted from the former `[routing]_valle_central.md` §3):** one shared `DefaultElevationMinCoverage = 0.99` Go constant used by both gates (align ingest UP), plus a region-scoped `import-elevation.sh:43-45` post-import assertion | ingest `cmd/elevtool/main.go:56`, `scripts/import-elevation.sh:23`; runtime `internal/config/config.go:181` (const; wired `:277`), gate `internal/repository/navigation_repo.go:439-441` (log); fix in `[routing]_gate_correctness.md` §A5 | medium | [elevation] → fix scoped under [routing] |
+| 24 | ~~Coverage-gate mismatch: ingest **0.98** vs runtime **0.99** let a 0.98–0.989 region pass ingest and silently serve flat routing on the now-default path~~ — **fixed**: one shared `DefaultElevationMinCoverage = 0.99` used by both gates (elevtool's `-min-coverage` default imports `config`, runtime `ROUTING_ELEV_MIN_COVERAGE` default) + a region-scoped `import-elevation.sh` post-import assertion. See Landed → [routing] gate correctness | `internal/config/config.go:240,336`; `cmd/elevtool/main.go:65,75`; `scripts/import-elevation.sh:28,69-72` | closed | [routing] |
 | 25 | ~~The removed `POST /driver/rides/:id/notify-arrival` route had stale companion docs~~ — **fixed 2026-10-13**: the route/`ArrivalNotification` handler are gone, `docs/swagger.{json,yaml}` were regenerated (`scripts/update-openapi.sh`), `RIDER_API_GUIDE.md` / `DRIVER_APP_PLAN.md` / `USER_STORIES.md` now say the route was removed and document the additive `driver.location` proximity fields + auto `accepted→driver_arrived`, and the last API-adjacent residue (`driver_app/lib/core/api/endpoints.dart` declared constant) has been removed. No unresolved API residue remains; the `[arrival]` geofence is Landed | swagger grep for `notify-arrival` = 0; `RIDER_API_GUIDE.md:324,704`, `USER_STORIES.md:430`; `driver_app/lib/core/api/endpoints.dart` no longer declares the constant | closed | [arrival] |
 
 ## Test-audit follow-ups
@@ -482,11 +547,8 @@
 | `01_[elevation]_duration_model.md` | elevation | open `[elevation]_duration_calibration_data.md` | Grade-aware `total_duration_s`; **blocked** on the calibration-data head. Distance stays true meters and the flip changes no duration |
 | `[elevation]_pgrouting_parity.md` | elevation | pgrouting engine + elevation columns (landed) | **deferred**; add `reverse_cost`/`cost_ascent` migration + elevation-aware edges SQL, backfilled by a script referenced from `import-osm` |
 | `[routing]_intercity.md` | routing | routing region resolution (STATUS.md) | **deferred**; holds the archived overlay-ports/planner design |
-| `[routing]_gate_correctness.md` | routing | routing region resolution + snap-radius coverage (STATUS.md) | **open (chain head, unnumbered)** — A1 (native snap gate, ~265 m PostGIS/Go band) is **already landed** (`00b2a5e`) and recorded verification-only; the open work is **A5 / bug #24**: one shared `DefaultElevationMinCoverage = 0.99` used by the `elevtool -min-coverage` default + `config.Load()` + `scripts/import-elevation.sh`, plus a region-scoped `WHERE region_id = :'region'` post-import assertion. Tests + verification in the file. `01_[routing]_valle_central.md` depends on this |
-| `01_[routing]_valle_central.md` | routing | open `[routing]_gate_correctness.md` | **open (chain stage 01; renamed from `[routing]_valle_central.md`)** — one `valle_central` region (`level=state`, `parent_region='cr'`) covering the **Central Valley BASIN** (supersedes the nationwide/province question; the 4 full provinces are **out** — Alajuela reaches the northern border, San José the Pacific). Within-basin trips road-follow; any pin outside the basin (incl. the rest of the 4 provinces and cross-basin trips) → 200 `is_estimate`. **TOP OPEN INPUT:** the exact basin polygon (`regions/valle_central.poly`, CONFIRM-BEFORE-IMPORT) vs the bbox fallback `-84.45,9.65,-83.65,10.25`. Remaining: clip + import `valle_central`; the elevation gate fix (bug #24) is now a **prerequisite owned by `[routing]_gate_correctness.md` §A5**, then `--region valle_central` backfill; one fare card (`make seed-fares SEED_FARES_REGION=valle_central`); retire the `cr-sj` **network** rows (edges before vertices) + single `default_region` owner; restart; then the **final `cr-sj` delete** (`fare_rates`→`fare_demand_windows`→`fare_regions`→`routing_regions`, FK order, guarded on no active `cr-sj` ride; historical `rides.fare_region_id` audit refs go stale by design — no FK); acceptance tests. Still open: any downstream keying on `cr-sj`. **No app contract change** beyond `region_id` moving `cr-sj`→`valle_central` for new rides (completed keep booked `cr-sj`; no app keys on it) |
-| `[dispatch]_offer_path_fixes.md` | dispatch | dispatch offer path + socket retry + skip tracing (STATUS.md) | **open (unnumbered)** — §A3 / bug #11: liveness-aware hub presence + a bounded re-arm so a DB-online driver reconnecting inside the 30 s offer window still gets the offer (the fixed ~450 ms poll currently drops it); §A4: replace the `platformHandler.StubPayment` binding on `POST /driver/rides/:id/decline` (`internal/router/router.go:235`) with a real decline that records `driver_declined`, plus a contract test |
+| `[routing]_valle_central.md` | routing | landed `[routing]` gate correctness + snap-radius coverage (STATUS.md) | **open (independent, unnumbered — renamed back from `01_` now that its prerequisite is landed)** — one `valle_central` region (`level=state`, `parent_region='cr'`) covering the **Central Valley BASIN** (supersedes the nationwide/province question; the 4 full provinces are **out** — Alajuela reaches the northern border, San José the Pacific). Within-basin trips road-follow; any pin outside the basin (incl. the rest of the 4 provinces and cross-basin trips) → 200 `is_estimate`. **TOP OPEN INPUT:** the exact basin polygon (`regions/valle_central.poly`, CONFIRM-BEFORE-IMPORT) vs the bbox fallback `-84.45,9.65,-83.65,10.25`. Remaining: clip + import `valle_central`; the elevation gate fix (bug #24) is now **landed** (STATUS.md → Landed `[routing]` gate correctness), so run the `--region valle_central` backfill; one fare card (`make seed-fares SEED_FARES_REGION=valle_central`); retire the `cr-sj` **network** rows (edges before vertices) + single `default_region` owner; restart; then the **final `cr-sj` delete** (`fare_rates`→`fare_demand_windows`→`fare_regions`→`routing_regions`, FK order, guarded on no active `cr-sj` ride; historical `rides.fare_region_id` audit refs go stale by design — no FK); acceptance tests. Still open: any downstream keying on `cr-sj`. **No app contract change** beyond `region_id` moving `cr-sj`→`valle_central` for new rides (completed keep booked `cr-sj`; no app keys on it) |
 | `[push]_production_provider.md` | push | push delivery pipeline + device-token registration seam (STATUS.md) | **deferred** — wire real FCM/APNs/web providers behind `push.Provider`/`MultiProvider` (the shipped `LogProvider` is a no-op) and real token sources (both apps ship `NoopPushTokenSource`); no credentials/SDK exist in this harness. Canonical push file; the rider/driver halves are referenced by path from their own STATUS, not duplicated |
-| `[payout]_driver_earnings_and_withdraw.md` | payout | — | **open (promoted 2026-10-15)** — server half of driver-app bug **#5** (no withdraw UI): `driver_earnings` ledger + credit-on-completion + real `GET /driver/me/earnings` and idempotent `POST /driver/earnings/withdraw` (pending debit, no external payout); design settled in the file |
 | `[auth]_web_session_token_contract.md` | auth | — | **contract record, no API change**: the rider-web session bug is fixed Flutter-only. Documents the Bearer refresh contract (15m access / 720h refresh, rotate-and-revoke, 401-vs-5xx, `AllowAllOrigins` rules out cookies) + the client obligations (cold-start exchange, atomic rotated-token persist, single-flight refresh) and contract guardrails |
 
 **Deferred follow-up (no plan file yet) — receipt-level per-leg breakdown:** the completed-ride
@@ -521,18 +583,23 @@ asks, preserving the single-summed-price semantics and the estimate `legs` contr
 
 ## Decisions already taken — [payout] (do not re-litigate)
 
-> Status: **open** (promoted 2026-10-15) — decisions are settled and the server implementation
-> is scheduled. See `[payout]_driver_earnings_and_withdraw.md`.
+> Status: **landed, both halves** (2026-10-15; condensed into Landed → `[payout]`). The decisions
+> below are settled and implemented, and the driver-app withdraw UI half has also landed
+> (`driver_app_plans/STATUS.md` → Landed `[payout]`, adversarially confirmed 2026-10-15 — driver
+> bug #5 resolved).
 
 - **Integer cents** in the ledger; the `float64` ride fare is converted once at credit time.
-- **No wallet column**: available balance is `SUM(amount_cents)` over `status='available'` ledger
-  rows (single source of truth, no drift).
+- **No wallet column**: available = **lifetime earned − withdrawals in `pending` OR `paid`**
+  (`availableBalanceExpr` / `withdrawalCountedExpr`, `internal/repository/earnings_repo.go:78-85`;
+  single source of truth, no drift). A withdrawal debit reduces the balance from request (`pending`)
+  through settlement (`paid`). ⚠️ The older prose here — "`SUM(amount_cents)` over `status='available'`
+  rows" — was **wrong**: it would let a `pending` debit drop out, so the same earnings could be
+  withdrawn twice. Do **not** realign the code to it; that reintroduces immediate overdraw.
 - **Commission defaults to 0** in dev (`PAYOUT_COMMISSION_RATE`); per-region/versioned fares are
   deferred to the `fare.go` trigger.
 - **Withdrawal is a `pending` ledger debit, not a bank transfer** — no external payout provider in
   this plan; the API is honest about the pending state.
 - **Withdraw is idempotent** (`Idempotency-Key`), like create-ride.
-  See `[payout]_driver_earnings_and_withdraw.md`.
 
 ## Decisions already taken — [elevation] (do not re-litigate)
 
@@ -660,6 +727,13 @@ asks, preserving the single-summed-price semantics and the estimate `legs` contr
   the ride's own `driver_id`, and `MIN_MOVE` debounces the nearby crossing **only** — never the
   arrive gate. `near_pickup` is advisory and **never changes `ride.status`**: a push must never
   announce a status the database does not hold.
+- `[payout]`: the two earnings endpoints speak **integer cents end-to-end** (the documented
+  exception to the ride JSON's major-units rule — the client converts once at render time). A
+  withdrawal is a **recorded `pending` ledger debit, never a bank transfer**; the ledger IS the
+  wallet (no balance column anywhere — available is derived, so credit and debit cannot drift).
+  The completion credit is exactly-once (partial unique index on `ride_id`) and a failed credit
+  **fails completion with 5xx** — the one non-bests-effort money write in the request path.
+  `EarningsRepository`/`MockEarningsRepo` move in lockstep.
 
 ## Verification
 
@@ -671,7 +745,7 @@ gofmt -w <files> && go vet ./...   # golangci-lint is NOT on PATH by default: PA
 ```
 
 ## Wave-1 condensed 2026-09-30
-- [routing]_estimate_fallback_default (bug #2), [routing]_native_engine_default (bug #1), [errors]_route_outage_contract_test, [dispatch]_reliability_and_no_driver_false_negative, [errors]_idempotency_middleware_tests + [errors]_idempotent_replay_body: landed, files deleted, evidence in STATUS.md Landed sections. ~~Routing regression N1 (native snap gate returns 500 instead of 200 estimate for uncovered pins ~265m band) remains; fix owned by routing planner.~~ **Correction 2026-10-15: N1 is landed.** `ErrPinUncovered` + the `coverageAuthority` split + the service's `200 is_estimate` mapping shipped in `00b2a5e` (2026-09-30), pinned by `TestRadiusBoundaryBandBetweenTheTwoCoveragePredicates` (`internal/repository/pin_uncovered_test.go:116-178`) and `tests/route_uncovered_estimate_test.go:26`; see Landed → [routing] coverage-gate correctness and `[routing]_gate_correctness.md` §A1 (verification only). The stale "remains" here was never reconciled until now.
+- [routing]_estimate_fallback_default (bug #2), [routing]_native_engine_default (bug #1), [errors]_route_outage_contract_test, [dispatch]_reliability_and_no_driver_false_negative, [errors]_idempotency_middleware_tests + [errors]_idempotent_replay_body: landed, files deleted, evidence in STATUS.md Landed sections. ~~Routing regression N1 (native snap gate returns 500 instead of 200 estimate for uncovered pins ~265m band) remains; fix owned by routing planner.~~ **Correction 2026-10-15: N1 is landed.** `ErrPinUncovered` + the `coverageAuthority` split + the service's `200 is_estimate` mapping shipped in `00b2a5e` (2026-09-30), pinned by `TestRadiusBoundaryBandBetweenTheTwoCoveragePredicates` (`internal/repository/pin_uncovered_test.go:116-178`) and `tests/route_uncovered_estimate_test.go:26`; see Landed → [routing] coverage-gate correctness (the §A1 half). The stale "remains" here was never reconciled until now.
 
 ## Wave-2 condensed 2026-10-03
 - [multi]_add_stops_change_destination (closes bug #12), [push]_delivery_pipeline (closes bugs #15/#20): landed, files deleted, evidence in Landed → [multi]/[push]. Also closed by verification this wave: #17 + #18 (idempotency content-type/user-scoping, migrations `017` + middleware/integration tests) and #19 (dispatch terminal-write outcome). New known bug #23 (top-level create `dropoff_*` is `binding:"required"` so `0` is rejected, and is never range-checked); residual idempotency caveat #22. Adversarially confirmed by `antagonistic-reviewer` runs.

@@ -1,6 +1,7 @@
 package service
 
 import (
+	"errors"
 	"fmt"
 	"log"
 	"strconv"
@@ -30,13 +31,42 @@ type DriverHub interface {
 
 var _ DriverHub = (*websocket.Hub)(nil)
 
+// activeOffer is one parked offer: the channel the accept/decline answer
+// arrives on, plus the driver it was sent to. The driver id rides along so a
+// decline can be rejected unless it comes from the candidate the offer was
+// actually sent to (api_plans [dispatch]_offer_path_fixes §A4).
+type activeOffer struct {
+	driverID string
+	ch       chan bool
+}
+
+// offerOutcome is the result of one offer attempt, so the sequential loop can
+// act on the difference between "answered no", "never answered", and "never
+// delivered" — the last one is the case the re-arm window exists for.
+type offerOutcome int
+
+const (
+	// offerAccepted: the candidate answered yes; the caller must now write the
+	// assignment.
+	offerAccepted offerOutcome = iota
+	// offerDeclined: the candidate answered no (recorded as skipDriverDeclined).
+	offerDeclined
+	// offerTimedOut: the offer was delivered and never answered (recorded as
+	// skipOfferTimeout).
+	offerTimedOut
+	// offerSocketAbsent: the offer was never delivered — the hub had no live
+	// socket for the candidate after the fast backoff. NOT recorded as a skip:
+	// the caller may park the candidate for the re-arm window instead.
+	offerSocketAbsent
+)
+
 type DispatchService struct {
 	rideRepo        repository.RideRepository
 	geoRepo         repository.GeoRepository
 	userRepo        repository.UserRepository
 	navSvc          *NavigationService
 	hub             DriverHub
-	offerChannels   map[string]chan bool
+	offerChannels   map[string]activeOffer
 	offerChannelsMu sync.Mutex
 	// traces records why every candidate was or was not offered the ride, so
 	// "genuinely no drivers" is distinguishable from "drivers existed and were
@@ -53,7 +83,7 @@ func NewDispatchService(rideRepo repository.RideRepository, geoRepo repository.G
 		userRepo:      userRepo,
 		navSvc:        navSvc,
 		hub:           hub,
-		offerChannels: make(map[string]chan bool),
+		offerChannels: make(map[string]activeOffer),
 	}
 	s.traces.Store(newDispatchTraceRecorder(logDispatchTrace))
 	return s
@@ -159,29 +189,85 @@ func (s *DispatchService) pushNoDriverAvailable(ride *model.Ride) {
 	})
 }
 
+// sendRequestsSequentially offers the ride to each candidate in turn. A
+// candidate whose socket is absent after the fast backoff is PARKED for the
+// re-arm window (socketRearmWindow) rather than dropped: the offer loop
+// re-checks parked candidates between rounds, and only gives up — with one
+// honest skipSocketNotConnected — when the window elapses without a socket.
+// That is the server-side half of bug #11 (api_plans
+// [dispatch]_offer_path_fixes §A3): a driver whose reconnect lands after the
+// ~450 ms fast backoff but inside the window still gets the offer.
 func (s *DispatchService) sendRequestsSequentially(ride *model.Ride, drivers []model.NearbyDriverResult) {
+	rearmDeadline := time.Now().Add(socketRearmWindow)
+	type parkedCandidate struct {
+		driverID string
+		attempt  int
+	}
+	var parked []parkedCandidate
+
 	for i, d := range drivers {
-		ok := s.offerRideToDriver(ride.ID, d.DriverID, i+1, len(drivers))
-		if ok {
-			if err := s.AcceptRide(ride.ID, d.DriverID); err != nil {
-				// Accepting is a WRITE; a failure must not be reported as a
-				// plain decline, and it must not leave the trace claiming the
-				// driver was never offered.
-				detail := "accept failed"
-				if errIsConflict(err) {
-					detail = "another driver already took the ride"
-				}
-				s.recordSkip(ride.ID, d.DriverID, i+1, len(drivers), skipAcceptFailed, detail)
-				log.Printf("failed to accept ride %s for driver %s: %v", ride.ID, d.DriverID, err)
+		attempt := i + 1
+		switch s.offerRideToDriver(ride.ID, d.DriverID, attempt, len(drivers), true) {
+		case offerAccepted:
+			if s.acceptOfferedRide(ride, d.DriverID, attempt, len(drivers)) {
+				return
+			}
+		case offerSocketAbsent:
+			// Park instead of dropping: the reconnect may still land inside
+			// the re-arm window. The park is logged with its own verb so the
+			// socket-wait count and the skip tally both stay exact.
+			logOfferRearm(ride.ID, d.DriverID, attempt, len(drivers),
+				"socket absent after fast backoff; parked for the re-arm window")
+			parked = append(parked, parkedCandidate{driverID: d.DriverID, attempt: attempt})
+		case offerDeclined, offerTimedOut:
+			// Both were recorded inside offerRideToDriver; keep going.
+		}
+	}
+
+	// Re-arm rounds: re-check the parked candidates until the window elapses.
+	// The deadline gates only the WAITING for a socket — a parked candidate
+	// that shows up is offered regardless of how much of the window the
+	// earlier candidates consumed.
+	for len(parked) > 0 {
+		remaining := time.Until(rearmDeadline)
+		if remaining <= 0 {
+			for _, p := range parked {
+				s.recordSkip(ride.ID, p.driverID, p.attempt, len(drivers), skipSocketNotConnected,
+					fmt.Sprintf("no socket after %d checks over %s; %s re-arm window elapsed",
+						socketBackoffAttempts,
+						time.Duration(socketBackoffAttempts-1)*socketBackoffDelay,
+						socketRearmWindow))
+			}
+			break
+		}
+		wait := socketRearmPoll
+		if remaining < wait {
+			wait = remaining
+		}
+		time.Sleep(wait)
+
+		var stillParked []parkedCandidate
+		for _, p := range parked {
+			if !s.hub.IsConnected(p.driverID) {
+				stillParked = append(stillParked, p)
 				continue
 			}
-			// Someone took the ride. The trace closes HERE with its own
-			// outcome; the skips it still carries are the evidence for "the
-			// first N candidates were dropped and the N+1th answered".
-			s.traceRecorder().noteAccepted(ride.ID)
-			s.traceRecorder().end(ride.ID)
-			return
+			// withBackoff=false: presence was just confirmed, so the fast
+			// backoff would only add latency (and extra socket-wait lines).
+			switch s.offerRideToDriver(ride.ID, p.driverID, p.attempt, len(drivers), false) {
+			case offerAccepted:
+				if s.acceptOfferedRide(ride, p.driverID, p.attempt, len(drivers)) {
+					return
+				}
+			case offerSocketAbsent:
+				// Disconnected again between the check and the send; keep it
+				// parked for the rest of the window.
+				stillParked = append(stillParked, p)
+			case offerDeclined, offerTimedOut:
+				// Recorded inside offerRideToDriver; drop from the parked set.
+			}
 		}
+		parked = stillParked
 	}
 
 	current, err := s.rideRepo.FindByID(ride.ID)
@@ -203,19 +289,45 @@ func (s *DispatchService) sendRequestsSequentially(ride *model.Ride, drivers []m
 	s.traceRecorder().end(ride.ID)
 }
 
-func (s *DispatchService) offerRideToDriver(rideID, driverID string, attempt, total int) bool {
+// acceptOfferedRide runs the accept write for a candidate whose offer was
+// answered yes. A failure is recorded as its own skip (never as a plain
+// decline, and never leaving the trace claiming the driver was never offered).
+// Returns true when the ride was assigned and the attempt is over.
+func (s *DispatchService) acceptOfferedRide(ride *model.Ride, driverID string, attempt, total int) bool {
+	if err := s.AcceptRide(ride.ID, driverID); err != nil {
+		detail := "accept failed"
+		if errIsConflict(err) {
+			detail = "another driver already took the ride"
+		}
+		s.recordSkip(ride.ID, driverID, attempt, total, skipAcceptFailed, detail)
+		log.Printf("failed to accept ride %s for driver %s: %v", ride.ID, driverID, err)
+		return false
+	}
+	// Someone took the ride. The trace closes HERE with its own outcome; the
+	// skips it still carries are the evidence for "the first N candidates were
+	// dropped and the N+1th answered".
+	s.traceRecorder().noteAccepted(ride.ID)
+	s.traceRecorder().end(ride.ID)
+	return true
+}
+
+// offerRideToDriver delivers the offer to one candidate and waits for the
+// answer. withBackoff=true runs the fast hub poll first (round one); false is
+// used by the re-arm rounds, where presence was just confirmed.
+func (s *DispatchService) offerRideToDriver(rideID, driverID string, attempt, total int, withBackoff bool) offerOutcome {
 	// A DB-fresh driver whose socket is not in the hub yet is RETRIED, not
 	// skipped: the hub registers a client a moment after the /ws handshake, and
 	// a reconnect re-enters that window. The hard skip is what made the search
-	// and the offer loop disagree.
-	if !s.waitForSocket(rideID, driverID, attempt, total) {
-		return false
+	// and the offer loop disagree. Exhausting the fast backoff does NOT record
+	// a skip — the caller decides between parking and giving up.
+	if withBackoff && !s.waitForSocket(rideID, driverID, attempt, total) {
+		return offerSocketAbsent
 	}
 
-	ch := make(chan bool, 1)
+	offer := activeOffer{driverID: driverID, ch: make(chan bool, 1)}
 
 	s.offerChannelsMu.Lock()
-	s.offerChannels[rideID] = ch
+	s.offerChannels[rideID] = offer
 	s.offerChannelsMu.Unlock()
 
 	defer func() {
@@ -230,37 +342,59 @@ func (s *DispatchService) offerRideToDriver(rideID, driverID string, attempt, to
 	})
 
 	select {
-	case result := <-ch:
+	case result := <-offer.ch:
 		if !result {
 			s.recordSkip(rideID, driverID, attempt, total, skipDriverDeclined, "driver declined")
-			return false
+			return offerDeclined
 		}
-		return true
+		return offerAccepted
 	case <-time.After(offerTimeout):
 		s.recordSkip(rideID, driverID, attempt, total, skipOfferTimeout,
 			fmt.Sprintf("no answer within %s", offerTimeout))
-		return false
+		return offerTimedOut
 	}
 }
 
+// ErrNoActiveOffer is returned when a decline names a ride with no offer
+// parked for the asking driver — either the offer already expired/was answered,
+// or it belongs to a different candidate. Handlers map it to 404; it must never
+// become a 2xx lie (api_plans [dispatch]_offer_path_fixes §A4).
+var ErrNoActiveOffer = errors.New("no active offer to decline")
+
 func (s *DispatchService) HandleAccept(driverID, rideID string) error {
 	s.offerChannelsMu.Lock()
-	ch, ok := s.offerChannels[rideID]
+	offer, ok := s.offerChannels[rideID]
 	s.offerChannelsMu.Unlock()
 	if !ok {
 		return fmt.Errorf("no active offer for ride %s", rideID)
 	}
-	ch <- true
+	offer.ch <- true
 	return nil
 }
 
+// HandleDecline is the WebSocket adapter: a ride.decline frame is log-and-
+// ignore, exactly as before, but it now goes through DeclineOffer so the WS
+// and HTTP paths share one decline funnel (and one driver-match check).
 func (s *DispatchService) HandleDecline(driverID, rideID string) {
-	s.offerChannelsMu.Lock()
-	ch, ok := s.offerChannels[rideID]
-	s.offerChannelsMu.Unlock()
-	if ok {
-		ch <- false
+	if err := s.DeclineOffer(driverID, rideID); err != nil {
+		log.Printf("ride %s: websocket decline from driver %s ignored: %v", rideID, driverID, err)
 	}
+}
+
+// DeclineOffer signals the active offer for rideID as declined, but only when
+// the offer was sent to driverID: a different candidate (or a stranger) naming
+// the ride gets ErrNoActiveOffer and the offer is left untouched. The WS path
+// (HandleDecline) and the HTTP decline endpoint (handler.RideHandler.DeclineRide)
+// both funnel through here, so one decline is recorded per offer either way.
+func (s *DispatchService) DeclineOffer(driverID, rideID string) error {
+	s.offerChannelsMu.Lock()
+	offer, ok := s.offerChannels[rideID]
+	s.offerChannelsMu.Unlock()
+	if !ok || offer.driverID != driverID {
+		return ErrNoActiveOffer
+	}
+	offer.ch <- false
+	return nil
 }
 
 func (s *DispatchService) AcceptRide(rideID, driverID string) error {

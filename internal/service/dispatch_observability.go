@@ -164,6 +164,17 @@ func logOfferRetry(rideID, driverID string, attempt, total, retry int, detail st
 		rideID, driverID, attempt, total, retry, socketBackoffAttempts, detail)
 }
 
+// logOfferRearm records that a candidate was parked for the re-arm window
+// because its socket was absent after the fast backoff. Like the retry lines,
+// the verb is NOT "skip": a parked candidate may still be offered, and only
+// the give-up decision may appear in the skip tally.
+//
+//	[dispatch] ride=... socket-rearm driver=... attempt=n/total detail=...
+func logOfferRearm(rideID, driverID string, attempt, total int, detail string) {
+	log.Printf("[dispatch] ride=%s socket-rearm driver=%s attempt=%d/%d detail=%s",
+		rideID, driverID, attempt, total, detail)
+}
+
 // logSearchRounds records what the widening search actually did, so an empty
 // candidate set is explainable without guessing at the radii.
 func logSearchRounds(rideID string, radii []float64, found int) {
@@ -181,11 +192,26 @@ func logDispatchTrace(t dispatchTrace) {
 
 var (
 	// socketBackoffAttempts is how many times the offer loop re-checks the hub
-	// before giving up on a DB-fresh driver: 4 checks with 3 sleeps between them
-	// = 450ms of tolerance, far less than the 30s offer timeout, so the happy
-	// path is unaffected.
+	// before parking a DB-fresh driver for the re-arm window: 4 checks with 3
+	// sleeps between them = 450ms of fast tolerance, far less than the 30s
+	// offer timeout, so the happy path is unaffected.
 	socketBackoffAttempts = 4
 	socketBackoffDelay    = 150 * time.Millisecond
+	// socketRearmWindow is how long a candidate that failed the fast backoff
+	// stays eligible instead of being dropped. It is the bounded per-driver
+	// deferred retry the plan chose over re-attempting on a later search round
+	// (api_plans [dispatch]_offer_path_fixes §A3 open inputs). The plan's prose
+	// suggests tying this to the 30s offer window; 3s is the deliberate ship
+	// point instead, because the keep-green suite (notably
+	// TestDispatchSkipsDriverWithNoSocketAndRetries and the e2e
+	// TestNoOfferWhenDriverSocketIsDown) pins a dropped-candidate resolution
+	// far below the offer timeout. A driver who reconnects later than the
+	// window is still dropped with one honest socket_not_connected skip.
+	socketRearmWindow = 3 * time.Second
+	// socketRearmPoll is the re-check cadence inside the re-arm window: short
+	// enough that a reconnect is offered almost immediately, coarse enough
+	// that a full window costs ~12 hub checks rather than a busy loop.
+	socketRearmPoll = 250 * time.Millisecond
 	// offerTimeout is how long a delivered offer waits for an accept/decline.
 	offerTimeout = 30 * time.Second
 )
@@ -196,15 +222,18 @@ var (
 // driver_app_plans/01_[dispatch]_keepalive_and_offer_reliability.md, which
 // driver-planner owns.
 
-// waitForSocket polls the hub briefly instead of skipping a DB-fresh driver on
+// waitForSocket polls the hub briefly instead of offering a DB-fresh driver on
 // the first miss: the hub registers a client a moment AFTER the /ws upgrade
-// replies 101 (internal/websocket/hub.go:55-70), and a reconnect re-enters that
-// window. Treating "not in the map" as a hard skip on the first miss is what
-// made the search and the offer loop disagree.
+// replies 101 (internal/websocket/hub.go HandleWS), and a reconnect re-enters
+// that window. Treating "not in the map" as a hard skip on the first miss is
+// what made the search and the offer loop disagree.
 //
-// Each poll is logged as a retry, not a skip. Only the give-up decision is a
-// skip, so the terminal tally counts one dropped candidate per driver rather
-// than one per poll; the retry count rides in that single skip's detail.
+// Each poll is logged as a retry, not a skip. This function records NO skip:
+// exhausting the fast backoff returns false, and the caller decides whether to
+// park the candidate for the re-arm window (sendRequestsSequentially) or give
+// up — the single terminal skip is recorded only at the give-up, so the
+// terminal tally counts one dropped candidate per driver rather than one per
+// poll; the retry count rides in that single skip's detail.
 func (s *DispatchService) waitForSocket(rideID, driverID string, attempt, total int) bool {
 	for try := 1; try <= socketBackoffAttempts; try++ {
 		if s.hub.IsConnected(driverID) {
@@ -219,9 +248,6 @@ func (s *DispatchService) waitForSocket(rideID, driverID string, attempt, total 
 			time.Sleep(socketBackoffDelay)
 		}
 	}
-	s.recordSkip(rideID, driverID, attempt, total, skipSocketNotConnected,
-		fmt.Sprintf("no socket after %d checks over %s", socketBackoffAttempts,
-			time.Duration(socketBackoffAttempts-1)*socketBackoffDelay))
 	return false
 }
 

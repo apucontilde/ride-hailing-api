@@ -226,8 +226,10 @@ class WebSocketService {
   /// Accept an offered ride (driver). Requires a live /ws connection.
   void acceptOffer(String rideId) => _send('ride.accept', {'ride_id': rideId});
 
-  /// Decline an offered ride (driver). The HTTP decline endpoint is a STUB, so
-  /// this WS message is the only supported decline path.
+  /// Decline an offered ride (driver). The HTTP decline endpoint
+  /// (`POST /driver/rides/:id/decline`, `internal/router/router.go:254` →
+  /// `rideHandler.DeclineRide`) is **real**, but this WS message remains the
+  /// app's only decline path — neither app has an HTTP decline caller.
   void declineOffer(String rideId) =>
       _send('ride.decline', {'ride_id': rideId});
 

@@ -6,6 +6,8 @@ import '../auth/auth_provider.dart';
 import '../api/endpoints.dart';
 import '../network/websocket_service.dart';
 import '../../features/home/providers/availability_notifier.dart';
+import 'app_lifecycle_notifier.dart';
+import 'driver_location_stream.dart';
 
 /// Permission state for the location service.
 class AppPermissionState {
@@ -61,6 +63,11 @@ class LocationService {
   final ApiClient apiClient;
   final AvailabilityNotifier availabilityNotifier;
   final Stream<Position> Function() positionStreamProvider;
+
+  /// The stream to use while [foregroundTracking] is true. On Android this is
+  /// the foreground-service stream with a persistent notification; when not
+  /// supplied it falls back to [positionStreamProvider] (tests and non-Android).
+  final Stream<Position> Function()? foregroundPositionStreamProvider;
   final Duration throttle;
 
   /// Reads the current wall-clock time for the throttle window. Defaults to
@@ -83,10 +90,15 @@ class LocationService {
   final List<Map<String, dynamic>> _buffer = [];
   static const int _maxBuffer = 60;
 
+  /// Whether the Android foreground service (with its persistent notification)
+  /// should back the stream. Toggled by [setForegroundTracking].
+  bool _foregroundTracking = false;
+
   LocationService({
     required this.apiClient,
     required this.availabilityNotifier,
     Stream<Position> Function()? positionStreamProvider,
+    this.foregroundPositionStreamProvider,
     this.throttle = const Duration(seconds: 5),
     this.onPermission,
     this.onPosition,
@@ -97,20 +109,50 @@ class LocationService {
 
   bool get active => _subscription != null;
 
+  /// Whether the stream is currently backed by the foreground service.
+  bool get foregroundTracking => _foregroundTracking;
+
+  Stream<Position> Function() get _streamFactory => _foregroundTracking
+      ? (foregroundPositionStreamProvider ?? positionStreamProvider)
+      : positionStreamProvider;
+
   void start() {
     if (_subscription != null) return;
-    _subscription = positionStreamProvider().listen(
+    _subscribe(_streamFactory);
+  }
+
+  void stop() {
+    _subscription?.cancel();
+    _subscription = null;
+    // A stopped service is never backed by the ongoing notification: a logout
+    // (or an offline teardown) must not leave the foreground service running.
+    _foregroundTracking = false;
+  }
+
+  /// Arms or disarms the Android foreground service that keeps fixes flowing
+  /// while the app is backgrounded (driver bug #18). The service is tied to the
+  /// driver's online state: it must never run while offline (privacy invariant).
+  ///
+  /// If a subscription is already live, it is restarted so the notification is
+  /// actually attached/detached. A no-op when the flag already matches.
+  void setForegroundTracking(bool enabled) {
+    if (_foregroundTracking == enabled) return;
+    _foregroundTracking = enabled;
+    if (_subscription != null) {
+      _subscription!.cancel();
+      _subscription = null;
+      _subscribe(_streamFactory);
+    }
+  }
+
+  void _subscribe(Stream<Position> Function() factory) {
+    _subscription = factory().listen(
       (Position position) => _onPosition(position),
       onError: (e) {
         // Silently ignore stream errors.
       },
       cancelOnError: false,
     );
-  }
-
-  void stop() {
-    _subscription?.cancel();
-    _subscription = null;
   }
 
   void dispose() {
@@ -234,6 +276,12 @@ final locationServiceProvider = Provider<LocationService>((ref) {
   final service = LocationService(
     apiClient: ref.read(apiClientProvider),
     availabilityNotifier: availability,
+    // Android re-exported stream: while online the geolocator plugin runs a
+    // foreground service with an ongoing notification so backgrounded/locked
+    // drivers keep emitting fixes (bug #18). On every other platform the
+    // factory falls back to the shared foreground-only stream.
+    foregroundPositionStreamProvider: () =>
+        driverPositionStream(foregroundService: true),
     onPermission: ({bool granted = false, bool deniedPermanently = false}) {
       ref.read(appPermissionProvider.notifier).state = AppPermissionState(
         granted: granted,
@@ -248,11 +296,26 @@ final locationServiceProvider = Provider<LocationService>((ref) {
   // Keep the websocket keep-alive in lockstep with availability: online pings,
   // offline stops. Without this the socket can die silently on a NAT timeout
   // while dispatch still sees the driver as online, and every offer is skipped
-  // as "no live socket" (false negative).
-  availability.onOnlineChanged = websocket.setOnline;
+  // as "no live socket" (false negative). The same transition arms the Android
+  // foreground service (online) and disarms it (offline): the service must
+  // never run while offline (bug #18 / privacy invariant).
+  availability.onOnlineChanged = (online) {
+    websocket.setOnline(online);
+    service.setForegroundTracking(online);
+  };
   // A (re)connected socket must re-publish the last fix immediately, or the
   // driver's `driver_positions` row ages past dispatch's 30 s window and they
   // are skipped again.
   websocket.onReconnected = () => service.publishLastPosition();
+  // On resume from the background, re-assert tracking and push a fresh fix:
+  // a suspended isolate can have missed the throttle window and left the
+  // `driver_positions` row stale, so the driver would be skipped until the next
+  // movement event.
+  ref.read(appLifecycleProvider.notifier).onResumed = () {
+    if (!availability.online) return;
+    service.start();
+    service.setForegroundTracking(true);
+    service.publishLastPosition();
+  };
   return service;
 });

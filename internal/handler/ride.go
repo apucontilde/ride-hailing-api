@@ -574,11 +574,25 @@ func (h *RideHandler) CancelRide(c *gin.Context) {
 //	@Param		body	body		updateRideStatusRequest	true	"New status"
 //	@Success	200		{object}	RideResponse
 //	@Failure	400		{object}	ErrorResponse	"Invalid status transition"
-//	@Failure	422		{object}	ErrorResponse	"Validation error"
-//	@Router		/api/v1/rides/{id}/status [put]
+//	@Failure	404		{object}	ErrorResponse	"Ride not found"
+//	@Failure	422		{object}	ErrorResponse	"Validation error (malformed ride id or body)"
+//	@Failure	500		{object}	ErrorResponse	"Failed to update ride status (including a failed earnings credit)"
+//	@Router		/api/v1/driver/rides/{id}/status [put]
 func (h *RideHandler) AdvanceStatus(c *gin.Context) {
 	id := c.Param("id")
 	actor, _ := c.Get("role")
+
+	// A junk id must be a 422 like the sibling decline endpoint
+	// (internal/handler/ride_decline.go), not a Postgres "invalid text
+	// representation" (SQLSTATE 22P02) 500 from the uuid cast in FindByID.
+	// Handler-level validation is the established pattern (see also
+	// GetRatings) and is testable in the mock harness, where the repo never
+	// produces a pq error.
+	if !uuidRE.MatchString(id) {
+		fail(c, http.StatusUnprocessableEntity, "VALIDATION_ERROR",
+			"invalid ride id", fmt.Errorf("[rides] advance status: invalid ride_id value=%q", id))
+		return
+	}
 
 	var req updateRideStatusRequest
 	if !bindJSON(c, &req, "") {
@@ -587,7 +601,15 @@ func (h *RideHandler) AdvanceStatus(c *gin.Context) {
 
 	ride, err := h.rideService.AdvanceStatus(id, req.Status, actor.(string))
 	if err != nil {
-		fail(c, http.StatusBadRequest, "BAD_REQUEST", "invalid status transition", err)
+		// Only the state machine's own rejection is the client's fault (400).
+		// A missing ride is 404; anything else — including a failed earnings
+		// credit — is an outage and answers 500, never a misleading 400
+		// (api_plans/[payout]: a failed money write never answers success).
+		if errors.Is(err, service.ErrInvalidTransition) {
+			fail(c, http.StatusBadRequest, "BAD_REQUEST", "invalid status transition", err)
+			return
+		}
+		respondRepo(c, err, "ride not found", "ride state changed, please retry", "failed to update ride status")
 		return
 	}
 

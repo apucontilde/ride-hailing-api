@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:dio/dio.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
@@ -51,23 +53,25 @@ void main() {
       double driverLat = 9.93,
       double driverLng = -84.09,
       String? status = 'accepted',
+      String rideId = 'ride-1',
     }) {
       final rideStatus = switch (status) {
         'driver_arrived' => RideStatus.driverArrived,
         'in_progress' => RideStatus.onTrip,
+        'no_driver_available' => RideStatus.noDriverAvailable,
         _ => RideStatus.driverApproaching,
       };
       return RideState(
         status: rideStatus,
-        rideId: 'ride-1',
+        rideId: rideId,
         driverLocation: DriverLocation(
           driverId: 'driver-1',
           lat: driverLat,
           lng: driverLng,
         ),
-        rideData: const {
-          'ride_id': 'ride-1',
-          'pickup': {'lat': 9.9281, 'lng': -84.0907},
+        rideData: {
+          'ride_id': rideId,
+          'pickup': const {'lat': 9.9281, 'lng': -84.0907},
         },
       );
     }
@@ -272,6 +276,146 @@ void main() {
 
       eta.onRideState(approaching(status: 'in_progress'));
       expect(eta.isPolling, isFalse);
+    });
+
+    test(
+        'a second ride computes immediately despite the previous ride state '
+        '(bug #30)', () async {
+      dioAdapter.onGet(
+        '/api/v1/geo/eta',
+        (server) => server.reply(200, {
+          'eta_seconds': 240,
+          'distance_meters': 2300,
+          'is_estimate': false,
+        }),
+      );
+
+      // Ride 1: the first fix computes and sets both `_referenceFix` and the
+      // 5 s floor's `_lastRequestAt`.
+      eta.onRideState(approaching());
+      await eta.pendingCompute;
+      expect(eta.state.computations, 1);
+
+      // Leave the trip. This must not leak the per-ride throttle bookkeeping.
+      eta.onRideState(approaching(status: 'in_progress'));
+      expect(eta.isPolling, isFalse);
+
+      // Ride 2: a different `rideId`, the same simulated wall clock (inside the
+      // 5 s floor), and <150 m from ride 1's last fix — so both the floor and the
+      // movement trigger would suppress the request if the state leaked.
+      eta.onRideState(
+        approaching(rideId: 'ride-2', driverLat: 9.9301, driverLng: -84.0901),
+      );
+      await eta.pendingCompute;
+
+      expect(
+        eta.state.computations,
+        2,
+        reason: 'a new ride must not inherit the previous ride throttle',
+      );
+    });
+
+    test(
+        'a terminal status resets the throttle for the next ride (bug #30)',
+        () async {
+      dioAdapter.onGet(
+        '/api/v1/geo/eta',
+        (server) => server.reply(200, {
+          'eta_seconds': 240,
+          'distance_meters': 2300,
+          'is_estimate': false,
+        }),
+      );
+
+      eta.onRideState(approaching());
+      await eta.pendingCompute;
+      expect(eta.state.computations, 1);
+
+      // Terminal leave (not just any non-approaching status).
+      eta.onRideState(approaching(status: 'no_driver_available'));
+      expect(eta.isPolling, isFalse);
+
+      eta.onRideState(
+        approaching(rideId: 'ride-2', driverLat: 9.9301, driverLng: -84.0901),
+      );
+      await eta.pendingCompute;
+
+      expect(
+        eta.state.computations,
+        2,
+        reason: 'a terminal status must not leak the throttle into ride 2',
+      );
+    });
+
+    test(
+        'a stale in-flight response cannot leak into the next ride '
+        '(bug #30 residual)', () async {
+      // Each `/geo/eta` request hangs on its own completer so the test owns the
+      // exact ordering: ride 1's request is left in flight across the ride
+      // boundary while ride 2's is launched.
+      final pending = <Completer<Map<String, dynamic>>>[];
+      dioAdapter.onGet(
+        '/api/v1/geo/eta',
+        (server) => server.replyCallbackAsync(200, (options) {
+          final completer = Completer<Map<String, dynamic>>();
+          pending.add(completer);
+          return completer.future;
+        }),
+      );
+
+      Future<void> waitForRequests(int count) async {
+        for (var i = 0; i < 100 && pending.length < count; i++) {
+          await Future<void>.delayed(Duration.zero);
+        }
+        expect(pending.length, count, reason: 'expected $count /geo/eta calls');
+      }
+
+      // Ride 1: the first fix launches a request we deliberately leave in
+      // flight across the boundary.
+      eta.onRideState(approaching(rideId: 'ride-1'));
+      final ride1Compute = eta.pendingCompute;
+      await waitForRequests(1);
+
+      // Boundary: leave `driverApproaching` *before* ride 1's request resolves.
+      eta.onRideState(approaching(status: 'in_progress'));
+
+      // Ride 2: a different rideId, the same simulated clock, and <150 m from
+      // ride 1's fix — so the stale `_inFlight` guard, the previous ride's
+      // floor and the movement trigger would each suppress the request.
+      eta.onRideState(
+        approaching(rideId: 'ride-2', driverLat: 9.9301, driverLng: -84.0901),
+      );
+      await waitForRequests(2);
+      final ride2Compute = eta.pendingCompute;
+
+      // Resolve ride 1's request *after* ride 2's is already in flight. It is
+      // stale, so it must not re-set `_referenceFix` nor write into ride 2.
+      pending[0].complete({
+        'eta_seconds': 111,
+        'distance_meters': 1000,
+        'is_estimate': false,
+      });
+      await ride1Compute;
+      expect(
+        container.read(rideStatusProvider).etaSeconds,
+        isNull,
+        reason: 'the stale response must not write the next ride state',
+      );
+      expect(
+        eta.state.computations,
+        0,
+        reason: 'a stale response does not count as a compute',
+      );
+
+      // Resolve ride 2's request: current, so it applies.
+      pending[1].complete({
+        'eta_seconds': 222,
+        'distance_meters': 2000,
+        'is_estimate': false,
+      });
+      await ride2Compute;
+      expect(eta.state.computations, 1);
+      expect(container.read(rideStatusProvider).etaSeconds, 222);
     });
   });
 }

@@ -5,7 +5,7 @@ import '../../../config.dart';
 import '../../../core/api/endpoints.dart';
 import '../../../core/auth/auth_provider.dart';
 
-/// Reads `GET /driver/me/vehicle` — only reachable when the feature flag is on.
+/// Reads `GET /driver/me/vehicle` — only consulted when the feature flag is on.
 final vehicleDetailsProvider = FutureProvider<Map<String, dynamic>>((
   ref,
 ) async {
@@ -16,8 +16,23 @@ final vehicleDetailsProvider = FutureProvider<Map<String, dynamic>>((
   return (response.data as Map<String, dynamic>?) ?? const {};
 });
 
-/// US-D3 vehicle & documents surface, feature-gated by
-/// [ApiConfig.vehicleFeatureEnabled]. The backend endpoints
+/// The details/save gate of [VehicleScreen], injectable for tests.
+///
+/// Production resolves to `ApiConfig.vehicleFeatureEnabled`, which stays
+/// `false` while `GET/PUT /driver/me/vehicle` and `GET/POST /driver/me/documents`
+/// are backend stubs (`internal/router/router.go:219-222`), so the screen
+/// renders the `_ComingSoon` disclosure and reads nothing. Tests override this
+/// to exercise both branches. The nav entry (`buildDriverNavItems`) deliberately
+/// does **not** read this: the drawer/profile-card row is unconditional so
+/// `/vehicle` is no longer deep-link-only (driver bug #6); the flag only picks
+/// the screen's body.
+final vehicleFeatureEnabledProvider = Provider<bool>(
+  (ref) => ApiConfig.vehicleFeatureEnabled,
+);
+
+/// US-D3 vehicle & documents surface. Reachable unconditionally from the drawer
+/// and the profile card; the **details/save half** is feature-gated by
+/// [vehicleFeatureEnabledProvider] because the backend endpoints
 /// (`GET/PUT /driver/me/vehicle`, `GET/POST /driver/me/documents`) are STUBs
 /// (`internal/handler/platform.go` returns `{"status":"stub",...}`), so while
 /// the flag is `false` this screen shows a "coming soon" empty state instead of
@@ -27,7 +42,7 @@ class VehicleScreen extends ConsumerWidget {
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
-    final enabled = ApiConfig.vehicleFeatureEnabled;
+    final enabled = ref.watch(vehicleFeatureEnabledProvider);
     // Body-only: `DriverShell` owns the Scaffold/AppBar for the section.
     return enabled ? const _VehicleDetails() : const _ComingSoon();
   }

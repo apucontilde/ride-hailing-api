@@ -6,8 +6,9 @@ import '../../navigation/driver_nav_items.dart';
 import '../providers/profile_notifier.dart';
 
 /// Driver profile (US-D3): live `GET /driver/me` data, edit form persisting
-/// via `PUT /driver/me`, and tiles into the gated vehicle/documents screen
-/// (plan 06), ride history (plan 05) and settings.
+/// via `PUT /driver/me`, and tiles into the vehicle/documents screen (its
+/// details/save half gated behind `ApiConfig.vehicleFeatureEnabled`, the row
+/// itself not), ride history (plan 05) and settings.
 ///
 /// The header, the form and the menu card are the shared widgets, so this screen
 /// is left owning exactly three things: the `'Driver'` display-name fallback, the
@@ -89,11 +90,13 @@ class _ProfileScreenState extends ConsumerState<ProfileScreen> {
         ),
         const SizedBox(height: 8),
         // Fed from the same list the sidebar reads, minus `profile`,
-        // which is the page this card sits on. With
-        // `vehicleFeatureEnabled` false the vehicle row is absent from
-        // both surfaces, which is what makes driver known bug #12
-        // ("reachable only from inside /profile") false rather than
-        // merely re-worded.
+        // which is the page this card sits on. The vehicle row is
+        // unconditional in that list (driver known bug #6): it routes
+        // to `/vehicle`, whose details/save surface stays gated on
+        // `ApiConfig.vehicleFeatureEnabled` and renders "Coming soon"
+        // while the backend endpoints are stubs — so the row existing
+        // and the screen being able to save are deliberately separate
+        // decisions.
         AppNavLinkCard(
           items: buildDriverNavItems()
               .where((item) => item.destination != AppNavDestination.profile)

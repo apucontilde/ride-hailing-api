@@ -81,11 +81,21 @@ class DriverEtaNotifier extends StateNotifier<DriverEtaState> {
 
   Timer? _timer;
   bool _disposed = false;
-  bool _inFlight = false;
   RideStatus _status = RideStatus.idle;
   LatLng? _referenceFix;
   DateTime? _lastRequestAt;
   Future<void>? _lastCompute;
+
+  /// Bumped by [_resetThrottle] at every ride boundary. A `/geo/eta` response is
+  /// only allowed to touch [_referenceFix] or `RideState` while its captured
+  /// generation still matches, so a response left in flight across a boundary
+  /// cannot leak into the next ride.
+  int _generation = 0;
+
+  /// The generation whose request is currently in flight, or null when none is.
+  /// Scoped to a generation rather than a plain bool so a stale request cannot
+  /// swallow the next ride's immediate compute.
+  int? _inFlightGeneration;
 
   @visibleForTesting
   bool get isPolling => _timer != null;
@@ -99,11 +109,17 @@ class DriverEtaNotifier extends StateNotifier<DriverEtaState> {
   /// `rideStatusProvider` change by the screen.
   void onRideState(RideState rideState) {
     if (_disposed) return;
+    // Capture the entry edge before overwriting `_status`: a new ride must not
+    // inherit the previous ride's throttle bookkeeping (bug #30). `stop()` also
+    // resets, but this keeps the "entering `driverApproaching`" intent visible
+    // and independent of `stop()`'s idempotence.
+    final wasApproaching = _status == RideStatus.driverApproaching;
     _status = rideState.status;
     if (_status != RideStatus.driverApproaching) {
       stop();
       return;
     }
+    if (!wasApproaching) _resetThrottle();
     start();
 
     final fix = _fixFrom(rideState);
@@ -127,10 +143,29 @@ class DriverEtaNotifier extends StateNotifier<DriverEtaState> {
     _timer = Timer.periodic(refreshInterval, (_) => _tick());
   }
 
-  /// Cancels the tick. Called on terminal status and on dispose.
+  /// Cancels the tick and drops the per-ride throttle bookkeeping. Called on
+  /// every transition out of `driverApproaching` (which includes every terminal
+  /// status) and on dispose.
   void stop() {
     _timer?.cancel();
     _timer = null;
+    _resetThrottle();
+  }
+
+  /// Clears the per-ride throttle bookkeeping so the next ride's first fix is
+  /// computed immediately, and bumps [_generation] so any `/geo/eta` response
+  /// still in flight for the previous ride is discarded when it lands. Does
+  /// **not** touch [state] or `RideState` — the authoritative ETA and the
+  /// `300`-unknown contract are untouched.
+  void _resetThrottle() {
+    _generation++;
+    _referenceFix = null;
+    _lastRequestAt = null;
+    _lastCompute = null;
+    // `_inFlightGeneration` is deliberately NOT cleared here: a request in
+    // flight for the previous generation still owns its own `finally`, and
+    // because the marker no longer matches the current generation the new
+    // ride's immediate compute below is not swallowed.
   }
 
   void _tick() {
@@ -147,7 +182,12 @@ class DriverEtaNotifier extends StateNotifier<DriverEtaState> {
   }
 
   Future<void> _compute(LatLng fix, LatLng pickup) async {
-    if (_inFlight || _disposed) return;
+    if (_disposed) return;
+    final generation = _generation;
+    // A request for the *current* generation is already in flight and must not
+    // be duplicated; one left over from a previous generation must not block
+    // this ride's immediate compute (bug #30 residual).
+    if (_inFlightGeneration == generation) return;
     // The 5 s floor is authoritative whenever a request has already been made,
     // on the immediate AND movement paths. `_lastRequestAt` is stamped *before*
     // the request, so a **failed** compute burns the floor too — a failing
@@ -158,7 +198,7 @@ class DriverEtaNotifier extends StateNotifier<DriverEtaState> {
         _now().difference(_lastRequestAt!) < minInterval) {
       return;
     }
-    _inFlight = true;
+    _inFlightGeneration = generation;
     _lastRequestAt = _now();
     try {
       final response = await _apiClient.dio.get(
@@ -173,7 +213,10 @@ class DriverEtaNotifier extends StateNotifier<DriverEtaState> {
       final data = response.data as Map<String, dynamic>? ?? const {};
       final seconds = (data['eta_seconds'] as num?)?.toInt();
       final distance = (data['distance_meters'] as num?)?.toDouble();
-      if (_disposed) return;
+      // A ride boundary that fired while this request was in flight makes the
+      // response stale: it must neither re-set `_referenceFix` nor write the
+      // ETA into the (now different) current `RideState`.
+      if (_disposed || generation != _generation) return;
       _referenceFix = fix;
       state = state.copyWith(
         computations: state.computations + 1,
@@ -187,15 +230,17 @@ class DriverEtaNotifier extends StateNotifier<DriverEtaState> {
             .applyLiveEta(seconds, distanceM: distance);
       }
     } on DioException catch (e) {
-      if (_disposed) return;
+      if (_disposed || generation != _generation) return;
       // Keep the previous ETA — do not clear it on an outage.
       state = state.copyWith(
         error: apiErrorMessage(e, 'Could not refresh ETA'),
       );
     } catch (_) {
-      if (_disposed) return;
+      if (_disposed || generation != _generation) return;
     } finally {
-      _inFlight = false;
+      // Only the request that owns the marker may clear it, so a stale request
+      // landing after the next ride's request started cannot unlock a duplicate.
+      if (_inFlightGeneration == generation) _inFlightGeneration = null;
     }
   }
 

@@ -1,6 +1,7 @@
 package config
 
 import (
+	"math"
 	"os"
 	"strconv"
 	"time"
@@ -106,6 +107,33 @@ type Config struct {
 	// straight-line (haversine) distance to the ride's pickup — never a routing
 	// call — so a routing outage cannot disable it.
 	Arrival ArrivalGeofence
+
+	// Payout configures the driver earnings ledger (api_plans/[payout]_
+	// driver_earnings_and_withdraw.md). Money is integer cents everywhere in
+	// this subsystem — the earnings endpoints never deal in major units.
+	Payout Payout
+}
+
+// Payout configures the driver earnings ledger. Withdrawals are RECORDED
+// LEDGER DEBITS with status "pending", not bank transfers; there is no
+// external payout provider wired.
+type Payout struct {
+	// MinWithdrawCents is the smallest withdrawal the API accepts
+	// (PAYOUT_MIN_WITHDRAW_CENTS); below it — and any non-positive amount —
+	// is 422 VALIDATION_ERROR. 500 = $5.00, a practical ops floor.
+	MinWithdrawCents int64
+	// Currency is the ledger's single ISO-4217 code (PAYOUT_CURRENCY),
+	// stamped on every row and echoed on the earnings summary. It should
+	// agree with FARE_CURRENCY for the priced regions.
+	Currency string
+	// CommissionRate is the platform cut taken from each ride credit at
+	// completion (PAYOUT_COMMISSION_RATE): the driver is credited
+	// round(fare × (1 − rate)). Default 0 (dev: the driver gets the full
+	// fare); parsed FAIL-CLOSED — garbage, a non-finite value (NaN/±Inf),
+	// or a value outside [0, 1], is 0, never an open-ended cut. A
+	// per-region/versioned payout split is deferred
+	// (api_plans/STATUS.md [payout] decisions).
+	CommissionRate float64
 }
 
 // Fare defaults (api_plans/STATUS.md [fare]). USD is the
@@ -137,6 +165,24 @@ const (
 // nearest road.
 const defaultRoutingSnapRadiusM = 50000
 
+// Payout defaults (api_plans/[payout]_driver_earnings_and_withdraw.md). USD is
+// the documented default ledger currency; 500 cents ($5.00) is a practical
+// minimum withdrawal; commission defaults to 0 so dev credits the driver the
+// full fare.
+const (
+	// DefaultPayoutMinWithdrawCents is PAYOUT_MIN_WITHDRAW_CENTS's shipped
+	// default: low enough not to strand a small balance, high enough to keep
+	// ops volume sane.
+	DefaultPayoutMinWithdrawCents = 500
+	// DefaultPayoutCurrency is PAYOUT_CURRENCY's shipped default, kept equal
+	// to DefaultFareCurrency so a standard install's ledger and price cards
+	// agree.
+	DefaultPayoutCurrency = "USD"
+	// DefaultPayoutCommissionRate is PAYOUT_COMMISSION_RATE's shipped default:
+	// 0 = no cut, the driver is credited the full fare.
+	DefaultPayoutCommissionRate = 0.0
+)
+
 // RoutingElevation configures the native engine's elevation cost model
 // (api_plans/[elevation]). ON by default for the native engine at the measured
 // operating point below (flipped by the now-condensed deadband-calibrate-and-flip
@@ -152,7 +198,7 @@ type RoutingElevation struct {
 	DescentWeight float64 // ROUTING_DESCENT_WEIGHT; default defaultElevationDescentWeight (sweep-held).
 	MaxGrade      float64 // ROUTING_MAX_GRADE; default defaultElevationMaxGrade (sweep-held).
 	DeadbandM     float64 // ROUTING_ELEV_DEADBAND_M; default 3.8 (calibrated, gate G6).
-	MinCoverage   float64 // ROUTING_ELEV_MIN_COVERAGE; default 0.99 (measured 100.00% coverage).
+	MinCoverage   float64 // ROUTING_ELEV_MIN_COVERAGE; default DefaultElevationMinCoverage (measured 100.00% coverage).
 }
 
 // Elevation operating-point defaults — the measured ship point of
@@ -178,7 +224,20 @@ const (
 	defaultElevationAscentWeight  = 12
 	defaultElevationDescentWeight = 0.3
 	defaultElevationMaxGrade      = 0.15
-	defaultElevationMinCoverage   = 0.99
+
+	// DefaultElevationMinCoverage is the ONE elevation coverage gate, shared by
+	// BOTH ends of the backfill pipeline (api_plans bug #24,
+	// [routing]_gate_correctness.md §A5): the runtime gate (ROUTING_ELEV_MIN_COVERAGE's
+	// default in Load below) and elevtool's -min-coverage ingest default
+	// (cmd/elevtool imports this constant). They used to drift — ingest shipped
+	// 0.98 while runtime demanded 0.99, so a region backfilled at 0.98–0.989
+	// passed ingest and then silently degraded to FLAT routing at runtime, the
+	// default path since the elevation flip. A single exported constant makes
+	// that drift impossible; scripts/import-elevation.sh mirrors the value in
+	// MIN_COVERAGE (a shell script cannot import Go) with a comment pointing
+	// here. 0.99 guards the measured 100.00% coverage (152,665/152,665
+	// vertices, five skadi tiles).
+	DefaultElevationMinCoverage = 0.99
 )
 
 // defaultElevationDeadbandM is ROUTING_ELEV_DEADBAND_M's measured default — gate
@@ -274,7 +333,7 @@ func Load() *Config {
 			DescentWeight: getFloat("ROUTING_DESCENT_WEIGHT", defaultElevationDescentWeight),
 			MaxGrade:      getFloat("ROUTING_MAX_GRADE", defaultElevationMaxGrade),
 			DeadbandM:     getFloat("ROUTING_ELEV_DEADBAND_M", defaultElevationDeadbandM),
-			MinCoverage:   getFloat("ROUTING_ELEV_MIN_COVERAGE", defaultElevationMinCoverage),
+			MinCoverage:   getFloat("ROUTING_ELEV_MIN_COVERAGE", DefaultElevationMinCoverage),
 		},
 
 		FareCurrency:      getEnv("FARE_CURRENCY", DefaultFareCurrency),
@@ -287,6 +346,12 @@ func Load() *Config {
 			ArriveRadiusM: getFloat("GEOFENCE_ARRIVE_RADIUS_M", defaultGeofenceArriveRadiusM),
 			HysteresisM:   getFloat("GEOFENCE_HYSTERESIS_M", defaultGeofenceHysteresisM),
 			MinMoveM:      getFloat("GEOFENCE_MIN_MOVE_M", defaultGeofenceMinMoveM),
+		},
+
+		Payout: Payout{
+			MinWithdrawCents: int64(getInt("PAYOUT_MIN_WITHDRAW_CENTS", DefaultPayoutMinWithdrawCents)),
+			Currency:         getEnv("PAYOUT_CURRENCY", DefaultPayoutCurrency),
+			CommissionRate:   payoutCommissionFromEnv(),
 		},
 	}
 }
@@ -355,6 +420,31 @@ func routingElevationEnabledFromEnv() bool {
 func geofenceEnabledFromEnv() bool {
 	v := os.Getenv("GEOFENCE_ENABLED")
 	return v == "" || v == "on"
+}
+
+// payoutCommissionFromEnv parses PAYOUT_COMMISSION_RATE fail-closed: unset,
+// empty, garbage, non-finite (NaN/±Inf), or a value outside [0, 1] is
+// DefaultPayoutCommissionRate (0 — no cut), never an open-ended one. A
+// commission above 1 would let a credit go non-positive, so it is rejected
+// rather than clamped up silently.
+//
+// The non-finite check is load-bearing, not belt-and-braces:
+// strconv.ParseFloat("NaN") returns (NaN, nil) — no error — and BOTH range
+// comparisons are false for NaN, so without math.IsNaN/IsInf a NaN rate would
+// pass the old check, int64(math.Round(fare*(1-NaN)*100)) would yield the
+// min-int64, creditCents > 0 would be false, and EVERY ride completion would
+// silently credit nothing. Rejected values fall back to 0 = full-fare credit,
+// the safe direction (never a corrupted cut).
+func payoutCommissionFromEnv() float64 {
+	v := os.Getenv("PAYOUT_COMMISSION_RATE")
+	if v == "" {
+		return DefaultPayoutCommissionRate
+	}
+	f, err := strconv.ParseFloat(v, 64)
+	if err != nil || math.IsNaN(f) || math.IsInf(f, 0) || f < 0 || f > 1 {
+		return DefaultPayoutCommissionRate
+	}
+	return f
 }
 
 func getFloat(key string, fallback float64) float64 {

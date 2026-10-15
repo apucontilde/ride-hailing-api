@@ -1,9 +1,53 @@
 package main
 
 import (
+	"flag"
 	"reflect"
 	"testing"
+
+	"ride-hailing-api/internal/config"
 )
+
+// Bug #24 ([routing]_gate_correctness.md §A5): elevtool's -min-coverage default
+// must be the SAME shared constant the runtime ROUTING_ELEV_MIN_COVERAGE gate
+// defaults to (config.DefaultElevationMinCoverage), so ingest and runtime
+// cannot drift again — a region that passes ingest must not silently degrade to
+// flat routing at runtime. The assertions go through the PRODUCTION flag
+// registration (registerFlags) and a parsed flag, not a re-stated copy of the
+// default, so a regression in main.go fails here.
+func TestMinCoverageFlagDefaultIsTheSharedConfigConstant(t *testing.T) {
+	cases := []struct {
+		name string
+		args []string
+		want float64
+	}{
+		{
+			name: "default_is_the_shared_constant",
+			want: config.DefaultElevationMinCoverage,
+		},
+		{
+			name: "shared_constant_is_0.99",
+			want: 0.99,
+		},
+		{
+			name: "explicit_override_wins",
+			args: []string{"-min-coverage", "0.95"},
+			want: 0.95,
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			fs := flag.NewFlagSet("elevtool", flag.ContinueOnError)
+			f := registerFlags(fs)
+			if err := fs.Parse(tc.args); err != nil {
+				t.Fatalf("parse %v: %v", tc.args, err)
+			}
+			if *f.minCoverage != tc.want {
+				t.Errorf("-min-coverage = %v, want %v", *f.minCoverage, tc.want)
+			}
+		})
+	}
+}
 
 // TestTilesFor covers the tile-list derivation for the SJ import: the fetch set
 // must be derived from the VERTEX set, not the bbox corners. The SJ bbox corners

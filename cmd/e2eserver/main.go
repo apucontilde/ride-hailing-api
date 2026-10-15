@@ -71,6 +71,7 @@ func main() {
 		router.WithDeviceTokenRepository(testutil.NewMockDeviceTokenRepo()),
 		router.WithFeedbackRepository(testutil.NewMockFeedbackRepo()),
 		router.WithFareRepository(testutil.NewMockFareRepo()),
+		router.WithEarningsRepository(testutil.NewMockEarningsRepo()),
 	)
 
 	srv := &http.Server{

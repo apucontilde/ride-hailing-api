@@ -1248,13 +1248,48 @@ paths:
                 - platform
     /api/v1/driver/earnings/withdraw:
         post:
+            consumes:
+                - application/json
+            description: Records a PENDING ledger debit in integer cents — not a bank transfer; no external payout provider is wired. Idempotent per Idempotency-Key. Amount must be > 0 and >= PAYOUT_MIN_WITHDRAW_CENTS (422) and <= the available balance (409).
             operationId: postDriver-earnings-withdraw
+            parameters:
+                - description: 'Recommended: replay-safe key for this withdrawal attempt'
+                  in: header
+                  name: Idempotency-Key
+                  type: string
+                - description: '{'
+                  in: body
+                  name: body
+                  required: true
+                  schema:
+                    type: object
+            produces:
+                - application/json
             responses:
                 "200":
-                    description: OK
+                    description: '{"withdrawal":{ledger row, status pending},"earnings":{updated summary}}'
+                    schema:
+                        additionalProperties: true
+                        type: object
+                "400":
+                    description: Malformed request body
+                    schema:
+                        $ref: '#/definitions/handler.ErrorResponse'
+                "409":
+                    description: Insufficient balance
+                    schema:
+                        $ref: '#/definitions/handler.ErrorResponse'
+                "422":
+                    description: Validation error (amount_cents missing, non-positive, or below the minimum)
+                    schema:
+                        $ref: '#/definitions/handler.ErrorResponse'
+                "500":
+                    description: Earnings store unavailable
+                    schema:
+                        $ref: '#/definitions/handler.ErrorResponse'
             security:
                 - BearerAuth: []
-            summary: POST /api/v1/driver/earnings/withdraw
+            summary: Request a withdrawal
             tags:
                 - driver
     /api/v1/driver/me:
@@ -1326,13 +1361,23 @@ paths:
                 - driver
     /api/v1/driver/me/earnings:
         get:
+            description: Returns the ledger-derived earnings summary in INTEGER CENTS. A driver with no earnings gets a zeroed summary, never a 404.
             operationId: getDriver-me-earnings
+            produces:
+                - application/json
             responses:
                 "200":
-                    description: OK
+                    description: '{"earnings":{available_cents,pending_cents,withdrawn_cents,lifetime_cents,currency,month_total_cents,month_trips,completed_trips,months:[...]}}'
+                    schema:
+                        additionalProperties: true
+                        type: object
+                "500":
+                    description: Earnings store unavailable
+                    schema:
+                        $ref: '#/definitions/handler.ErrorResponse'
             security:
                 - BearerAuth: []
-            summary: GET /api/v1/driver/me/earnings
+            summary: Get the driver's earnings summary
             tags:
                 - driver
     /api/v1/driver/me/status:
@@ -1495,19 +1540,35 @@ paths:
         post:
             operationId: postDriver-rides-ByID-decline
             parameters:
-                - in: path
+                - description: Ride ID
+                  in: path
                   name: id
                   required: true
-                  schema:
-                    type: string
+                  type: string
+            produces:
+                - application/json
             responses:
                 "200":
                     description: OK
+                    schema:
+                        $ref: '#/definitions/handler.MessageResponse'
+                "400":
+                    description: Malformed request
+                    schema:
+                        $ref: '#/definitions/handler.ErrorResponse'
+                "404":
+                    description: No active offer to decline
+                    schema:
+                        $ref: '#/definitions/handler.ErrorResponse'
+                "422":
+                    description: Validation error
+                    schema:
+                        $ref: '#/definitions/handler.ErrorResponse'
             security:
                 - BearerAuth: []
-            summary: POST /api/v1/driver/rides/{id}/decline
+            summary: Decline a dispatched ride offer
             tags:
-                - driver
+                - rides
     /api/v1/driver/rides/{id}/rate:
         post:
             operationId: postDriver-rides-ByID-rate
@@ -1548,21 +1609,49 @@ paths:
                 - driver
     /api/v1/driver/rides/{id}/status:
         put:
+            consumes:
+                - application/json
             operationId: putDriver-rides-ByID-status
             parameters:
-                - in: path
+                - description: Ride ID
+                  in: path
                   name: id
                   required: true
+                  type: string
+                - description: New status
+                  in: body
+                  name: body
+                  required: true
                   schema:
-                    type: string
+                    $ref: '#/definitions/handler.updateRideStatusRequest'
+            produces:
+                - application/json
             responses:
                 "200":
                     description: OK
+                    schema:
+                        $ref: '#/definitions/handler.RideResponse'
+                "400":
+                    description: Invalid status transition
+                    schema:
+                        $ref: '#/definitions/handler.ErrorResponse'
+                "404":
+                    description: Ride not found
+                    schema:
+                        $ref: '#/definitions/handler.ErrorResponse'
+                "422":
+                    description: Validation error (malformed ride id or body)
+                    schema:
+                        $ref: '#/definitions/handler.ErrorResponse'
+                "500":
+                    description: Failed to update ride status (including a failed earnings credit)
+                    schema:
+                        $ref: '#/definitions/handler.ErrorResponse'
             security:
                 - BearerAuth: []
-            summary: PUT /api/v1/driver/rides/{id}/status
+            summary: Advance a ride to the next status
             tags:
-                - driver
+                - rides
     /api/v1/driver/rides/current:
         get:
             operationId: getDriver-rides-current

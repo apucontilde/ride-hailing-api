@@ -228,6 +228,36 @@ func createFareDemandWindowsTable(tb testing.TB, db *sqlx.DB) {
 	)`)
 }
 
+// createDriverEarningsTable creates the TEMP `driver_earnings` mirroring
+// migration 024 — every CHECK, both partial unique indexes and the default
+// currency verbatim, because the double-credit guard and the
+// withdrawal-key dedup are exactly the constraints a repository test must run
+// against a REAL constraint rather than only through Go. Deliberately no FK
+// to drivers/rides: the ledger fixture inserts bare driver UUIDs (the rides
+// suites follow the same rule), and no assertion relies on the cascade.
+func createDriverEarningsTable(tb testing.TB, db *sqlx.DB) {
+	mustExec(tb, db, `CREATE TEMP TABLE driver_earnings (
+		id              UUID        PRIMARY KEY DEFAULT uuid_generate_v4(),
+		driver_id       UUID        NOT NULL,
+		ride_id         UUID,
+		kind            TEXT        NOT NULL CHECK (kind IN ('ride_earning','tip','adjustment','withdrawal')),
+		amount_cents    BIGINT      NOT NULL CHECK (amount_cents <> 0),
+		status          TEXT        NOT NULL DEFAULT 'available'
+		                    CHECK (status IN ('available','pending','paid','failed','reversed')),
+		currency        TEXT        NOT NULL DEFAULT 'USD',
+		idempotency_key TEXT        NOT NULL DEFAULT '',
+		created_at      TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+		updated_at      TIMESTAMPTZ NOT NULL DEFAULT NOW()
+	)`)
+	mustExec(tb, db, `CREATE INDEX idx_driver_earnings_driver
+		ON driver_earnings(driver_id, status, created_at)`)
+	mustExec(tb, db, `CREATE UNIQUE INDEX idx_driver_earnings_ride_earning
+		ON driver_earnings(ride_id) WHERE kind = 'ride_earning'`)
+	mustExec(tb, db, `CREATE UNIQUE INDEX idx_driver_earnings_withdrawal_key
+		ON driver_earnings(driver_id, idempotency_key)
+		WHERE kind = 'withdrawal' AND idempotency_key <> ''`)
+}
+
 // createSingleRegionRoadTables creates the id-PK (no region_id)
 // road_network_vertices_pgr / road_network_edges_pgr pair — the pre-013
 // single-extract shape that pgr_dijkstra's edges_sql and the native graph build

@@ -80,26 +80,41 @@ void main() {
     expect(find.byType(AppSidebar), findsOneWidget);
   });
 
-  testWidgets('a non-home section shows the shell back arrow and the toggle in actions', (
-    tester,
-  ) async {
-    await pumpShell(tester, '/profile');
+  // Bug #27: all five non-home sections share one
+  // `isHome ? null : AppBar(leading: AppBackButton…, actions: [AppSidebarToggleButton])`
+  // branch, so each must prove the back arrow renders, the toggle lives in the
+  // `AppBar`, and the arrow returns to `home-body`.
+  const backSections = [
+    '/profile',
+    '/history',
+    '/payment',
+    '/security',
+    '/settings',
+  ];
 
-    expect(find.byType(AppBackButton), findsOneWidget);
-    expect(
-      find.descendant(
-        of: find.byType(AppBar),
-        matching: find.byType(AppSidebarToggleButton),
-      ),
-      findsOneWidget,
-      reason: 'the hamburger moved to the AppBar actions',
+  for (final location in backSections) {
+    testWidgets(
+      '$location: shell back arrow + AppBar toggle, tap → home-body',
+      (tester) async {
+        await pumpShell(tester, location);
+
+        expect(find.byType(AppBackButton), findsOneWidget);
+        expect(
+          find.descendant(
+            of: find.byType(AppBar),
+            matching: find.byType(AppSidebarToggleButton),
+          ),
+          findsOneWidget,
+          reason: 'the hamburger is in the AppBar actions',
+        );
+
+        await tester.tap(find.byType(AppBackButton));
+        await tester.pumpAndSettle();
+
+        expect(find.text('home-body'), findsOneWidget);
+      },
     );
-
-    await tester.tap(find.byType(AppBackButton));
-    await tester.pumpAndSettle();
-
-    expect(find.text('home-body'), findsOneWidget);
-  });
+  }
 
   testWidgets('/home is an AppBar-free root with no back arrow', (tester) async {
     await pumpShell(tester, '/home');

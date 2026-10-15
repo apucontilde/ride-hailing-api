@@ -64,8 +64,18 @@
   `300`/null/non-positive is never written and a failed compute keeps the previous value —
   `features/home/data/driver_eta_provider.dart:64-88,118-121,157-200`; per-status semantics (`driverArrived`/`onTrip`/terminal
   show no countdown) and the `X km · ETA N min` label `active_ride_screen.dart:1016-1025`. Tests
-  `test/features/home/data/driver_eta_provider_test.dart:168-221`. **Residual:** the throttle
-  bookkeeping is not reset between rides — see bug #30.
+  `test/features/home/data/driver_eta_provider_test.dart:168-221`.
+- Per-ride throttle reset + stale-response generation guard (bug #30): `_resetThrottle()`
+  (`features/home/data/driver_eta_provider.dart:160-169`) clears `_referenceFix`/`_lastRequestAt`/
+  `_lastCompute` and bumps `_generation`, is called by `stop()` (`:149-153`) — every transition out
+  of `driverApproaching` (all terminal statuses) and dispose — and on the entering edge
+  (`:116,122`). A `/geo/eta` response is applied only while its captured generation still matches
+  (`:186,219,233,239`) and the in-flight marker is generation-scoped (`_inFlightGeneration`
+  `:98,190,201,243`), so a stale response can neither re-set `_referenceFix`/write ETA into a later
+  ride nor swallow its immediate compute. Within-ride 5 s floor, 150 m trigger and `300 == unknown`
+  honesty unchanged. Tests `test/features/home/data/driver_eta_provider_test.dart:281-348`
+  (per-ride reset via `in_progress` + terminal `no_driver_available`), `:350-419` (stale in-flight
+  regression, RED→GREEN).
 
 ### [arrival]
 - Driver-nearby + auto-arrival consumption (X3-R): `DriverLocation` parses the additive
@@ -272,8 +282,8 @@
   `initState` schedules it), `core/router/app_router.dart:31-33` (`refreshListenable` + `resolveRedirect`),
   `core/router/post_auth_route.dart:59-88` (unresolved → `/splash`; an active ride wins over a
   deep-linked shell section). Tests `test/app_bootstrap_test.dart`,
-  `test/core/router/app_router_test.dart:50-164`. **Test gap:** unit + cold-start/login only; no
-  full-widget reload test — see bug #31.
+  `test/core/router/app_router_test.dart:50-164`. **Test gap closed** by Landed `[test]` (bug #31):
+  the full-widget reload test lives below.
 
 ### [push]
 - Rider device-token registration seam (register on every authenticated transition, unregister
@@ -442,6 +452,25 @@
   `shared/test/auth/app_auth_controller_test.dart:63-227`,
   `rider_app/test/features/auth/presentation/login_screen_test.dart`.
 
+### [test]
+- Full-widget web-reload test (T1/T2, bug #31): an additive, production-defaulted
+  `routerInitialLocationProvider` (`core/router/app_router.dart:25-28`, read at `:33`, default
+  `/splash`) lets a widget suite boot the real `RiderApp` at `/home`; with a staged stored session
+  the first frame shows the splash spinner (never `LoginScreen`) and it settles on `HomeScreen`; the
+  no-token control settles on `LoginScreen` — `test/features/auth/presentation/app_reload_test.dart:107,120-145`.
+  T1's real teeth are `resolveRedirect`'s `!bootstrapComplete` gate (removing it makes T1 fail); the
+  seam itself does not discriminate (booting at `/splash` vs `/home` converges) and a **real browser
+  reload remains UNVERIFIABLE in this WSL harness**.
+- Shell back test across all five non-home sections (T3, bug #27): the
+  `isHome ? null : AppBar(leading: AppBackButton…, actions: [AppSidebarToggleButton])` branch is
+  asserted for `/profile`,`/history`,`/payment`,`/security`,`/settings`, each tap returning to
+  `home-body` — `test/features/navigation/rider_shell_test.dart:87-117` (branch
+  `features/navigation/rider_shell.dart:85-93`).
+- Profile-card Home row assertions (T4/T5, bug #28): `nav-link-home` present, `nav-link-profile`
+  absent, the exact row set, and tapping the Home row pushes `/home` —
+  `test/features/home/presentation/profile_screen_test.dart:350-381` (card feed
+  `features/home/presentation/profile_screen.dart:110-115`).
+
 ## Known bugs & issues
 
 Source citations in this file are **relative to the app root** (`features/.../screen.dart:N`)
@@ -477,11 +506,11 @@ unless they cross a package, in which case they are repo-relative
 | 24 | **Note (test migration, not a defect):** the driver `rate_sheet_test.dart` finder moved from `FilledButton` to a descendant `ElevatedButton` of the `rate-submit` key, because the shared `AppRatingSheet` renders the shared `AppButton` (`ElevatedButton`) instead of the old local `FilledButton`; behavior unchanged | `driver_app/test/features/rides/presentation/rate_sheet_test.dart:35-37`; shared `shared/lib/src/components/app_button.dart:83` | low | [rating] |
 | 25 | **Test-audit follow-up (tracked, not a code defect):** rider widget tests pumped the real `HomeScreen`/`ActiveRideScreen`, whose `FlutterMap` built a live `NetworkTileProvider` against `tile.openstreetmap.org`, so the suite made real network requests. — **RESOLVED (absorbed)** by Landed `[map]`: the shared nullable `mapTileLayerProvider` seam now exists and the three mounting suites override it to `null` | `shared/lib/src/map/map_tile_layer.dart:21`; overrides `test/features/home/presentation/home_screen_test.dart:131`, `test/features/home/presentation/active_ride_screen_test.dart:300`, `test/features/navigation/rider_sidebar_test.dart:84`; audit `tests/AUDIT_REPORT.md:78-80` | low | [map] |
 | 26 | **Test-audit follow-up — shared-owned (tracked, not a code defect):** `shared/test/network/websocket_service_test.dart` drove the heartbeat in real time (`waitFor` + fixed `Future.delayed`s) instead of `fakeAsync`, causing a documented flake. — **RESOLVED**: an additive `WebSocketTimerFactory` seam drives both the reconnect and heartbeat timers through a manual, deterministic factory while the production default stays the real `Timer` constructors (timing byte-for-byte unchanged). `fakeAsync` still cannot be used — the suite talks to a real `dart:io` socket, whose I/O never completes inside a fake-clock zone — so the manual-timer seam is the right determinism mechanism (documented in the suite). `shared/` has no `STATUS.md`, so it is recorded here as a shared-owned follow-up | seam `shared/lib/src/network/websocket_service.dart:11-25,84-86,163-172,184-191`; converted suite `shared/test/network/websocket_service_test.dart:8-15,16-74,96-108`; audit `tests/AUDIT_REPORT.md:81-83` | low | shared |
-| 27 | **Note (test gap, not a code defect):** the rider shell back test exercises only `/profile`; the other four non-home sections share the identical `isHome ? null : AppBar(leading: AppBackButton…)` branch, so all five are covered by that one widget test — there is no per-section assertion | test `test/features/navigation/rider_shell_test.dart:83-102`; shared branch `features/navigation/rider_shell.dart:85-93` | low | [test] → `[test]_rider_coverage_gaps.md` |
-| 28 | **Note (test gap, not a code defect):** the profile card's `nav-link-home` row is code-proven (fed the same list minus `profile`) but has no direct widget assertion — the shared `app_nav_link_card_test.dart` only asserts `nav-link-payment`/`nav-link-vehicle`, and the rider profile suite does not assert the Home row | `features/home/presentation/profile_screen.dart:110-115`; `shared/test/navigation/app_nav_link_card_test.dart:108-109` | low | [test] → `[test]_rider_coverage_gaps.md` |
+| 27 | **Note (test gap, not a code defect):** the rider shell back test exercised only `/profile`; all five non-home sections share the identical `isHome ? null : AppBar(leading: AppBackButton…)` branch, so the one widget test covered the branch but asserted no per-section case. — **FIXED** by `[test]_rider_coverage_gaps.md` (T3): the case is parameterized over all five sections, each asserting the back arrow + `AppBar` toggle and the tap returning to `home-body` | post-fix `test/features/navigation/rider_shell_test.dart:87-117`; shared branch `features/navigation/rider_shell.dart:85-93` | low | [test] |
+| 28 | **Note (test gap, not a code defect):** the profile card's `nav-link-home` row was code-proven (fed the same list minus `profile`) but had no direct widget assertion — the shared `app_nav_link_card_test.dart` only asserted `nav-link-payment`/`nav-link-vehicle`. — **FIXED** by `[test]_rider_coverage_gaps.md` (T4/T5): the rider profile suite asserts `nav-link-home` present, `nav-link-profile` absent, the exact row set, and the Home row's `context.push('/home')` | post-fix `test/features/home/presentation/profile_screen_test.dart:350-381`; `features/home/presentation/profile_screen.dart:110-115`; `shared/test/navigation/app_nav_link_card_test.dart:108-109` | low | [test] |
 | 29 | **Status chip lied after arrival:** `_getStatusText` had cases only for `driverApproaching`/`onTrip`/`completed` and `default: return 'Matching'`, so `driverArrived` (mapped correctly from backend `driver_arrived` at `ride_status_provider.dart:164-165`) and `matching`/`cancelled`/`noDriverAvailable`/`idle` all rendered the generic `Matching`. — **FIXED** by `[ontrip]_status_labels.md`: the switch is exhaustive with no `default` (each enum value has an explicit label) | post-fix `features/home/presentation/active_ride_screen.dart:1076-1096`; pre-fix `:786-797`; mapping `features/home/data/ride_status_provider.dart:158-177` | medium | [ontrip] |
-| 30 | **ETA throttle bookkeeping leaks across rides (residual of `[ontrip]_driver_arrival_eta.md`):** `DriverEtaNotifier` is a global non-`autoDispose` provider and `stop()` only cancels the tick — it never resets `_referenceFix`/`_lastRequestAt`, so the D4 "immediate on the first fix after entering `driverApproaching`" guarantee holds only for the **session's first ride**. On a later ride the first compute is floored by the previous ride's `_lastRequestAt` (up to 5 s late) and the ≥150 m early trigger compares against a stale fix from the earlier ride. The R1 client compute and the request floor themselves are correct; only the per-ride reset is missing | `features/home/data/driver_eta_provider.dart:82-88,131-134,243-246`; screen `stop()` on dispose `features/home/presentation/active_ride_screen.dart:140`; floor test `test/features/home/data/driver_eta_provider_test.dart:168-221` | medium | [ontrip] → `[ontrip]_eta_state_reset.md` |
-| 31 | **Test gap (tracked, not a code defect):** the web-reload bootstrap fix is covered only at the unit level (`resolveRedirect` / `SessionBootstrap.run`) plus cold-start and post-login integration; there is **no** full-widget test that mounts `RiderApp`/the router at a reloaded shell location with a stored session to assert it lands on `HomeScreen` (the plan's "reload-at-`/home` bootstrap" case). The real browser reload is UNVERIFIABLE in this WSL harness | unit `test/core/router/app_router_test.dart:50-164`; bootstrap `test/app_bootstrap_test.dart:77-108`; unlanded case from deleted `[auth]_web_reload_session_bootstrap.md` | low | [test] → `[test]_rider_coverage_gaps.md` |
+| 30 | **ETA throttle bookkeeping leaked across rides (residual of `[ontrip]_driver_arrival_eta.md`):** `DriverEtaNotifier` is a global non-`autoDispose` provider and `stop()` only cancelled the tick — it never reset `_referenceFix`/`_lastRequestAt`, so the D4 "immediate on the first fix after entering `driverApproaching`" guarantee held only for the **session's first ride**. On a later ride the first compute was floored by the previous ride's `_lastRequestAt` (up to 5 s late) and the ≥150 m early trigger compared against a stale fix from the earlier ride. The R1 client compute and the request floor themselves are correct; only the per-ride reset was missing. — **FIXED** by `[ontrip]_eta_state_reset.md`: `_resetThrottle()` clears the reference at every boundary and bumps a ride/session `_generation` that gates any stale in-flight response | post-fix `features/home/data/driver_eta_provider.dart:93-98,116-122,149-169,186-201,219,233,239,243`; pre-fix `:82-88,131-134,243-246`; screen `stop()` on dispose `features/home/presentation/active_ride_screen.dart:140`; regression tests `test/features/home/data/driver_eta_provider_test.dart:281-419` | medium | [ontrip] |
+| 31 | **Test gap (tracked, not a code defect):** the web-reload bootstrap fix was covered only at the unit level (`resolveRedirect` / `SessionBootstrap.run`) plus cold-start and post-login integration; there was **no** full-widget test that mounted `RiderApp`/the router at a reloaded shell location with a stored session to assert it lands on `HomeScreen`. The real browser reload is UNVERIFIABLE in this WSL harness. — **FIXED** by `[test]_rider_coverage_gaps.md` (T1/T2): a full-widget test mounts the real `RiderApp` booted at `/home` and asserts the reload window shows the splash spinner (never `LoginScreen`) and settles on `HomeScreen`; observed RED→GREEN against the `!bootstrapComplete` gate. **Honest scope limit:** the `routerInitialLocationProvider` seam does not discriminate on its own (booting at `/splash` vs `/home` converges because `resolveRedirect` funnels pre-bootstrap entries to `/splash`); T1's real teeth are the gate, and a real browser reload remains UNVERIFIABLE here | post-fix `test/features/auth/presentation/app_reload_test.dart:107,120-145`; seam `core/router/app_router.dart:25-28,33`; unit `test/core/router/app_router_test.dart:50-164`; bootstrap `test/app_bootstrap_test.dart:77-108` | low | [test] |
 
 *Rows #25–#26 track `tests/AUDIT_REPORT.md` §5.2–§5.3. Both are **resolved**: #25 by Landed `[map]`; #26 by the shared additive timer seam (2026-10-11). #26 is shared-owned (no shared `STATUS.md`).*
 
@@ -492,8 +521,6 @@ unless they cross a package, in which case they are repo-relative
 | `[map]_self_hosted_tile_host.md` | map | `[]` — **deferred; gate met by Landed `[map]`** | **DEFERRED.** Stand up a self-hosted tile server and replace the OSM public host (values-only change to the shared `MapTileConfig`); removes third-party policy risk; infra + migration decisions recorded. Authored once in the rider domain; driver consumes. |
 | `[map]_runtime_remote_tile_config.md` | map | `[]` — **deferred; gate met by Landed `[map]`** | **DEFERRED.** Fetch tile URL/key/attribution at runtime instead of compile-time `String.fromEnvironment`; shared factory unchanged; **compile-time default + last-good-cache fallback** so a config outage never blanks the map. The remote-config endpoint owner/shape is **UNSPECIFIED** (an open question to resolve only when scheduled, **not** an `api_plans` prerequisite). Authored once in the rider domain; driver consumes. |
 | `[release]_app_id_and_store_readiness.md` | release | `[]` | **DEFERRED.** Finalize the real reverse-DNS `applicationId` for **BOTH** apps; update Android/iOS build files; align `MapTileConfig.userAgentPackageName` (must match the chosen id) in the same commit; signing/build config; store metadata/data-safety. Canonical file — the driver domain references it, does not duplicate. Until it lands `userAgentPackageName` tracks the stock `com.example.rider_app`/`com.example.driver_app`. |
-| `[ontrip]_eta_state_reset.md` | ontrip | landed `[ontrip]` live driver-arrival ETA | **OPEN** (unnumbered; landed-capability prerequisite). Fixes bug #30: reset `_referenceFix`/`_lastRequestAt` (`driver_eta_provider.dart:86-87`) at each ride boundary (`stop()` + entering-`driverApproaching`) so a second ride's first compute is immediate again, preserving the 5 s floor and `300`=unknown honesty; add the same-time/same-location second-ride regression test. |
-| `[test]_rider_coverage_gaps.md` | test | landed `[auth]` web-reload bootstrap; landed `[nav]` back navigation + profile card | **OPEN** (unnumbered; landed-capability prerequisites). Coalesces bugs #31/#27/#28: full-widget web-reload test via an additive `routerInitialLocationProvider` seam, parameterised shell back-over-five-sections, and the profile card `nav-link-home` assertion set. Test-only sweep. |
 
 The two `[map]` deferred plans are **siblings, not a chain**: both are alternatives/composables over
 the same shared `MapTileConfig`, gated behind the now-landed `[map]` work (STATUS.md → Landed `[map]`).
@@ -515,6 +542,9 @@ The 2026-10-13 wave — `[auth]_web_reload_session_bootstrap.md`,
 `[ontrip]_active_trip_itinerary.md`, `[ontrip]_driver_arrival_eta.md` and
 `01_[arrival]_auto_arrival_nearby.md` — landed, were condensed into Landed
 `[auth]`/`[trip]`/`[ontrip]`/`[arrival]` above, and were deleted (2026-10-13).
+The 2026-10-15 bug-fix wave — `[ontrip]_eta_state_reset.md` (bug #30) and
+`[test]_rider_coverage_gaps.md` (bugs #31/#27/#28) — landed, were condensed into Landed
+`[ontrip]`/`[test]` above, and were deleted (2026-10-15).
 
 ## Invariants
 
@@ -589,6 +619,22 @@ export PATH=~/fvm/default/bin:$HOME/.pub-cache/bin:$PATH   # Linux FVM SDK + Mel
 melos run analyze
 melos run test
 ```
+
+Landing — `[ontrip]_eta_state_reset.md` (bug #30) + `[test]_rider_coverage_gaps.md`
+(bugs #31/#27/#28), 2026-10-15: both plans were adversarially verified and **CONFIRMED-LANDED**.
+For #30 the reviewer independently reproduced RED→GREEN by mutation (removing the reset / the
+generation guard makes the regression tests fail) and confirmed the within-ride 5 s floor, 150 m
+trigger and `300 == unknown` honesty are untouched; for #31 the reviewer independently reproduced
+RED→GREEN by removing `resolveRedirect`'s `!bootstrapComplete` gate and confirmed the T1 seam's
+non-discriminating scope limit. Both plans were condensed into Landed `[ontrip]`/`[test]` above and
+their files were deleted; bugs #27/#28/#30/#31 are marked FIXED and their Open-plans rows removed.
+Gates: the tree was verified green immediately before landing — `melos run analyze` clean across all
+three packages; `melos run test` rider **452**, driver **408**, shared **205 passed + 1 skipped**
+(Linux FVM SDK + native Melos 8; `melos` was not re-run by this condensation). One rider claim stays
+**UNVERIFIABLE in this WSL harness**: a real browser reload (close with `flutter run -d chrome` → sign
+in → navigate to `#/home` → hard reload → assert Home, not login). Dangling-`depends_on` check re-run:
+all three survivors (`[map]_self_hosted_tile_host.md`, `[map]_runtime_remote_tile_config.md`,
+`[release]_app_id_and_store_readiness.md`) have `depends_on: []` — no dangling reference.
 
 (`make flutter-analyze`/`make flutter-test` are broken from this WSL tree — they shell out to the
 Windows `melos.bat` through `cmd.exe`, which cannot `cd` into the UNC path. Native Melos 8 is at
@@ -805,25 +851,19 @@ consumption. `melos run analyze` clean; `melos run test` green — rider **441**
 one skip is the browser-only `window.localStorage` case; the real browser reload is **UNVERIFIABLE**
 in this WSL harness. The residual per-ride ETA-throttle leak and the missing full-widget web-reload
 test are recorded as bugs #30/#31. Dangling-`depends_on` check: the survivors are the two
-deferred `[map]` siblings (`depends_on: []`), the deferred `[release]` plan (`depends_on: []`), and
-the two open plans authored below whose non-empty `depends_on` names **landed capability only**
+deferred `[map]` siblings (`depends_on: []`) and the deferred `[release]` plan (`depends_on: []`),
+plus the two bug-fix plans then authored with non-empty `depends_on` naming **landed capability only**
 (`[ontrip]_eta_state_reset.md` → Landed `[ontrip]`; `[test]_rider_coverage_gaps.md` → Landed
-`[auth]`/`[nav]`) — no dangling reference.
+`[auth]`/`[nav]`) — no dangling reference. (Both were subsequently landed 2026-10-15.)
 Reported (not authored): the driver-app mirrors for the web-reload defect and
 the post-auth restore belong to `driver-planner`; the possible `api_plans` follow-up (whether a
 confirmed change-destination estimate becomes the booked quote) remains an open input.
 
-Bug-fix plan authoring (2026-10-15): two rider plans were authored for the reviewed bug set above —
-`[ontrip]_eta_state_reset.md` (tag `ontrip`, `status: open`, **unnumbered**; fixes bug #30 by
-resetting `_referenceFix`/`_lastRequestAt` at each ride boundary, `depends_on` = landed `[ontrip]`
-ETA capability) and `[test]_rider_coverage_gaps.md` (tag `test`, `status: open`, **unnumbered**;
-coalesces bugs #31/#27/#28 with an explicit T1–T5 test list and an additive
-`routerInitialLocationProvider` test seam, `depends_on` = landed `[auth]`/`[nav]` capability). Both
-were registered in Open plans above; bugs #30/#31/#27/#28 stay in Known bugs with their owner cell
-re-pointed at the owning plan. **Plan-only / docs-only change — no source, test, manifest, or shared
-file edited; `melos run analyze`/`melos run test` were not run.** Dangling-`depends_on` re-checked:
-all five rider plan `depends_on` targets are either `[]` or landed capability — no dangling
-reference. **Cross-domain:** the deferred `api_plans/[push]_production_provider.md` (`[push]`,
-`status: deferred`) is the one canonical push plan; its §Scope item 3 owns the real-FCM/APNs token
-source, referencing the rider registration half (`Landed [push]` above) by path rather than
-duplicating it — the new test plan points at that file, not re-authored here.
+Bug-fix plan authoring + landing (2026-10-15): the two reviewed rider bug-fix plans —
+`[ontrip]_eta_state_reset.md` (tag `ontrip`, unnumbered; bug #30) and
+`[test]_rider_coverage_gaps.md` (tag `test`, unnumbered; bugs #31/#27/#28) — were authored from the
+2026-10-13 audit and then landed the same day (see the Landing note under Verification and Landed
+`[ontrip]`/`[test]` above; both files deleted). **Cross-domain:** the deferred
+`api_plans/[push]_production_provider.md` (`[push]`, `status: deferred`) is the one canonical push
+plan; its §Scope item 3 owns the real-FCM/APNs token source, referencing the rider registration half
+(`Landed [push]` above) by path rather than duplicating it.

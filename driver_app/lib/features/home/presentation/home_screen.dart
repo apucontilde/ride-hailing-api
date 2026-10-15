@@ -9,6 +9,7 @@ import '../../../core/location/location_service.dart';
 import '../providers/availability_notifier.dart';
 import '../../rides/data/rides_repository.dart';
 import '../../rides/presentation/offer_sheet.dart';
+import 'background_tracking_notice.dart';
 
 /// Driver home (online/offline + live location loop, plan 02).
 /// Availability switch mirrors server profile; location stream pushes
@@ -53,6 +54,18 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
       }
       _restoreActiveTrip();
     });
+  }
+
+  /// Shows the one-time "keep tracking with the screen off" explainer the first
+  /// time the driver goes online this session. Android 11+ can only grant
+  /// "Allow all the time" from settings, so the dialog offers that deep-link.
+  void _maybeShowBackgroundNotice() {
+    if (ref.read(backgroundTrackingNoticeShownProvider)) return;
+    ref.read(backgroundTrackingNoticeShownProvider.notifier).state = true;
+    showDialog<void>(
+      context: context,
+      builder: (_) => const BackgroundTrackingNotice(),
+    );
   }
 
   /// Adopts the server's active ride (if any) so the trip screen can be
@@ -170,6 +183,11 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
                       style: Theme.of(context).textTheme.bodySmall,
                     ),
                   ),
+                  TextButton(
+                    key: const Key('denied-open-settings'),
+                    onPressed: () => ref.read(openAppSettingsProvider)(),
+                    child: const Text('Open settings'),
+                  ),
                 ],
               ),
             ),
@@ -238,6 +256,7 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
                               ref
                                   .read(locationServiceProvider)
                                   .publishLastPosition();
+                              _maybeShowBackgroundNotice();
                             }
                           },
                   ),

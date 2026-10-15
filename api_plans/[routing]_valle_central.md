@@ -1,17 +1,16 @@
 ---
 tag: routing
-depends_on: ["[routing]_gate_correctness.md"]
+depends_on: ["routing elevation coverage gate + native snap gate (STATUS.md, landed [routing])"]
 status: open
 ---
 
 # Plan: Valle Central — one Central Valley routing region (`valle_central`)
 
-**Chain stage `01`.** This plan now depends on an **open** plan,
-`[routing]_gate_correctness.md` (the elevation coverage-gate fix, its §A5), because the basin
-elevation backfill needs that fix first — so per the numbering rule it is
-`01_[routing]_valle_central.md`. The gate plan is the **unnumbered chain head** (it depends only
-on landed capability). This plan is **open** — nothing here is claimed landed, and every runbook
-step below is unimplemented.
+**Independent (unnumbered).** Its prerequisite — the elevation coverage-gate fix (bug #24) and
+the native snap gate — is now **landed capability** (STATUS.md → Landed `[routing]`), not an open
+plan. Per the numbering rule (`NN_` is earned only when `depends_on` names an *open* plan), the
+file is back to `[routing]_valle_central.md` and carries no prefix. This plan is **open** —
+nothing here is claimed landed, and every runbook step below is unimplemented.
 
 **Supersedes** the earlier `[routing]_nationwide_costa_rica.md` (renamed to this file; git history
 is the archive). Its Option A/B/C question ("one whole-country `cr`, 7 provinces, or a hybrid") is
@@ -35,10 +34,10 @@ apps need **no** code change (§Contract).
   4 provinces and any cross-basin trip — answers **200 `is_estimate`** with the straight haversine
   polyline (the honest fallback already landed, `internal/service/navigation.go:496-510`). Intercity
   stays deferred (`[routing]_intercity.md`).
-- **Elevation gate fix is a prerequisite, owned by `[routing]_gate_correctness.md` §A5** (bug #24):
-  one shared **0.99** ingest/runtime constant (align ingest UP) + a region-scoped post-import
-  coverage assertion. It is **no longer scoped in this plan**; this plan only consumes it in
-  runbook step 4. See §3.
+- **Elevation gate fix is a landed prerequisite** (bug #24, STATUS.md → Landed `[routing]` gate
+  correctness): one shared `DefaultElevationMinCoverage = 0.99` ingest/runtime constant + a
+  region-scoped post-import coverage assertion. It is **not scoped in this plan**; this plan only
+  consumes it in runbook step 4. See §3.
 - **`cr-sj` is deleted at the end.** Transition first (empty its network rows, flip the default),
   then the final cleanup deletes `fare_rates` → `fare_demand_windows` → `fare_regions` →
   `routing_regions`, guarded by "no active `cr-sj` ride". See §4. This **supersedes** the interim
@@ -67,15 +66,15 @@ apps need **no** code change (§Contract).
 
 ---
 
-## 3. Elevation coverage-gate fix — extracted to `[routing]_gate_correctness.md` §A5
+## 3. Elevation coverage-gate fix — landed prerequisite (STATUS.md → Landed `[routing]`)
 
 The bug #24 fix (a shared `DefaultElevationMinCoverage = 0.99` ingest/runtime constant + a
-region-scoped `import-elevation.sh` post-import assertion) is **no longer scoped in this plan**.
-It has been extracted to the chain head `[routing]_gate_correctness.md` §A5, and this plan
-**depends on** it: runbook step 4 (the `valle_central` elevation backfill) is only correct once
-the ingest gate is aligned up and the coverage assertion is region-scoped.
+region-scoped `import-elevation.sh` post-import assertion) is **already landed** and recorded in
+STATUS.md → Landed `[routing]` (gate correctness). This plan **depends on** it: runbook step 4
+(the `valle_central` elevation backfill) is only correct once the ingest gate is aligned up and
+the coverage assertion is region-scoped.
 
-Do not re-decide the fix here. Implement and verify it in the gate plan, then run step 4 below.
+Do not re-decide the fix here. Run step 4 below.
 
 Backfill the basin with `./scripts/import-elevation.sh --region valle_central` (§Runbook step 4).
 
@@ -160,7 +159,7 @@ step 6). `cr-sj`'s cards are not deleted until the final cleanup (§4B).
 | Import is one region per run, `--region` defaults `cr-sj`; self-registers the row, imports region-scoped, refreshes bbox from `ST_Extent`, supports `--level/--name/--parent/--default`, per-region wipe. | `scripts/import-road-network.sh:64,67-77,94-103,121-127` |
 | Clip helper supports `--region <id> --bbox`; `.poly` via `osmium extract -p` is the documented idiom. | `scripts/download-osm.sh:12-14,22-33,56-60,90-92`; `scripts/import-road-network.sh:51-58` |
 | Whole-country extract already downloaded. | `scripts/download-osm.sh:9-10`; `data/costa-rica-latest.osm.pbf` |
-| Elevation ingest accepts `--region`; the ingest gate (**0.98**) still trails the runtime gate (**0.99**) and the post-import assert is **global** — the gate-mismatch prerequisite tracked by `[routing]_gate_correctness.md` §A5. | `cmd/elevtool/main.go:55,56`; `scripts/import-elevation.sh:23,36-38,43-45`; `internal/config/config.go:181`; `internal/repository/navigation_repo.go:439-441` |
+| Elevation ingest accepts `--region`; ingest and runtime now share one gate (`DefaultElevationMinCoverage = 0.99`) and the post-import assert is region-scoped — landed (STATUS.md → Landed `[routing]` gate correctness). | `internal/config/config.go:240,336`; `cmd/elevtool/main.go:65,75`; `scripts/import-elevation.sh:28,69-72` |
 | Fares are per-region and fail closed: a `region_id` with no active card → 500; default card comes from the single `default_region=TRUE` row. | `internal/database/migrations/019_region_fares.up.sql:22-28,42-55`; `internal/service/fare.go:188-191`; `internal/repository/fare_repo.go:118-123`; `Makefile:51-56` |
 | `rides.fare_region_id`/`fare_rate_id` are audit-only (**no FK**), so historical rows survive a registry delete. | `internal/database/migrations/019_region_fares.up.sql:80-85` |
 | Apps do not key on `region_id` (no reference in `rider_app/lib`, `driver_app/lib`, `shared/lib`). | `grep -rn "region_id\|regionId" rider_app/lib driver_app/lib shared/lib` → 0 matches |
@@ -175,8 +174,9 @@ step 6). `cr-sj`'s cards are not deleted until the final cleanup (§4B).
 
 1. **Network:** import the basin extract into a **new** `valle_central` row (`level='state'`,
    `parent_region='cr'`), region-scoped; bbox refreshed from `ST_Extent`. No schema change.
-2. **Elevation gates:** a prerequisite owned by `[routing]_gate_correctness.md` §A5 (shared 0.99
-   Go constant + region-scoped `import-elevation.sh` assertion). No code change is scoped here.
+2. **Elevation gates:** a **landed** prerequisite (STATUS.md → Landed `[routing]` gate
+   correctness: shared 0.99 Go constant + region-scoped `import-elevation.sh` assertion). No
+   code change is scoped here.
 3. **`cr-sj` transition:** empty its network rows (edges before vertices); single `default_region`
    owner = `valle_central`.
 4. **Fares:** seed the `valle_central` card before the default flip.
@@ -215,8 +215,8 @@ osmium extract -p regions/valle_central.poly data/costa-rica-latest.osm.pbf \
   data/valle_central.osm.pbf
 
 # 4. region-scoped elevation backfill (fetches only the basin's skadi tiles).
-#    Requires the gate fix first: [routing]_gate_correctness.md §A5 (shared 0.99 ingest
-#    gate + region-scoped assert).
+#    The gate fix it needs is LANDED (STATUS.md -> Landed [routing] gate correctness:
+#    shared 0.99 ingest gate + region-scoped assert).
 ./scripts/import-elevation.sh --region valle_central
 
 # 5. fare card BEFORE the default flip (fail-closed 500 without it)
@@ -290,7 +290,7 @@ they use their own fixtures/fakes (`cr-sj` literals in `internal/service/regions
 - A DB-backed acceptance test that an in-basin pair returns `is_estimate=false`, while a pin
   outside the basin and a cross-basin pair return `is_estimate=true`.
 - The elevation-gate tests (per-region coverage assert + the shared `DefaultElevationMinCoverage`
-  pin) live in `[routing]_gate_correctness.md`; do not duplicate them here.
+  pin) landed with the gate fix (STATUS.md → Landed `[routing]`); do not duplicate them here.
 
 ---
 
@@ -348,5 +348,5 @@ stays ignored).
 - **No** `scripts/PLACES_FROM_DB_BBOX.md` provisioning system, **no** bbox-table automation.
 - Elevation duration model (`01_[elevation]_duration_model.md`) and pgRouting parity
   (`[elevation]_pgrouting_parity.md`) are untouched.
-- Bug #24 (elevation coverage-gate mismatch) is fixed by `[routing]_gate_correctness.md` §A5, not
-  here — see `STATUS.md` → Known bugs.
+- Bug #24 (elevation coverage-gate mismatch) is **fixed** (STATUS.md → Landed `[routing]` gate
+  correctness), not here — see `STATUS.md`.

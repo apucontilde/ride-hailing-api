@@ -4,15 +4,15 @@ import 'package:ride_hailing_shared/ride_hailing_shared.dart';
 import 'package:driver_app/features/navigation/driver_nav_items.dart';
 
 void main() {
-  group('buildDriverNavItems with the shipped flag', () {
-    test('lists exactly the four driver destinations', () {
-      expect(buildDriverNavItems(), hasLength(4));
+  group('buildDriverNavItems with the shipped defaults', () {
+    test('lists exactly the five driver destinations', () {
+      expect(buildDriverNavItems(), hasLength(5));
     });
 
     test('ids are the kebab-case strings the sidebar keys are built from', () {
       expect(
         buildDriverNavItems().map((i) => i.id),
-        ['home', 'profile', 'ride-history', 'settings'],
+        ['home', 'profile', 'vehicle', 'ride-history', 'settings'],
       );
     });
 
@@ -26,7 +26,7 @@ void main() {
       // are the app-owned half of the seam.
       expect(
         buildDriverNavItems().map((i) => i.route),
-        ['/home', '/profile', '/rides-history', '/settings'],
+        ['/home', '/profile', '/vehicle', '/rides-history', '/settings'],
       );
     });
 
@@ -49,20 +49,36 @@ void main() {
       }
     });
 
-    test('carries no /vehicle route while the vehicle backend is a stub', () {
-      // Both the sidebar and the profile card are fed from this one list, so this
-      // is the shared half of the "neither surface links to /vehicle" assertion;
+    test('carries /vehicle while the details surface stays gated', () {
+      // Nav and gating are deliberately decoupled (driver bug #6): both the
+      // sidebar and the profile card are fed from this one list, so this is the
+      // shared half of the "both surfaces link to /vehicle" assertion;
       // `driver_sidebar_test.dart` and `profile_screen_test.dart` each prove it
-      // for their own surface. `/vehicle` is therefore reachable only by deep
-      // link, which is driver known bug #12 re-scoped rather than fixed.
+      // for their own surface. The row's screen still renders "Coming soon"
+      // while `ApiConfig.vehicleFeatureEnabled` is false — the nav entry must
+      // not build a saving UI on the `GET/PUT /driver/me/vehicle` stub.
       expect(
         buildDriverNavItems().map((i) => i.route),
-        isNot(contains('/vehicle')),
+        contains('/vehicle'),
       );
       expect(
-        buildDriverNavItems().where((i) => i.destination == AppNavDestination.vehicle),
+        buildDriverNavItems()
+            .where((i) => i.destination == AppNavDestination.vehicle),
+        hasLength(1),
+      );
+    });
+
+    test('includeVehicle: false still omits the row (the gated case)', () {
+      // The parameter keeps its `true` default solely so this shape stays
+      // unit-testable; production never passes it.
+      final items = buildDriverNavItems(includeVehicle: false);
+
+      expect(items.map((i) => i.route), isNot(contains('/vehicle')));
+      expect(
+        items.where((i) => i.destination == AppNavDestination.vehicle),
         isEmpty,
       );
+      expect(items, hasLength(4));
     });
 
     test('carries no payment or security destination', () {
@@ -72,7 +88,7 @@ void main() {
     });
   });
 
-  group('buildDriverNavItems with the vehicle gate open', () {
+  group('the vehicle row shape (explicit includeVehicle: true)', () {
     test('inserts /vehicle in the activity group, before ride history', () {
       final items = buildDriverNavItems(includeVehicle: true);
 
@@ -102,6 +118,5 @@ void main() {
       );
       expect(items.firstWhere((i) => i.id == 'vehicle').label, 'Vehicle');
     });
-
   });
 }

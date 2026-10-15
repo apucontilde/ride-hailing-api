@@ -14,7 +14,8 @@ class MockApiClient extends Mock implements ApiClient {}
 
 class MockDio extends Mock implements Dio {}
 
-/// The first coverage `profile_screen.dart` has ever had — driver known bug #4.
+/// The first coverage `profile_screen.dart` has ever had — the profile/settings
+/// test gap condensed in `driver_app_plans/STATUS.md` → Landed `[profile]`.
 ///
 /// Because nothing guarded it before, this suite is also where the header's own
 /// logic gets its first assertions: the two-letter initials, the `'Driver'`
@@ -111,8 +112,9 @@ void main() {
     testWidgets(
       "a nameless driver falls back to 'Driver', 'New driver' and the pending chip",
       (tester) async {
-        // Known bug #3 means this is the common path for a fresh driver, not an
-        // edge case: onboarding never `PUT`s /driver/me.
+        // A nameless driver is the common path for a fresh driver, not an edge
+        // case: onboarding's `PUT /driver/me` name save is non-fatal, so a
+        // failed save still lands here.
         await pumpProfile(tester, seed: const DriverProfile(userId: 'd2'));
 
         // All three strings are app-owned decisions fed to the shared header.
@@ -327,16 +329,29 @@ void main() {
       );
     });
 
-    testWidgets('no /vehicle row while the vehicle backend is a stub', (
+    testWidgets('the vehicle row is present while the details stay gated', (
       tester,
     ) async {
       await pumpProfile(tester);
 
-      // The other half of the "neither surface links to /vehicle" assertion —
-      // this card row was the ONLY `context.push('/vehicle')` in the app, so
-      // after this stage the screen is reachable only by deep link.
-      expect(find.byKey(const Key('nav-link-vehicle')), findsNothing);
-      expect(find.text('Vehicle & documents'), findsNothing);
+      // The profile card is fed from the same list as the sidebar. The nav
+      // entry is unconditional (driver bug #6); this only proves the row is
+      // present, not what its target screen renders.
+      expect(find.byKey(const Key('nav-link-vehicle')), findsOneWidget);
+      expect(find.text('Vehicle'), findsOneWidget);
+    });
+
+    testWidgets('the vehicle row routes to /vehicle', (tester) async {
+      // The profile-card half of bug #6's fix: the row exists and the card's
+      // `context.go` opens the section. The target is still a placeholder —
+      // it renders a stub `Text('Vehicle Page')`, not the real vehicle screen
+      // (the details/save half is not built).
+      await pumpProfile(tester);
+
+      await tester.tap(find.byKey(const Key('nav-link-vehicle')));
+      await tester.pumpAndSettle();
+
+      expect(find.text('Vehicle Page'), findsOneWidget);
     });
   });
 }

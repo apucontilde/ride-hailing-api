@@ -406,6 +406,139 @@ void main() {
       expect(service.active, isFalse);
     });
 
+    test('setForegroundTracking swaps to the foreground stream while active',
+        () async {
+      // Bug #18: an online driver must be backed by the Android foreground
+      // service. The switch must actually re-subscribe, not just flip a flag,
+      // or the persistent notification would never attach.
+      final plain = StreamController<Position>.broadcast();
+      final foreground = StreamController<Position>.broadcast();
+      addTearDown(plain.close);
+      addTearDown(foreground.close);
+
+      final seen = <GeoPoint>[];
+      final service = LocationService(
+        apiClient: mockApiClient,
+        availabilityNotifier: availability,
+        positionStreamProvider: () => plain.stream,
+        foregroundPositionStreamProvider: () => foreground.stream,
+        onPosition: (p) => seen.add(GeoPoint(p.latitude, p.longitude)),
+      );
+      addTearDown(service.dispose);
+
+      expect(service.foregroundTracking, isFalse);
+      service.start();
+      expect(service.active, isTrue);
+
+      service.setForegroundTracking(true);
+      expect(service.foregroundTracking, isTrue);
+
+      // The foreground stream now feeds the service...
+      foreground.add(positionFor(9.93, -84.08));
+      await pumpEventQueue();
+      expect(seen, const [GeoPoint(9.93, -84.08)]);
+
+      // ...and the old plain subscription is gone.
+      plain.add(positionFor(1, 1));
+      await pumpEventQueue();
+      expect(seen, const [GeoPoint(9.93, -84.08)]);
+
+      // Going offline must detach the service again.
+      service.setForegroundTracking(false);
+      expect(service.foregroundTracking, isFalse);
+      plain.add(positionFor(9.94, -84.09));
+      await pumpEventQueue();
+      expect(seen.last, const GeoPoint(9.94, -84.09));
+    });
+
+    test('start() honours a foreground flag armed before the stream', () async {
+      final plain = StreamController<Position>.broadcast();
+      final foreground = StreamController<Position>.broadcast();
+      addTearDown(plain.close);
+      addTearDown(foreground.close);
+
+      final seen = <GeoPoint>[];
+      final service = LocationService(
+        apiClient: mockApiClient,
+        availabilityNotifier: availability,
+        positionStreamProvider: () => plain.stream,
+        foregroundPositionStreamProvider: () => foreground.stream,
+        onPosition: (p) => seen.add(GeoPoint(p.latitude, p.longitude)),
+      );
+      addTearDown(service.dispose);
+
+      // Arm before any subscription exists (the provider's onOnlineChanged hook
+      // can fire before the first start()).
+      service.setForegroundTracking(true);
+      service.start();
+
+      foreground.add(positionFor(9.93, -84.08));
+      await pumpEventQueue();
+      expect(seen, const [GeoPoint(9.93, -84.08)]);
+
+      plain.add(positionFor(1, 1));
+      await pumpEventQueue();
+      expect(seen, const [GeoPoint(9.93, -84.08)]);
+    });
+
+    test('stop() clears foreground tracking so a logout cannot keep the service',
+        () async {
+      final plain = StreamController<Position>.broadcast();
+      final foreground = StreamController<Position>.broadcast();
+      addTearDown(plain.close);
+      addTearDown(foreground.close);
+
+      final service = LocationService(
+        apiClient: mockApiClient,
+        availabilityNotifier: availability,
+        positionStreamProvider: () => plain.stream,
+        foregroundPositionStreamProvider: () => foreground.stream,
+      );
+      addTearDown(service.dispose);
+
+      service.start();
+      service.setForegroundTracking(true);
+      expect(service.foregroundTracking, isTrue);
+
+      service.stop();
+      expect(service.foregroundTracking, isFalse);
+      expect(service.active, isFalse);
+
+      // A restart after the teardown uses the plain stream until re-armed.
+      service.start();
+      foreground.add(positionFor(9.93, -84.08));
+      await pumpEventQueue();
+      // No onPosition observer here, but the service must still be subscribed to
+      // the plain stream; it simply must not be in foreground mode.
+      expect(service.foregroundTracking, isFalse);
+    });
+
+    test('setForegroundTracking is idempotent', () async {
+      final plain = StreamController<Position>.broadcast();
+      final foreground = StreamController<Position>.broadcast();
+      addTearDown(plain.close);
+      addTearDown(foreground.close);
+
+      final seen = <GeoPoint>[];
+      final service = LocationService(
+        apiClient: mockApiClient,
+        availabilityNotifier: availability,
+        positionStreamProvider: () => plain.stream,
+        foregroundPositionStreamProvider: () => foreground.stream,
+        onPosition: (p) => seen.add(GeoPoint(p.latitude, p.longitude)),
+      );
+      addTearDown(service.dispose);
+
+      service.start();
+      service.setForegroundTracking(true);
+      service.setForegroundTracking(true);
+
+      foreground.add(positionFor(9.93, -84.08));
+      await pumpEventQueue();
+      // A duplicate arm must not re-subscribe and duplicate events.
+      expect(seen, const [GeoPoint(9.93, -84.08)]);
+    });
+
     test('requestPermission calls onPermission with granted when OS grants',
         () async {
       final permissionResults = <({bool granted, bool deniedPermanently})>[];

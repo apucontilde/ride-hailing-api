@@ -2,16 +2,19 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:ride_hailing_shared/ride_hailing_shared.dart';
 
+import '../../payout/model/driver_earnings.dart';
+import '../../payout/presentation/withdraw_sheet.dart';
+import '../../payout/providers/payout_providers.dart';
 import '../data/rated_rides_provider.dart';
 import '../providers/history_provider.dart';
 import 'rate_sheet.dart';
 
-/// Completed-trip history with client-side earnings (US-D11).
+/// Completed-trip history plus the driver's earnings ledger (US-D11).
 ///
-/// The earnings card is a sum over the rides loaded so far, **not** a server
-/// figure: `GET /driver/me/earnings` and `POST /driver/earnings/withdraw` are
-/// stubs, so there is nothing honest to call for an all-time balance and the
-/// card says so. The same rule is why there is no withdraw button here.
+/// The earnings card is the **server's** ledger (`GET /driver/me/earnings`,
+/// integer cents), not a sum over the loaded rides: the balance and the
+/// withdraw CTA live next to the fares that produced them. A withdrawal is a
+/// recorded pending debit, not a bank transfer, and the sheet says so.
 class RidesHistoryScreen extends ConsumerStatefulWidget {
   const RidesHistoryScreen({super.key});
 
@@ -55,11 +58,12 @@ class _RidesHistoryScreenState extends ConsumerState<RidesHistoryScreen> {
     final earnings = ref.watch(earningsProvider);
     final ratedRides = ref.watch(ratedRidesProvider);
 
-    // One refresh covers both lists: which rides are completed and which of
-    // them are already rated have to agree, and they arrive from two endpoints.
+    // One refresh covers all three: the ride page, which of those rides are
+    // already rated, and the ledger balance the withdraw sheet checks against.
     Future<void> refreshAll() => Future.wait([
       ref.read(historyProvider.notifier).refresh(silent: true),
       ref.read(ratedRidesProvider.notifier).refresh(),
+      ref.read(earningsProvider.notifier).refresh(),
     ]);
 
     // Body-only: `DriverShell` owns the Scaffold/AppBar for the section. The
@@ -78,7 +82,7 @@ class _RidesHistoryScreenState extends ConsumerState<RidesHistoryScreen> {
           ),
         ),
       ),
-      _EarningsCard(summary: earnings, total: history.total),
+      _EarningsCard(earnings: earnings),
       if (history.error != null)
         Padding(
           padding: const EdgeInsets.symmetric(
@@ -154,27 +158,80 @@ class _RidesHistoryScreenState extends ConsumerState<RidesHistoryScreen> {
   }
 }
 
-class _EarningsCard extends StatelessWidget {
-  final EarningsSummary summary;
-  final int total;
+/// The driver's earnings ledger, backed by `GET /driver/me/earnings`.
+///
+/// Money arrives as integer cents and is converted exactly once, at render,
+/// through [formatCents]; a null currency renders bare. A loading card shows a
+/// spinner rather than a fabricated `0.00`.
+class _EarningsCard extends ConsumerWidget {
+  final AsyncValue<DriverEarningsSummary> earnings;
 
-  const _EarningsCard({required this.summary, required this.total});
+  const _EarningsCard({required this.earnings});
 
   @override
-  Widget build(BuildContext context) {
+  Widget build(BuildContext context, WidgetRef ref) {
     final theme = Theme.of(context);
+    // `valueOrNull` keeps the resolved summary on screen across a refresh.
+    final summary = earnings.valueOrNull;
+
+    if (summary == null) {
+      return AppCard(
+        margin: const EdgeInsets.all(AppSpacing.lg),
+        padding: const EdgeInsets.all(AppSpacing.lg),
+        child: earnings.hasError
+            ? AppErrorRow(
+                key: const Key('earnings-error'),
+                message: earningsErrorMessage,
+                onRetry: () =>
+                    ref.read(earningsProvider.notifier).refresh(),
+              )
+            : const Padding(
+                padding: EdgeInsets.symmetric(vertical: 24),
+                child: Center(child: CircularProgressIndicator()),
+              ),
+      );
+    }
+
+    final currency = summary.currency;
+    final canWithdraw = summary.availableCents > 0;
+
     return AppCard(
       margin: const EdgeInsets.all(AppSpacing.lg),
       padding: const EdgeInsets.all(AppSpacing.lg),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
+          Text('Available to withdraw', style: theme.textTheme.labelLarge),
+          const SizedBox(height: 4),
+          Text(
+            key: const Key('earnings-available'),
+            formatCents(summary.availableCents, currency: currency),
+            style: theme.textTheme.headlineMedium,
+          ),
+          const SizedBox(height: 4),
+          AppButton(
+            key: const Key('withdraw-button'),
+            label: 'Withdraw',
+            variant: AppButtonVariant.secondary,
+            onPressed: canWithdraw
+                ? () => showWithdrawSheet(context, ref)
+                : null,
+          ),
+          if (!canWithdraw)
+            Padding(
+              padding: const EdgeInsets.only(top: 4),
+              child: Text(
+                'No balance is available to withdraw yet.',
+                style: theme.textTheme.bodySmall,
+              ),
+            ),
+          const Divider(height: 24),
           Text('Fares this month', style: theme.textTheme.labelLarge),
           const SizedBox(height: 4),
           Text(
             key: const Key('earnings-month-total'),
-            formatMoney(summary.monthTotal, currency: summary.currency),
-            style: theme.textTheme.headlineMedium,
+            formatCents(summary.monthTotalCents, currency: currency),
+            style: theme.textTheme.headlineSmall,
           ),
           Text(
             summary.monthTrips == 1
@@ -193,22 +250,50 @@ class _EarningsCard extends StatelessWidget {
                     Text(month.label, style: theme.textTheme.bodyMedium),
                     Text(
                       '${month.trips} · '
-                      '${formatMoney(month.total, currency: month.currency)}',
+                      '${formatCents(month.totalCents, currency: currency)}',
                       style: theme.textTheme.bodyMedium,
                     ),
                   ],
                 ),
               ),
           ],
+          const Divider(height: 24),
+          _ledgerRow(theme, 'Pending', summary.pendingCents, currency,
+              const Key('earnings-pending')),
+          _ledgerRow(theme, 'Withdrawn', summary.withdrawnCents, currency,
+              const Key('earnings-withdrawn')),
+          _ledgerRow(theme, 'Lifetime', summary.lifetimeCents, currency,
+              const Key('earnings-lifetime')),
           const SizedBox(height: 8),
-          // The honest caveat: the server's earnings endpoints are stubs, so
-          // this covers the pages loaded, not the driver's whole book.
+          // The honest caveat: a withdrawal is a recorded ledger debit, not a
+          // bank transfer. Money does not move until payouts are processed.
           Text(
-            'Sum of fares on the ${summary.completedTrips} completed '
-            '${summary.completedTrips == 1 ? 'trip' : 'trips'} loaded so far'
-            '${total > summary.completedTrips ? ' of $total' : ''}. '
-            'Withdrawals are not available yet.',
+            'Withdrawals are recorded as pending ledger entries. '
+            'No money moves until payouts are processed.',
             style: theme.textTheme.bodySmall,
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _ledgerRow(
+    ThemeData theme,
+    String label,
+    int cents,
+    String? currency,
+    Key key,
+  ) {
+    return Padding(
+      padding: const EdgeInsets.symmetric(vertical: 2),
+      child: Row(
+        mainAxisAlignment: MainAxisAlignment.spaceBetween,
+        children: [
+          Text(label, style: theme.textTheme.bodyMedium),
+          Text(
+            key: key,
+            formatCents(cents, currency: currency),
+            style: theme.textTheme.bodyMedium,
           ),
         ],
       ),
@@ -300,8 +385,8 @@ class _RideTile extends ConsumerWidget {
     );
   }
 
-  /// `completed_at` first, `requested_at` as the fallback, matching
-  /// [EarningsSummary]'s bucketing so a tile and its month always agree.
+  /// `completed_at` first, `requested_at` as the fallback, matching the
+  /// ledger's month bucketing so a tile and its month always agree.
   static DateTime? _rideDate(Ride ride) {
     for (final raw in [ride.completedAt, ride.requestedAt]) {
       if (raw == null || raw.isEmpty) continue;

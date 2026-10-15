@@ -22,10 +22,15 @@ import '../../features/navigation/rider_shell.dart';
 
 final _shellKey = GlobalKey<NavigatorState>();
 
+/// Test seam: where the router boots. Production is `/splash`; a widget test
+/// overrides it with a shell location (e.g. `/home`) to reproduce a browser
+/// reload, where go_router boots at the reloaded hash URL rather than `/splash`.
+final routerInitialLocationProvider = Provider<String>((ref) => '/splash');
+
 final routerProvider = Provider<GoRouter>((ref) {
   return GoRouter(
     navigatorKey: _shellKey,
-    initialLocation: '/splash',
+    initialLocation: ref.read(routerInitialLocationProvider),
     // Re-run `redirect` once the async bootstrap settles, even though the
     // bootstrap itself triggers no navigation.
     refreshListenable: ref.read(sessionBootstrapProvider),

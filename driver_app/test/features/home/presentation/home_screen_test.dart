@@ -14,6 +14,7 @@ import 'package:driver_app/core/network/websocket_service.dart';
 import 'package:driver_app/core/network/ws_event.dart';
 import 'package:driver_app/core/ride/ride_state_notifier.dart';
 import 'package:driver_app/features/driver/model/driver_profile.dart';
+import 'package:driver_app/features/home/presentation/background_tracking_notice.dart';
 import 'package:driver_app/features/home/presentation/home_screen.dart';
 import 'package:driver_app/features/home/providers/availability_notifier.dart';
 import 'package:driver_app/features/navigation/driver_shell.dart';
@@ -364,5 +365,149 @@ void main() {
       ),
       findsOneWidget,
     );
+  });
+
+  testWidgets('going online shows the background-tracking notice once',
+      (tester) async {
+    var opened = 0;
+    when(
+      () => mockDio.put(
+        ApiEndpoints.driverMeStatus,
+        data: any(named: 'data'),
+      ),
+    ).thenAnswer(
+      (_) async => Response(
+        requestOptions: RequestOptions(path: ApiEndpoints.driverMeStatus),
+        statusCode: 200,
+        data: {
+          'driver': {
+            'user_id': 'd1',
+            'first_name': 'Ada',
+            'last_name': 'Lovelace',
+            'status': 'online',
+          },
+        },
+      ),
+    );
+
+    final noticeContainer = ProviderContainer(
+      overrides: [
+        apiClientProvider.overrideWithValue(mockApiClient),
+        rideStateProvider.overrideWith((ref) => rideState),
+        driverProfileProvider.overrideWith((ref) => profile),
+        appPermissionProvider.overrideWith(
+          (ref) => const AppPermissionState(granted: true),
+        ),
+        mapTileLayerProvider.overrideWith((ref, config) => null),
+        openAppSettingsProvider.overrideWithValue(() async {
+          opened++;
+          return true;
+        }),
+        locationServiceProvider.overrideWith(
+          (ref) => FakeLocationService(
+            apiClient: mockApiClient,
+            availabilityNotifier: ref.read(availabilityProvider.notifier),
+          ),
+        ),
+      ],
+    );
+    addTearDown(noticeContainer.dispose);
+
+    final router = GoRouter(
+      initialLocation: '/home',
+      routes: [
+        GoRoute(
+          path: '/home',
+          builder: (_, _) =>
+              const DriverShell(location: '/home', child: HomeScreen()),
+        ),
+        GoRoute(path: '/trip', builder: (_, _) => const TripScreen()),
+      ],
+    );
+    addTearDown(router.dispose);
+
+    await tester.pumpWidget(
+      UncontrolledProviderScope(
+        container: noticeContainer,
+        child: MaterialApp.router(routerConfig: router),
+      ),
+    );
+    await tester.pump();
+    await tester.pump();
+
+    expect(
+      find.byKey(const Key('background-tracking-notice')),
+      findsNothing,
+      reason: 'the notice is only shown once the driver goes online',
+    );
+
+    await tester.tap(find.byType(Switch));
+    await tester.pumpAndSettle();
+
+    expect(find.byKey(const Key('background-tracking-notice')), findsOneWidget);
+    await tester.tap(
+      find.byKey(const Key('background-tracking-open-settings')),
+    );
+    await tester.pumpAndSettle();
+    expect(opened, 1, reason: 'the settings deep-link must fire');
+    expect(
+      noticeContainer.read(backgroundTrackingNoticeShownProvider),
+      isTrue,
+      reason: 'the notice must not be shown again this session',
+    );
+  });
+
+  testWidgets('the permanent-denial banner offers the settings deep-link',
+      (tester) async {
+    var opened = 0;
+    final deniedContainer = ProviderContainer(
+      overrides: [
+        apiClientProvider.overrideWithValue(mockApiClient),
+        rideStateProvider.overrideWith((ref) => rideState),
+        driverProfileProvider.overrideWith((ref) => profile),
+        appPermissionProvider.overrideWith(
+          (ref) =>
+              const AppPermissionState(granted: false, deniedPermanently: true),
+        ),
+        mapTileLayerProvider.overrideWith((ref, config) => null),
+        openAppSettingsProvider.overrideWithValue(() async {
+          opened++;
+          return true;
+        }),
+        locationServiceProvider.overrideWith(
+          (ref) => FakeLocationService(
+            apiClient: mockApiClient,
+            availabilityNotifier: ref.read(availabilityProvider.notifier),
+          ),
+        ),
+      ],
+    );
+    addTearDown(deniedContainer.dispose);
+
+    final router = GoRouter(
+      initialLocation: '/home',
+      routes: [
+        GoRoute(
+          path: '/home',
+          builder: (_, _) =>
+              const DriverShell(location: '/home', child: HomeScreen()),
+        ),
+        GoRoute(path: '/trip', builder: (_, _) => const TripScreen()),
+      ],
+    );
+    addTearDown(router.dispose);
+
+    await tester.pumpWidget(
+      UncontrolledProviderScope(
+        container: deniedContainer,
+        child: MaterialApp.router(routerConfig: router),
+      ),
+    );
+    await tester.pump();
+    await tester.pump();
+
+    await tester.tap(find.byKey(const Key('denied-open-settings')));
+    await tester.pumpAndSettle();
+    expect(opened, 1);
   });
 }

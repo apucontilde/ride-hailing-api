@@ -102,6 +102,12 @@ void main() {
           builder: (_, _) =>
               const Scaffold(body: Center(child: Text('Settings Page'))),
         ),
+        // T5: the nav card's Home row `context.push(item.route)` targets `/home`.
+        GoRoute(
+          path: '/home',
+          builder: (_, _) =>
+              const Scaffold(body: Center(child: Text('Home Page'))),
+        ),
       ],
     );
     addTearDown(router.dispose);
@@ -339,6 +345,37 @@ void main() {
       await tester.pumpAndSettle();
 
       expect(find.text('Settings Page'), findsOneWidget);
+    });
+
+    testWidgets(
+        'nav card shows the profile destinations minus profile itself '
+        '(bug #28)', (tester) async {
+      await pumpProfile(tester);
+
+      expect(find.byKey(const Key('nav-link-home')), findsOneWidget);
+      expect(find.byKey(const Key('nav-link-profile')), findsNothing);
+
+      // The exact row set: the same list the sidebar reads, minus `profile`.
+      for (final key in const [
+        'nav-link-home',
+        'nav-link-ride-history',
+        'nav-link-payment',
+        'nav-link-security',
+        'nav-link-settings',
+      ]) {
+        expect(find.byKey(Key(key)), findsOneWidget, reason: 'missing $key');
+      }
+      // Driver-only destination the rider list never carries.
+      expect(find.byKey(const Key('nav-link-vehicle')), findsNothing);
+    });
+
+    testWidgets('tapping the Home row pushes /home', (tester) async {
+      await pumpProfile(tester);
+
+      await tester.tap(find.byKey(const Key('nav-link-home')));
+      await tester.pumpAndSettle();
+
+      expect(find.text('Home Page'), findsOneWidget);
     });
   });
 }

@@ -30,6 +30,7 @@ type wiring struct {
 	deviceTokens repository.DeviceTokenRepository
 	feedback     repository.FeedbackRepository
 	fare         repository.FareRepository
+	earnings     repository.EarningsRepository
 	pushProvider push.Provider
 }
 
@@ -54,6 +55,13 @@ func WithFeedbackRepository(r repository.FeedbackRepository) Option {
 // builds the local DB-backed store in SetupWithRepos.
 func WithFareRepository(r repository.FareRepository) Option {
 	return func(w *wiring) { w.fare = r }
+}
+
+// WithEarningsRepository injects the driver earnings ledger (api_plans/
+// [payout]). The db-less harnesses pass an in-memory ledger; production
+// builds the DB-backed store in SetupWithRepos.
+func WithEarningsRepository(r repository.EarningsRepository) Option {
+	return func(w *wiring) { w.earnings = r }
 }
 
 // WithPushProvider injects the delivery provider (a recording mock under test).
@@ -108,6 +116,13 @@ func SetupWithRepos(cfg *config.Config, userRepo repository.UserRepository, ride
 		fareRepo = repository.NewFareRepo(db)
 	}
 
+	// The earnings ledger lives on the MAIN database (money is local by
+	// definition). A db-less harness injects its own through Options.
+	earningsRepo := configured.earnings
+	if earningsRepo == nil && db != nil {
+		earningsRepo = repository.NewEarningsRepo(db, cfg.Payout.Currency)
+	}
+
 	// Push is ancillary: with no credentials configured this is the
 	// log-and-continue no-op, so delivery can never fail a ride transition.
 	pushProvider := configured.pushProvider
@@ -151,6 +166,9 @@ func SetupWithRepos(cfg *config.Config, userRepo repository.UserRepository, ride
 	// (api_plans/[arrival]_proximity_arrival_geofence.md). The nil/zero config
 	// (off) is the documented legacy shape.
 	rideService.SetArrivalGeofence(cfg.Arrival)
+	// Driver earnings ledger: a completed ride credits the driver once, net
+	// of the payout commission (api_plans/[payout]).
+	rideService.SetEarnings(earningsRepo, cfg.Payout.CommissionRate)
 	dispatchService := service.NewDispatchService(rideRepo, geoRepo, userRepo, wsHub, navService)
 	wsHub.SetDispatchHandler(dispatchService)
 
@@ -164,6 +182,7 @@ func SetupWithRepos(cfg *config.Config, userRepo repository.UserRepository, ride
 	platformHandler := handler.NewPlatformHandler(navService, fareService, placesRepo,
 		deviceRepo, feedbackRepo, cfg.PlacesMaxRadiusM, cfg.PlacesDefaultLimit,
 		cfg.RideMaxStops)
+	earningsHandler := handler.NewEarningsHandler(earningsRepo, cfg.Payout.MinWithdrawCents)
 
 	// Middleware
 	authMw := middleware.AuthRequired(authService)
@@ -220,7 +239,7 @@ func SetupWithRepos(cfg *config.Config, userRepo repository.UserRepository, ride
 	driver.POST("/me/documents", platformHandler.StubPayment)
 	driver.GET("/me/vehicle", platformHandler.StubPayment)
 	driver.PUT("/me/vehicle", platformHandler.StubPayment)
-	driver.GET("/me/earnings", platformHandler.StubPayment)
+	driver.GET("/me/earnings", earningsHandler.GetEarnings)
 	driver.GET("/ratings", rideHandler.GetRatings)
 
 	// Driver rides
@@ -232,7 +251,7 @@ func SetupWithRepos(cfg *config.Config, userRepo repository.UserRepository, ride
 	driverRides.GET("/:id", rideHandler.GetRideByID)
 	driverRides.GET("/:id/rider", platformHandler.DriverRiderInfo)
 	driverRides.POST("/:id/accept", rideHandler.AcceptRide)
-	driverRides.POST("/:id/decline", platformHandler.StubPayment)
+	driverRides.POST("/:id/decline", rideHandler.DeclineRide)
 	driverRides.PUT("/:id/status", rideHandler.AdvanceStatus)
 	driverRides.POST("/:id/cancel", rideHandler.CancelRide)
 	driverRides.POST("/:id/rate", rideHandler.RateRide)
@@ -304,8 +323,10 @@ func SetupWithRepos(cfg *config.Config, userRepo repository.UserRepository, ride
 	// Driver location tracking (for rider)
 	r.GET("/api/v1/drivers/:id/location", authMw, geoHandler.GetDriverLocation)
 
-	// Driver earnings withdraw (stub)
-	r.POST("/api/v1/driver/earnings/withdraw", authMw, middleware.RequireRole("driver"), platformHandler.StubPayment)
+	// Driver earnings withdraw (api_plans/[payout]): a pending ledger debit,
+	// not a bank transfer. Idempotency-Key replays the first response instead
+	// of double-debiting; the ledger itself also dedups by key.
+	r.POST("/api/v1/driver/earnings/withdraw", authMw, middleware.RequireRole("driver"), idempotencyMw, earningsHandler.Withdraw)
 
 	// WebSocket endpoint (hub created above)
 	r.GET("/ws", middleware.AuthRequiredWS(authService), wsHub.HandleWS)

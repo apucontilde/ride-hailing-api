@@ -358,10 +358,10 @@ func awaitOfferAndAccept(t *testing.T, svc *DispatchService, rideID, driverID st
 	deadline := time.Now().Add(5 * time.Second)
 	for time.Now().Before(deadline) {
 		svc.offerChannelsMu.Lock()
-		ch, ok := svc.offerChannels[rideID]
+		offer, ok := svc.offerChannels[rideID]
 		svc.offerChannelsMu.Unlock()
 		if ok {
-			ch <- true
+			offer.ch <- true
 			return
 		}
 		time.Sleep(5 * time.Millisecond)
@@ -409,10 +409,10 @@ func awaitOfferChannel(t *testing.T, svc *DispatchService, rideID string, isNewe
 	deadline := time.Now().Add(5 * time.Second)
 	for time.Now().Before(deadline) {
 		svc.offerChannelsMu.Lock()
-		ch, ok := svc.offerChannels[rideID]
+		offer, ok := svc.offerChannels[rideID]
 		svc.offerChannelsMu.Unlock()
-		if ok && (isNewerThan == nil || ch != isNewerThan) {
-			return ch
+		if ok && (isNewerThan == nil || offer.ch != isNewerThan) {
+			return offer.ch
 		}
 		time.Sleep(5 * time.Millisecond)
 	}
@@ -688,10 +688,10 @@ func TestDispatchStatusReadFailureIsNotReportedAsNotPending(t *testing.T) {
 		deadline := time.Now().Add(5 * time.Second)
 		for time.Now().Before(deadline) {
 			svc.offerChannelsMu.Lock()
-			ch, ok := svc.offerChannels["ride-readfail"]
+			offer, ok := svc.offerChannels["ride-readfail"]
 			svc.offerChannelsMu.Unlock()
 			if ok {
-				ch <- false
+				offer.ch <- false
 				return
 			}
 			time.Sleep(5 * time.Millisecond)
