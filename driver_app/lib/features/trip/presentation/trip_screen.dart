@@ -35,7 +35,24 @@ class _TripScreenState extends ConsumerState<TripScreen> {
   @override
   void initState() {
     super.initState();
-    WidgetsBinding.instance.addPostFrameCallback((_) => _syncRoute());
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      _publishArrivalFix();
+      _syncRoute();
+    });
+  }
+
+  /// Arrival is server-owned: the proximity geofence advances
+  /// `accepted -> driver_arrived` only when a fix reaches
+  /// `PUT /geo/driver/location`. A driver who accepts an offer while already
+  /// at (or within the arrive radius of) the pickup emits no new geolocator
+  /// fix — the stream's 10 m `distanceFilter` suppresses stationary updates —
+  /// so without this push the trip would wait for an arrival that can never
+  /// fire. Re-publishing the cached fix is a no-op when offline or before the
+  /// first fix; duplicates are harmless (the geofence is idempotent).
+  void _publishArrivalFix() {
+    final ride = ref.read(rideStateProvider).currentRide;
+    if (ride == null || ride.status != 'accepted') return;
+    ref.read(locationServiceProvider).publishLastPosition();
   }
 
   /// Requests the road route to the current next waypoint. Safe to call on
@@ -175,6 +192,13 @@ class _TripScreenState extends ConsumerState<TripScreen> {
           prevRide?.pickupLat != nextRide?.pickupLat ||
           prevRide?.pickupLng != nextRide?.pickupLng;
       if (stageChanged || destinationChanged) _syncRoute();
+    });
+    // A websocket accept mounts this screen on an accepted *placeholder*
+    // before the server commits it, so the post-frame push can race the
+    // accept. The server's `ride.updated` confirmation triggers one more push,
+    // guaranteeing the geofence sees a fix after the ride is really accepted.
+    ref.listen<RideState>(rideStateProvider, (previous, next) {
+      if (next.currentRide?.status == 'accepted') _publishArrivalFix();
     });
 
     return PopScope(

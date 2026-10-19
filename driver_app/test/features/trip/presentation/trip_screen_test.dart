@@ -1,6 +1,7 @@
 import 'dart:async';
 
 import 'package:dio/dio.dart';
+import 'package:geolocator/geolocator.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_map/flutter_map.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
@@ -15,6 +16,7 @@ import 'package:driver_app/core/location/location_service.dart';
 import 'package:driver_app/core/network/websocket_service.dart';
 import 'package:driver_app/core/network/ws_event.dart';
 import 'package:driver_app/core/ride/ride_state_notifier.dart';
+import 'package:driver_app/features/home/providers/availability_notifier.dart';
 import 'package:driver_app/features/rides/presentation/rate_sheet.dart';
 import 'package:driver_app/features/trip/providers/trip_notifier.dart';
 import 'package:driver_app/features/trip/presentation/trip_screen.dart';
@@ -29,6 +31,22 @@ class MockDio extends Mock implements Dio {}
 class MockDriverWebSocketService extends Mock
     implements DriverWebSocketService {}
 
+/// Counts arrival-support pushes without touching a geolocator platform
+/// channel or the network.
+class FakeLocationService extends LocationService {
+  FakeLocationService({
+    required super.apiClient,
+    required super.availabilityNotifier,
+  }) : super(positionStreamProvider: () => const Stream<Position>.empty());
+
+  int publishCount = 0;
+
+  @override
+  void publishLastPosition({bool force = true}) {
+    publishCount++;
+  }
+}
+
 void main() {
   const pickupLat = tripPickupLat, pickupLng = tripPickupLng;
   const dropoffLat = tripDropoffLat, dropoffLng = tripDropoffLng;
@@ -36,6 +54,7 @@ void main() {
   late MockApiClient mockApiClient;
   late MockDio mockDio;
   late RideStateNotifier rideState;
+  late FakeLocationService fakeLocation;
   late ProviderContainer container;
 
   Response jsonResponse(Map<String, dynamic> data) => Response(
@@ -99,9 +118,19 @@ void main() {
         mapTileLayerProvider.overrideWith((ref, config) => null),
         lastPositionProvider
             .overrideWith((ref) => const GeoPoint(pickupLat, pickupLng)),
+        locationServiceProvider.overrideWith(
+          (ref) => fakeLocation = FakeLocationService(
+            apiClient: mockApiClient,
+            availabilityNotifier: ref.read(availabilityProvider.notifier),
+          ),
+        ),
       ],
     );
     addTearDown(container.dispose);
+
+    // Force the lazy override to construct the fake even in cases that never
+    // reach an accepted ride, so tests can assert on its counter.
+    fakeLocation = container.read(locationServiceProvider) as FakeLocationService;
 
     // The rated list is server-gated: default it to "rated nothing", the only
     // state in which the post-trip prompt may appear. A case that cares about a
@@ -255,6 +284,34 @@ void main() {
 
   List<Polyline> polylines(WidgetTester tester) =>
       tester.widget<PolylineLayer>(find.byType(PolylineLayer)).polylines;
+
+  group('arrival while already at the pickup', () {
+    testWidgets('mounting an accepted trip re-publishes the cached fix',
+        (tester) async {
+      // The driver accepted while stationary at the pickup: geolocator emits
+      // no further fix (10 m distanceFilter), so the server geofence only
+      // runs if the screen pushes the cached one.
+      broadcast(status: 'accepted');
+      await pumpTrip(tester);
+      await tester.pump();
+
+      expect(fakeLocation.publishCount, greaterThanOrEqualTo(1));
+    });
+
+    testWidgets('a server-confirmed accept after mount publishes again',
+        (tester) async {
+      // WS accept mounts the screen on a placeholder before the server commit;
+      // the confirmation must trigger a post-commit fix.
+      await pumpTrip(tester);
+      await tester.pump();
+      expect(fakeLocation.publishCount, 0);
+
+      broadcast(status: 'accepted');
+      await tester.pump();
+
+      expect(fakeLocation.publishCount, greaterThanOrEqualTo(1));
+    });
+  });
 
   group('without a held ride', () {
     testWidgets('shows no active trip', (tester) async {
