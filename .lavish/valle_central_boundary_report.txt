@@ -1,0 +1,228 @@
+Valle Central valley-floor catchment — draft boundary report
+========================================================================
+generated: 2026-10-17 19:04:50
+command: scripts/derive-valle-central-poly.py --slope-max 12 --relief-max 200 --z-min 400
+
+PARAMETERS
+  dem-dir            data/dem
+  bbox (DEM)         -85.0,9.0,-83.0,11.0
+  envelope (floor)   -84.75,9.55,-83.72,10.45
+  step               4 arcsec (122.8 m N-S)
+  slope-max          12 deg
+  relief-max         200 m over 1000 m
+  z range            400 .. 1700 m
+  smooth             radius 1 (mean)
+  morphology         close 1, open 0
+  seed-radius        35 km
+  simplify           150 m
+  fill-holes         all (small threshold 10 km2)
+  seeds              9.9325,-84.0796; 10.0162,-84.2116; 9.9981,-84.1165; 9.8644,-83.9194; 10.0875,-84.4700; 9.8383,-83.8656
+
+DEM
+  tile N09W085 (3601 samples, 7.8 MB gz, 0.1s)
+  tile N09W084 (3601 samples, 16.2 MB gz, 0.2s)
+  tile N10W085 (3601 samples, 12.8 MB gz, 0.2s)
+  tile N10W084 (3601 samples, 7.3 MB gz, 0.1s)
+  grid 1801 rows x 1801 cols = 3243601 samples
+  voids 0 (0.000%) -> nearest-neighbour filled
+
+VALLEY FLOOR V (before catchment)
+  components found: 391; kept 316; total kept area 3060.5 km2
+  comp 7   kept      2397 cells      35.9 km2
+  comp 9   kept        92 cells       1.4 km2
+  comp 20  kept       223 cells       3.3 km2
+  comp 35  kept       104 cells       1.6 km2
+  comp 62  kept        89 cells       1.3 km2
+  comp 74  kept       102 cells       1.5 km2
+  comp 85  kept       136 cells       2.0 km2
+  comp 94  kept       726 cells      10.9 km2
+  comp 95  kept      1734 cells      25.9 km2
+  comp 97  kept       384 cells       5.7 km2
+  comp 101 kept      1690 cells      25.3 km2
+  comp 104 kept        73 cells       1.1 km2
+  comp 105 kept       224 cells       3.4 km2
+  comp 107 kept       406 cells       6.1 km2
+  comp 116 kept        70 cells       1.0 km2
+  comp 119 kept       450 cells       6.7 km2
+  comp 120 kept        92 cells       1.4 km2
+  comp 124 kept        84 cells       1.3 km2
+  comp 126 kept    118177 cells    1768.1 km2
+  comp 129 kept       380 cells       5.7 km2
+  comp 133 kept       138 cells       2.1 km2
+  comp 135 kept       218 cells       3.3 km2
+  comp 138 kept       364 cells       5.4 km2
+  comp 141 kept      1646 cells      24.6 km2
+  comp 171 kept       283 cells       4.2 km2
+  comp 175 kept        80 cells       1.2 km2
+  comp 179 kept       675 cells      10.1 km2
+  comp 181 kept        76 cells       1.1 km2
+  comp 183 kept      2644 cells      39.6 km2
+  comp 186 kept       108 cells       1.6 km2
+  comp 188 kept       267 cells       4.0 km2
+  comp 197 kept       373 cells       5.6 km2
+  comp 199 kept       110 cells       1.6 km2
+  comp 200 kept        72 cells       1.1 km2
+  comp 202 kept      2864 cells      42.8 km2
+  comp 205 kept        68 cells       1.0 km2
+  comp 221 kept       149 cells       2.2 km2
+  comp 224 kept        75 cells       1.1 km2
+  comp 232 kept      1409 cells      21.1 km2
+  comp 233 kept       139 cells       2.1 km2
+  comp 234 kept      1198 cells      17.9 km2
+  comp 237 kept      2744 cells      41.1 km2
+  comp 243 kept      1614 cells      24.1 km2
+  comp 244 kept       243 cells       3.6 km2
+  comp 245 kept      6854 cells     102.5 km2
+  comp 249 kept       188 cells       2.8 km2
+  comp 250 kept       130 cells       1.9 km2
+  comp 253 kept        79 cells       1.2 km2
+  comp 258 kept        79 cells       1.2 km2
+  comp 261 kept      1763 cells      26.4 km2
+  comp 263 kept        80 cells       1.2 km2
+  comp 267 kept        76 cells       1.1 km2
+  comp 269 kept       109 cells       1.6 km2
+  comp 271 kept        68 cells       1.0 km2
+  comp 273 kept        77 cells       1.2 km2
+  comp 278 kept      2472 cells      37.0 km2
+  comp 280 kept       150 cells       2.2 km2
+  comp 281 kept       456 cells       6.8 km2
+  comp 285 kept     37274 cells     557.7 km2
+  comp 287 kept       169 cells       2.5 km2
+  comp 290 kept       111 cells       1.7 km2
+  comp 291 kept        97 cells       1.5 km2
+  comp 295 kept       262 cells       3.9 km2
+  comp 301 kept       717 cells      10.7 km2
+  comp 304 kept       124 cells       1.9 km2
+  comp 305 kept        68 cells       1.0 km2
+  comp 316 kept        94 cells       1.4 km2
+  comp 320 kept        70 cells       1.0 km2
+  comp 324 kept       110 cells       1.6 km2
+  comp 336 kept      1606 cells      24.0 km2
+  comp 342 kept       444 cells       6.6 km2
+  comp 357 kept       151 cells       2.3 km2
+  comp 368 kept       109 cells       1.6 km2
+  plus 243 kept patch(es) < 1 km2 (80.6 km2 total)
+  comp 12  DROPPED     315 cells       4.7 km2 (outside seed radius)
+  comp 16  DROPPED     116 cells       1.7 km2 (outside seed radius)
+  comp 22  DROPPED     383 cells       5.7 km2 (outside seed radius)
+  comp 29  DROPPED     154 cells       2.3 km2 (outside seed radius)
+  comp 31  DROPPED     196 cells       2.9 km2 (outside seed radius)
+  comp 32  DROPPED      96 cells       1.4 km2 (outside seed radius)
+  comp 36  DROPPED    1258 cells      18.8 km2 (outside seed radius)
+  comp 40  DROPPED     205 cells       3.1 km2 (outside seed radius)
+  comp 42  DROPPED     150 cells       2.2 km2 (outside seed radius)
+  comp 53  DROPPED    3048 cells      45.6 km2 (outside seed radius)
+  comp 70  DROPPED     525 cells       7.9 km2 (outside seed radius)
+  comp 353 DROPPED     172 cells       2.6 km2 (outside seed radius)
+  comp 361 DROPPED     102 cells       1.5 km2 (outside seed radius)
+  comp 370 DROPPED      84 cells       1.3 km2 (outside seed radius)
+  comp 373 DROPPED     118 cells       1.8 km2 (outside seed radius)
+  comp 375 DROPPED     135 cells       2.0 km2 (outside seed radius)
+  comp 379 DROPPED     301 cells       4.5 km2 (outside seed radius)
+  comp 381 DROPPED     114 cells       1.7 km2 (outside seed radius)
+  comp 382 DROPPED     326 cells       4.9 km2 (outside seed radius)
+  comp 386 DROPPED     993 cells      14.9 km2 (outside seed radius)
+  comp 390 DROPPED     230 cells       3.4 km2 (outside seed radius)
+  seed 1 (9.9325, -84.0796) -> cell row 348 col 608, 0.05 km away
+  seed 2 (10.0162, -84.2116) -> cell row 424 col 490, 0.07 km away
+  seed 3 (9.9981, -84.1165) -> cell row 407 col 575, 0.04 km away
+  seed 4 (9.8644, -83.9194) -> cell row 287 col 753, 0.06 km away
+  seed 5 (10.0875, -84.4700) -> cell row 488 col 257, 0.03 km away
+  seed 6 (9.8383, -83.8656) -> cell row 263 col 801, 0.06 km away
+
+CATCHMENT C
+  cells 406611; area 6082.3 km2 (cell-count)
+  bbox  lon -84.79333 .. -83.69222  lat 9.60000 .. 10.39111
+  elevation min 243 m, mean 1243 m, max 3425 m
+  boundary cells with an outside neighbour: 6915
+  drop z_in - z_out: p10 -19 m, median 10 m, p90 40 m
+  low-saddle boundary cells (drop < 50 m): 6582
+
+POLYGON
+  raw vertices 9426 (simple=True), simplified 1122 (simple=True)
+  shoelace area 6081.7 km2
+  output regions/valle_central.poly
+
+CONTROL POINTS
+  name         lat        lon        inside   expect   status
+  San Jose     9.9325     -84.0796   yes      inside   ok
+  Alajuela     10.0162    -84.2116   yes      inside   ok
+  Heredia      9.9981     -84.1165   yes      inside   ok
+  Cartago      9.8644     -83.9194   yes      inside   ok
+  San Ramon    10.0875    -84.4700   yes      inside   ok
+  Paraiso      9.8383     -83.8656   yes      inside   ok
+  Puntarenas   9.9763     -84.8384   no       outside  ok
+  Liberia      10.6346    -85.4407   no       outside  ok
+  Turrialba    9.9050     -83.6800   no       outside  ok
+  Irazu        9.9794     -83.8525   yes      inside   ok
+  Poas         10.1978    -84.2331   yes      inside   ok
+
+RUNTIME
+  mosaic           1.8s
+  void fill        0.0s
+  V mask           4.3s
+  priority flood   45.1s
+  dist-to-V        6.4s
+  D8               8.4s
+  upstream BFS     0.7s
+  hole fill        3.4s
+  boundary trace   1.2s
+  total            138.9s
+
+WARNINGS / CAVEATS
+  - large interior hole (365.1 km2 near -83.930,10.069) filled; verify it should be inside the region
+  - catchment had 25 disconnected components (213, 12, 406611, 52, 135, 2878, 18, 51, 280, 242, 88, 16, 20, 50, 9, 104, 12, 110, 15, 12, 28, 21, 19, 9, 349 cells); only the largest was kept
+  - boundary drop is measured across one ~122 m cell, so an ordinary divide shows only a small positive value; the <50 m 'saddle' count is a heuristic, not a pass inventory
+
+PHASE LOG
+  - mosaic: 1801x1801 samples at 4 arcsec (122.8 m N-S)
+  - voids: 0 cells (0.000%)
+  - smoothed 819x938 window with mean radius 1
+  - relief window 9 cells (1101 m side)
+  - valley-floor V: 391 components, 3210.3 km2 total, largest 1768.1 km2
+  - kept 316/391 V components (3060.5 km2); dropped 75 small/far patches
+  - priority flood: seeded 918431 ocean cells (z <= 0)
+  - D8: 560320 flat/no-descent cells used the tie-break rule
+  - hole fill: 87 hole(s) found
+  -   hole 0: 334 cells, 5.0 km2 at -84.067,9.657, filled
+  -   hole 2: 151 cells, 2.3 km2 at -84.011,9.759, filled
+  -   hole 3: 120 cells, 1.8 km2 at -83.923,9.784, filled
+  -   hole 5: 236 cells, 3.5 km2 at -83.918,9.806, filled
+  -   hole 7: 423 cells, 6.3 km2 at -84.121,9.825, filled
+  -   hole 9: 167 cells, 2.5 km2 at -83.889,9.821, filled
+  -   hole 10: 143 cells, 2.1 km2 at -84.080,9.821, filled
+  -   hole 13: 522 cells, 7.8 km2 at -84.375,9.842, filled
+  -   hole 15: 70 cells, 1.0 km2 at -84.006,9.845, filled
+  -   hole 18: 1070 cells, 16.0 km2 at -83.768,9.872, filled
+  -   hole 24: 104 cells, 1.6 km2 at -84.373,9.923, filled
+  -   hole 30: 160 cells, 2.4 km2 at -83.755,9.940, filled
+  -   hole 31: 24402 cells, 365.1 km2 at -83.930,10.069, filled
+  -   hole 33: 191 cells, 2.9 km2 at -84.497,10.005, filled
+  -   hole 34: 199 cells, 3.0 km2 at -84.473,10.006, filled
+  -   hole 35: 192 cells, 2.9 km2 at -84.527,10.041, filled
+  -   hole 37: 291 cells, 4.4 km2 at -83.758,10.063, filled
+  -   hole 39: 178 cells, 2.7 km2 at -84.526,10.082, filled
+  -   hole 42: 1374 cells, 20.6 km2 at -84.645,10.134, filled
+  -   hole 46: 423 cells, 6.3 km2 at -84.597,10.142, filled
+  -   hole 48: 105 cells, 1.6 km2 at -84.135,10.169, filled
+  -   hole 50: 194 cells, 2.9 km2 at -84.333,10.181, filled
+  -   hole 51: 1492 cells, 22.3 km2 at -84.189,10.215, filled
+  -   hole 52: 271 cells, 4.1 km2 at -84.715,10.186, filled
+  -   hole 53: 86 cells, 1.3 km2 at -84.583,10.193, filled
+  -   hole 54: 5297 cells, 79.2 km2 at -84.340,10.264, filled
+  -   hole 55: 1437 cells, 21.5 km2 at -84.040,10.217, filled
+  -   hole 56: 480 cells, 7.2 km2 at -84.690,10.214, filled
+  -   hole 57: 74 cells, 1.1 km2 at -84.593,10.205, filled
+  -   hole 66: 471 cells, 7.0 km2 at -84.719,10.251, filled
+  -   hole 67: 231 cells, 3.5 km2 at -84.692,10.243, filled
+  -   hole 69: 1196 cells, 17.9 km2 at -84.613,10.264, filled
+  -   hole 71: 162 cells, 2.4 km2 at -84.423,10.247, filled
+  -   hole 73: 128 cells, 1.9 km2 at -84.656,10.268, filled
+  -   hole 74: 180 cells, 2.7 km2 at -84.569,10.272, filled
+  -   hole 75: 141 cells, 2.1 km2 at -84.720,10.282, filled
+  -   hole 77: 1000 cells, 15.0 km2 at -84.634,10.308, filled
+  -   hole 78: 194 cells, 2.9 km2 at -84.177,10.293, filled
+  -   hole 79: 116 cells, 1.7 km2 at -84.157,10.297, filled
+  -   hole 80: 543 cells, 8.1 km2 at -84.676,10.321, filled
+  -   hole 83: 79 cells, 1.2 km2 at -84.314,10.306, filled
+  -   plus 46 hole(s) < 1 km2 (17.5 km2 total)

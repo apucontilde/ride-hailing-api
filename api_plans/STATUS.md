@@ -196,6 +196,22 @@
   `TestNonJSONReplayRoundTripsExactBytes` (`internal/middleware/idempotency_test.go:580`). Closes bug #22.
 
 ### [dispatch]
+- **Terminal `no_driver_available` write fixed** (condensed from the landed `[dispatch]` SQL
+  hotfix, adversarially confirmed FIXED) — the pre-fix
+  status→timestamp switch left the column empty and emitted
+  `UPDATE rides SET status=$1, =$2, updated_at=NOW() WHERE id=$3` (a Postgres syntax error), so a
+  normal "nobody found" ride stayed `pending` and the rider never got the terminal update.
+  `rideStatusTimestampColumn` (`internal/repository/ride_repo.go:305-320`) + `updateRideStatusQuery`
+  (`:330-339`) now emit `UPDATE rides SET status=$1, updated_at=NOW() WHERE id=$2` for
+  `no_driver_available` (and any status without a timestamp column) while the five timestamped
+  statuses stay byte-identical; `UpdateRideStatus` branches on `withTimestamp` (`:341-355`) with the
+  signature/interface unchanged. Pinned by `TestUpdateRideStatusQuery`
+  (`internal/repository/ride_repo_test.go:16`), the required DB-backed
+  `TestRideRepoUpdateRideStatusNoDriverAvailable`
+  (`internal/repository/ride_status_integration_test.go:20`, real Postgres) and
+  `TestDispatchNoDriverAvailablePushesTerminalUpdateOnSuccess` (`internal/service/dispatch_test.go:497`);
+  a failed write still pushes nothing (both failure-path tests stay green). No CAS/interface/
+  rename/migration/config/app change.
 - A failed terminal `no_driver_available` persist **skips the rider push on BOTH dispatch
   paths**, because a push must never announce a status the database does not hold. Both paths
   now share one helper: the zero-candidate path (`internal/service/dispatch.go:112`) and the
@@ -434,15 +450,15 @@
   (actor `system`) inside the arrive radius, with hysteresis + min-move debounce and a
   backgrounded `ride.nearby` push; the evaluator never fails the location update and nearby
   never changes `status`. Config `GEOFENCE_{ENABLED,NEARBY_RADIUS_M,ARRIVE_RADIUS_M,HYSTERESIS_M,MIN_MOVE_M}`
-  (on/300/80/30/10) `internal/config/config.go:108,208-214,224-227,284-290,355-358`; additive
+  (on/300/80/30/10) `internal/config/config.go:267-273,282-287,343-349,420-422`; additive
   WS fields `internal/websocket/messages.go:90-91`; evaluator `internal/service/arrival.go:58-91`
-  (hysteresis `:138-147`, clamp `:96-106`, nearby push `:167-177`); hot path
+  (hysteresis `:137-148`, clamp `:96-106`, nearby push `:167-177`); hot path
   `internal/handler/geo.go:50-59,91,173`; transition broadcast/push reuses `AdvanceStatus`
-  `internal/service/ride.go:544-554`. The redundant `notify-arrival` route and
+  `internal/service/ride.go:606-615`. The redundant `notify-arrival` route and
   `ArrivalNotification` handler are **removed** (`internal/router/router.go`,
   `internal/handler/platform.go`). Tests `internal/service/arrival_test.go`,
   `internal/handler/geo_arrival_test.go`, `tests/arrival_geofence_test.go`,
-  `internal/config/config_test.go:415`; docs regenerated (`docs/swagger.{json,yaml}`,
+  `internal/config/config_test.go:467-548`; docs regenerated (`docs/swagger.{json,yaml}`,
   `RIDER_API_GUIDE.md`, `DRIVER_APP_PLAN.md`, `USER_STORIES.md`). Reported green: `make test`
   366 pass, `make lint` 0, `make test-integration` green. Closes bug #25; the rider/driver
   `01_[arrival]` consumers are condensed by their own owners.
@@ -503,6 +519,7 @@
 | 23 | ~~`POST /rides` binds the top-level `pickup_*`/`dropoff_*` with `binding:"required"`, so a literal `0` coordinate is rejected `422`; and none of the four top-level coords is range-checked (e.g. `999` is accepted and written to `rides.pickup_*`/`dropoff_*` verbatim), unlike stop coords, which `BuildItinerary` range-checks~~ — **fixed**: pointer fields + `required` distinguish absent from `0`, and all four are range-checked through the shared `service.CoordinateOutOfRange`. See Landed → [rides] | `internal/handler/ride.go:39-42,102-114,140-143`; `internal/service/ride.go:148-157,198`; tests `tests/multi_stop_test.go:639-764` | closed | [rides] |
 | 24 | ~~Coverage-gate mismatch: ingest **0.98** vs runtime **0.99** let a 0.98–0.989 region pass ingest and silently serve flat routing on the now-default path~~ — **fixed**: one shared `DefaultElevationMinCoverage = 0.99` used by both gates (elevtool's `-min-coverage` default imports `config`, runtime `ROUTING_ELEV_MIN_COVERAGE` default) + a region-scoped `import-elevation.sh` post-import assertion. See Landed → [routing] gate correctness | `internal/config/config.go:240,336`; `cmd/elevtool/main.go:65,75`; `scripts/import-elevation.sh:28,69-72` | closed | [routing] |
 | 25 | ~~The removed `POST /driver/rides/:id/notify-arrival` route had stale companion docs~~ — **fixed 2026-10-13**: the route/`ArrivalNotification` handler are gone, `docs/swagger.{json,yaml}` were regenerated (`scripts/update-openapi.sh`), `RIDER_API_GUIDE.md` / `DRIVER_APP_PLAN.md` / `USER_STORIES.md` now say the route was removed and document the additive `driver.location` proximity fields + auto `accepted→driver_arrived`, and the last API-adjacent residue (`driver_app/lib/core/api/endpoints.dart` declared constant) has been removed. No unresolved API residue remains; the `[arrival]` geofence is Landed | swagger grep for `notify-arrival` = 0; `RIDER_API_GUIDE.md:324,704`, `USER_STORIES.md:430`; `driver_app/lib/core/api/endpoints.dart` no longer declares the constant | closed | [arrival] |
+| 26 | ~~**`no_driver_available` never persisted on a real database**~~ — **closed 2026-10-19, adversarially confirmed FIXED.** *Pre-fix (historical):* `UpdateRideStatus`'s status→timestamp-column switch left `statusCol == ""`, producing `UPDATE rides SET status=$1, =$2, updated_at=NOW() WHERE id=$3`; Postgres raised `ERROR: syntax error at or near "="`, so `finishWithoutDriver` always took its error branch, left the ride `pending`, and never pushed `ride.updated {status:"no_driver_available"}`. Reproduced live with `EXPLAIN`; the unit suite was green only because `MockRideRepo` models no SQL; the `rides` CHECK already allows the status. *Post-fix:* `rideStatusTimestampColumn` + `updateRideStatusQuery` emit the no-column form for `no_driver_available`, `UpdateRideStatus` branches on `withTimestamp`, and a failed write still pushes nothing. The old fix plan file is deleted (condensed into Landed → [dispatch]); `[rides]_cancel_accept_race.md` §1 must preserve the no-timestamp-column form when it supersedes the method with `UpdateRideStatusFrom` | `internal/repository/ride_repo.go:305-355` (mapping `:305-320`, query `:330-339`, branch `:341-355`); tests `internal/repository/ride_repo_test.go:16`, `internal/repository/ride_status_integration_test.go:20` (real Postgres), `internal/service/dispatch_test.go:497`; reviewer re-ran the integration test (`PASS`, no SKIP), confirmed both old `EXPLAIN` errors and the new forms, the success push, and the two failure-path tests; `internal/service/dispatch.go:171-180` failure branch still pushes nothing; stale pre-fix mock masking `tests/testutil/mock_repos.go:627-655` | closed | [dispatch] |
 
 ## Test-audit follow-ups
 
@@ -531,6 +548,15 @@
   `fare_regions`→`routing_regions` and `fare_rates`→`fare_regions` FKs, and the `vehicle_type` /
   `day_mask` / `multiplier` CHECKs) to keep insert ordering flexible, so the **migrations remain the
   schema oracle**, not the fixtures.
+- **The integration gate can be green-by-skip when Postgres is absent** (test-infra debt, not a
+  production bug). `connectPG` calls `t.Skipf` when the DB is unreachable
+  (`internal/repository/pgrouting_repo_integration_test.go:22,26`), so a DB-less CI run reports the
+  required `pending → no_driver_available` gate as SKIP, not FAIL. Run `make test-integration` against
+  the `ride-hailing-db` container for that gate to mean anything.
+- **Pre-existing decline flake, unrelated to the SQL hotfix** (test-infra debt, not a production
+  bug). `TestDispatchDeclineHTTPRecordsDriverDeclined` (`tests/dispatch_decline_test.go:75`, second
+  decline expects 404) failed 2/13 runs with 200 vs 404; it reproduces independently of the
+  `no_driver_available` change and is not caused by it.
 
 ## Preserved records (resolved — not open)
 
@@ -550,6 +576,8 @@
 | `[routing]_valle_central.md` | routing | landed `[routing]` gate correctness + snap-radius coverage (STATUS.md) | **open (independent, unnumbered — renamed back from `01_` now that its prerequisite is landed)** — one `valle_central` region (`level=state`, `parent_region='cr'`) covering the **Central Valley BASIN** (supersedes the nationwide/province question; the 4 full provinces are **out** — Alajuela reaches the northern border, San José the Pacific). Within-basin trips road-follow; any pin outside the basin (incl. the rest of the 4 provinces and cross-basin trips) → 200 `is_estimate`. **TOP OPEN INPUT:** the exact basin polygon (`regions/valle_central.poly`, CONFIRM-BEFORE-IMPORT) vs the bbox fallback `-84.45,9.65,-83.65,10.25`. Remaining: clip + import `valle_central`; the elevation gate fix (bug #24) is now **landed** (STATUS.md → Landed `[routing]` gate correctness), so run the `--region valle_central` backfill; one fare card (`make seed-fares SEED_FARES_REGION=valle_central`); retire the `cr-sj` **network** rows (edges before vertices) + single `default_region` owner; restart; then the **final `cr-sj` delete** (`fare_rates`→`fare_demand_windows`→`fare_regions`→`routing_regions`, FK order, guarded on no active `cr-sj` ride; historical `rides.fare_region_id` audit refs go stale by design — no FK); acceptance tests. Still open: any downstream keying on `cr-sj`. **No app contract change** beyond `region_id` moving `cr-sj`→`valle_central` for new rides (completed keep booked `cr-sj`; no app keys on it) |
 | `[push]_production_provider.md` | push | push delivery pipeline + device-token registration seam (STATUS.md) | **deferred** — wire real FCM/APNs/web providers behind `push.Provider`/`MultiProvider` (the shipped `LogProvider` is a no-op) and real token sources (both apps ship `NoopPushTokenSource`); no credentials/SDK exist in this harness. Canonical push file; the rider/driver halves are referenced by path from their own STATUS, not duplicated |
 | `[auth]_web_session_token_contract.md` | auth | — | **contract record, no API change**: the rider-web session bug is fixed Flutter-only. Documents the Bearer refresh contract (15m access / 720h refresh, rotate-and-revoke, 401-vs-5xx, `AllowAllOrigins` rules out cookies) + the client obligations (cold-start exchange, atomic rotated-token persist, single-flight refresh) and contract guardrails |
+| `[rides]_cancel_accept_race.md` | rides | — (landed `[rides]` state machine + `[dispatch]` offer path) | Atomic conditional status writes (the `no_driver_available` SQL defect is **fixed by the landed `[dispatch]` hotfix**; the `[rides]` CAS `UpdateRideStatusFrom` must preserve the no-timestamp-column form); identity-scoped cancel with `200` idempotent / `404` / `409` and fresh timestamps; withdraw the parked offer on cancel and re-read before every later `ride.offer`; one WS+HTTP accept funnel with driver matching (closes the force-assign hole), exactly-once assignment, `errors.Is`-based `404`/`409`/`422` mapping, and the canonical `ride.accept_failed` / `ride.offer_closed` frames; race tests + a DB-backed conditional-update test (its `pending → no_driver_available` DB test stays a required gate for the CAS form) |
+| `01_[arrival]_accept_time_evaluation.md` | arrival | open `[rides]_cancel_accept_race.md` (**stage 01**, cannot land before that chain head) | **open** — evaluate arrival once inside the single accept write (`DispatchService.AcceptRide`, renamed `acceptRide` by the rides plan) from the last `driver_positions` fix, SQL-side freshness-gated at **60 s** (`NearbyDriverResult.AgeS` selected by the existing `GetDriverLocation`; no `DriverFix`/new read), so a driver who accepts while already inside the 80 m arrive radius no longer depends on the client re-publishing a fix. Covers the WebSocket accept (the primary path) as well as the HTTP fallback; the evaluation must never fail the accept, is **arrive-only** (never fires `ride.nearby` or touches nearby hysteresis). CAS is **adopted verbatim** from the rides plan (`UpdateRideStatusFrom` + `ErrTransitionConflict`, owner: rides plan §1.1–§1.3); this plan adds no repository method/sentinel and only requires the accept-time evaluation + concurrent `PUT /geo/driver/location` ⇒ exactly one transition/event/broadcast test. App-side re-publish stays as defence. **Decision-complete** — D1=A + env knob `GEOFENCE_ACCEPT_FIX_MAX_AGE_S` (default 60 s, unset/empty→60, garbage/non-finite/≤0→skip; independent of `GEOFENCE_ENABLED`), D2=A SQL-side `AgeS`, D3=A keep both WS patches (`accepted` then `driver_arrived`, evaluation after the accepted sends, zero client change), D4=A arrive-only, D5=A CAS adopted from the rides plan, D6=B no `DriverFix`. **Still blocked** only by the open `[rides]_cancel_accept_race.md` chain head; no product decisions remain |
 
 **Deferred follow-up (no plan file yet) — receipt-level per-leg breakdown:** the completed-ride
 receipt/history would need the per-leg split stored on the ride (a new row/columns → a migration)

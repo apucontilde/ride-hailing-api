@@ -488,6 +488,30 @@ func TestDispatchGenuinelyNoCandidatesWidensEveryRadius(t *testing.T) {
 	}
 }
 
+// TestDispatchNoDriverAvailablePushesTerminalUpdateOnSuccess pins the success
+// half of the terminal write (the half the invalid SQL made unreachable): once
+// the no_driver_available UPDATE succeeds, the rider receives the existing
+// ride.updated terminal push. The failure half stays covered by
+// TestDispatchNoDriverAvailableWhenPersistenceFails and
+// TestDispatchFailedTerminalWriteDoesNotPushTheRider.
+func TestDispatchNoDriverAvailablePushesTerminalUpdateOnSuccess(t *testing.T) {
+	geo := &fakeGeoRepo{}
+	ride := &fakeRideRepo{}
+	hub := newFakeHub()
+	svc := newTestDispatch(geo, ride, hub)
+
+	if err := svc.Dispatch(pendingRide("ride-nodriver")); err != nil {
+		t.Fatalf("Dispatch: %v", err)
+	}
+
+	if got := ride.statusUpdateLog(); len(got) != 1 || got[0] != "no_driver_available" {
+		t.Errorf("status updates = %v, want [no_driver_available]", got)
+	}
+	if got := hub.rideUpdatesTo("rider-1"); len(got) != 1 || got[0] != "no_driver_available" {
+		t.Errorf("ride.updated pushed to the rider = %v, want [no_driver_available]", got)
+	}
+}
+
 // TestDispatchSearchErrorIsNotReportedAsNoDrivers is the "distinguish a genuine
 // service-area miss from a failed search" requirement. A search failure must
 // propagate as an error (so the ride create fails loudly) and must be recorded

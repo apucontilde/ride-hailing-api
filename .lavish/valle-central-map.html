@@ -1,0 +1,486 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="luxury">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Valle Central — draft boundary review</title>
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/daisyui@5.5.19/daisyui.css">
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/daisyui@5.5.19/themes.css">
+<script src="https://cdn.jsdelivr.net/npm/@tailwindcss/browser@4.2.4/dist/index.global.js"></script>
+<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css">
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+<style>
+  html, body { height: 100%; }
+  body { margin: 0; }
+  #map { background: #0f172a; }
+  .panel-scroll { overflow-wrap: anywhere; }
+  .panel-scroll pre, .panel-scroll code { overflow-wrap: anywhere; }
+  .leaflet-popup-content-wrapper, .leaflet-popup-tip { background: #1f1d1b; color: #f3f0e9; }
+  .leaflet-popup-content { margin: 10px 12px; font-size: 13px; line-height: 1.45; }
+  .leaflet-tooltip.plan-bbox-label {
+    background: #1e3a8a; color: #dbeafe; border: 1px dashed #93c5fd;
+    font-size: 11px; font-weight: 600; white-space: normal; max-width: 220px; text-align: center;
+  }
+  .leaflet-tooltip.plan-bbox-label::before { border-top-color: #93c5fd; }
+  .fit-btn {
+    font: inherit; font-size: 12px; font-weight: 600; cursor: pointer;
+    padding: 7px 10px; border-radius: 6px; border: 1px solid #f97316;
+    background: #1f1d1b; color: #fdba74;
+  }
+  .fit-btn:hover { background: #422006; }
+  .legend-swatch { display: inline-block; width: 14px; height: 10px; border-radius: 2px; margin-right: 7px; vertical-align: middle; }
+  .banner[hidden] { display: none; }
+  a.dl { text-decoration: underline; text-underline-offset: 2px; }
+</style>
+</head>
+<body class="bg-base-300 text-base-content">
+<div class="flex flex-col lg:flex-row lg:h-screen">
+
+  <!-- MAP -->
+  <div class="relative min-w-0 shrink-0 h-[55vh] lg:h-full lg:flex-1">
+    <div id="map" class="absolute inset-0"></div>
+
+    <div id="lib-banner" hidden class="banner absolute left-1/2 -translate-x-1/2 top-3 z-[1000] w-[min(92%,560px)] alert alert-error shadow-xl text-sm">
+      <span><strong>Map libraries did not load</strong> — use <code>data/valle_central_draft.geojson</code> in geojson.io or QGIS.</span>
+    </div>
+    <div id="poly-banner" hidden class="banner absolute left-1/2 -translate-x-1/2 top-3 z-[1000] w-[min(92%,560px)] alert alert-warning shadow-xl text-sm">
+      <div class="min-w-0">
+        <p class="font-semibold">Could not load <code>valle_central.poly</code>.</p>
+        <p class="text-xs mt-1">Copy it next to this page, then refresh:</p>
+        <code class="block mt-1 text-xs">cp regions/valle_central.poly .lavish/valle_central.poly</code>
+      </div>
+    </div>
+  </div>
+
+  <!-- PANEL -->
+  <aside class="panel-scroll w-full lg:w-[400px] lg:h-full lg:overflow-y-auto border-t lg:border-t-0 lg:border-l border-base-content/10 bg-base-200">
+    <div class="p-5 space-y-5">
+
+      <header class="space-y-2">
+        <div class="flex flex-wrap items-start gap-2">
+          <h1 class="text-xl font-bold leading-tight min-w-0">Valle Central — draft boundary</h1>
+          <span class="badge badge-warning badge-sm font-bold shrink-0">DRAFT</span>
+        </div>
+        <p class="text-xs opacity-70 leading-relaxed">
+          Rendered directly from <code>regions/valle_central.poly</code> (Osmosis .poly).
+        </p>
+      </header>
+
+      <section class="card bg-base-100 shadow-sm">
+        <div class="card-body p-4 gap-3">
+          <h2 class="card-title text-sm">Computed from the ring</h2>
+          <dl class="grid grid-cols-2 gap-x-3 gap-y-2 text-xs">
+            <dt class="opacity-60">Area (approx from ring)</dt>
+            <dd class="font-mono text-right" id="stat-area">…</dd>
+            <dt class="opacity-60">Vertex count</dt>
+            <dd class="font-mono text-right" id="stat-vertices">…</dd>
+            <dt class="opacity-60">Center (lat, lon)</dt>
+            <dd class="font-mono text-right" id="stat-center">…</dd>
+            <dt class="opacity-60 col-span-2">Bounding box (lon / lat)</dt>
+            <dd class="col-span-2 font-mono text-[11px] leading-relaxed text-right" id="stat-bbox">…</dd>
+          </dl>
+          <p class="text-[11px] opacity-50">Area is a shoelace estimate in local meters around the ring centroid; the report's grid area is 6,082 km².</p>
+          <button type="button" id="fitPolyBtn" class="btn btn-sm btn-warning">Fit polygon</button>
+        </div>
+      </section>
+
+      <section class="card bg-base-100 shadow-sm">
+        <div class="card-body p-4 gap-2">
+          <h2 class="card-title text-sm">Last-run parameters</h2>
+          <p class="text-[11px] opacity-60">From the chosen draft, not recomputed here.</p>
+          <pre class="text-[11px] leading-relaxed bg-base-300 rounded p-2 whitespace-pre-wrap break-words">--slope-max 12 --relief-max 200 --z-min 400
+--step 4 --envelope -84.75,9.55,-83.72,10.45</pre>
+          <ul class="text-xs space-y-1.5 list-disc pl-4 opacity-90">
+            <li>C-mask elevation min/mean/max: <span class="font-mono">243 / 1,243 / 3,425 m</span>.</li>
+            <li>Boundary drop median <span class="font-mono">10 m</span> across one <span class="font-mono">~122 m</span> cell.</li>
+            <li><span class="font-mono">25</span> disconnected catchment components; largest kept.</li>
+            <li>A <span class="font-mono">365 km²</span> interior hole was filled.</li>
+            <li>Irazú is marginal: inside at these flags, outside at defaults.</li>
+            <li>Turrialba is excluded by the envelope (product decision).</li>
+          </ul>
+        </div>
+      </section>
+
+      <section class="card bg-base-100 shadow-sm">
+        <div class="card-body p-4 gap-2">
+          <h2 class="card-title text-sm">What to check</h2>
+          <ul class="text-xs space-y-1.5 list-disc pl-4">
+            <li>San Ramón → Paraíso are included.</li>
+            <li>Turrialba is outside.</li>
+            <li>Irazú / Poás mountain treatment (inside vs. outside).</li>
+            <li>The filled interior massif near <span class="font-mono">-83.930, 10.069</span>.</li>
+            <li>Whether the divide follows the intended ridge.</li>
+          </ul>
+        </div>
+      </section>
+
+      <section class="card bg-base-100 shadow-sm">
+        <div class="card-body p-4 gap-2">
+          <h2 class="card-title text-sm">Iterate</h2>
+          <pre id="iterate-cmd" class="text-[11px] leading-relaxed bg-base-300 rounded p-2 whitespace-pre-wrap break-words">python3 scripts/derive-valle-central-poly.py --slope-max 12 --relief-max 200 --z-min 400
+cp regions/valle_central.poly .lavish/valle_central.poly
+cp data/valle_central_draft.geojson .lavish/valle_central_draft.geojson</pre>
+          <div class="flex items-center gap-2">
+            <button type="button" id="copyIterate" class="btn btn-xs btn-outline">Copy command</button>
+            <span id="copyStatus" class="text-[11px] opacity-60"></span>
+          </div>
+          <p class="text-[11px] opacity-70">Then refresh this page.</p>
+        </div>
+      </section>
+
+      <section class="card bg-base-100 shadow-sm">
+        <div class="card-body p-4 gap-2">
+          <h2 class="card-title text-sm">Downloads</h2>
+          <ul class="text-xs space-y-1.5">
+            <li><a class="dl link link-warning" href="valle_central.poly" download>valle_central.poly</a></li>
+            <li><a class="dl link link-warning" href="valle_central_draft.geojson" download>valle_central_draft.geojson</a></li>
+            <li><a class="dl link link-warning" href="valle_central_boundary_report.txt" download>valle_central_boundary_report.txt</a></li>
+          </ul>
+        </div>
+      </section>
+
+      <section class="space-y-3">
+        <h2 class="text-sm font-bold uppercase tracking-wide opacity-70">Decisions</h2>
+
+        <form class="card bg-base-100 shadow-sm" data-lavish-question="turrialba" onsubmit="event.preventDefault(); queueChoice(this,'turrialba','Turrialba')">
+          <div class="card-body p-4 gap-2">
+            <p class="text-sm font-semibold">Turrialba</p>
+            <p class="text-[11px] opacity-60">Currently excluded by the envelope. Keep it out or pull it in?</p>
+            <label class="label cursor-pointer justify-start gap-2 py-1"><input type="radio" name="turrialba" value="outside" class="radio radio-sm radio-warning" checked><span class="label-text text-xs">Outside <span class="opacity-60">(current)</span></span></label>
+            <label class="label cursor-pointer justify-start gap-2 py-1"><input type="radio" name="turrialba" value="inside" class="radio radio-sm radio-warning"><span class="label-text text-xs">Inside</span></label>
+            <button class="btn btn-primary btn-sm" type="submit">Queue answer</button>
+            <p data-status class="text-xs opacity-60"></p>
+          </div>
+        </form>
+
+        <form class="card bg-base-100 shadow-sm" data-lavish-question="boundary_target" onsubmit="event.preventDefault(); queueChoice(this,'boundary_target','Boundary target')">
+          <div class="card-body p-4 gap-2">
+            <p class="text-sm font-semibold">Boundary target</p>
+            <p class="text-[11px] opacity-60">What should define the edge?</p>
+            <label class="label cursor-pointer justify-start gap-2 py-1"><input type="radio" name="boundary_target" value="topographic divide" class="radio radio-sm radio-warning" checked><span class="label-text text-xs">Topographic divide <span class="opacity-60">(current)</span></span></label>
+            <label class="label cursor-pointer justify-start gap-2 py-1"><input type="radio" name="boundary_target" value="fixed elevation belt" class="radio radio-sm radio-warning"><span class="label-text text-xs">Fixed elevation belt</span></label>
+            <label class="label cursor-pointer justify-start gap-2 py-1"><input type="radio" name="boundary_target" value="hand-drawn ridge" class="radio radio-sm radio-warning"><span class="label-text text-xs">Hand-drawn ridge</span></label>
+            <button class="btn btn-primary btn-sm" type="submit">Queue answer</button>
+            <p data-status class="text-xs opacity-60"></p>
+          </div>
+        </form>
+
+        <form class="card bg-base-100 shadow-sm" data-lavish-question="area_target" onsubmit="event.preventDefault(); queueChoice(this,'area_target','Area target')">
+          <div class="card-body p-4 gap-2">
+            <p class="text-sm font-semibold">Area target</p>
+            <p class="text-[11px] opacity-60">This ring is ~6,082 km². Which scale is the product aiming for?</p>
+            <label class="label cursor-pointer justify-start gap-2 py-1"><input type="radio" name="area_target" value="GAM-sized ~2,000 km²" class="radio radio-sm radio-warning"><span class="label-text text-xs">GAM-sized ~2,000 km²</span></label>
+            <label class="label cursor-pointer justify-start gap-2 py-1"><input type="radio" name="area_target" value="topographic valley ~6,000 km²" class="radio radio-sm radio-warning" checked><span class="label-text text-xs">Topographic valley ~6,000 km² <span class="opacity-60">(current)</span></span></label>
+            <label class="label cursor-pointer justify-start gap-2 py-1"><input type="radio" name="area_target" value="administrative region ~11,366 km²" class="radio radio-sm radio-warning"><span class="label-text text-xs">Administrative region ~11,366 km²</span></label>
+            <button class="btn btn-primary btn-sm" type="submit">Queue answer</button>
+            <p data-status class="text-xs opacity-60"></p>
+          </div>
+        </form>
+      </section>
+
+      <footer class="pt-2 pb-4 border-t border-base-content/10 space-y-1">
+        <p class="text-[10px] opacity-60 leading-relaxed">Design: Lavish fallback (Tailwind/DaisyUI). Basemaps © OpenStreetMap contributors / OpenTopoMap / Esri.</p>
+        <p class="text-[10px] opacity-60">Topographic draft, not a confirmed product border.</p>
+      </footer>
+    </div>
+  </aside>
+</div>
+
+<script>
+(function () {
+  'use strict';
+
+  // ---------- Decision forms ----------
+  function queueChoice(form, question, label) {
+    const answer = new FormData(form).get(question);
+    if (!answer) return;
+    if (window.lavish && typeof window.lavish.queuePrompt === 'function') {
+      window.lavish.queuePrompt(label + ': ' + answer, {
+        tag: 'boundary-review', text: label + ': ' + answer, element: form,
+        queueKey: question, data: { question: question, answer: answer }
+      });
+      const s = form.querySelector('[data-status]');
+      if (s) s.textContent = 'Queued — submit again to replace the unsent answer.';
+    } else {
+      const s = form.querySelector('[data-status]');
+      if (s) s.textContent = 'Selected locally only — Lavish queue unavailable.';
+    }
+  }
+  window.queueChoice = queueChoice;
+
+  document.querySelectorAll('form[data-lavish-question]').forEach(function (form) {
+    form.addEventListener('change', function () {
+      const q = form.getAttribute('data-lavish-question');
+      const answer = new FormData(form).get(q);
+      const s = form.querySelector('[data-status]');
+      if (s) s.textContent = 'Selected locally: ' + answer + ' — not queued yet.';
+    });
+  });
+
+  // ---------- Copy iterate command ----------
+  const copyBtn = document.getElementById('copyIterate');
+  copyBtn.addEventListener('click', function () {
+    const text = document.getElementById('iterate-cmd').textContent;
+    const done = function () {
+      document.getElementById('copyStatus').textContent = 'Copied.';
+      setTimeout(function () { document.getElementById('copyStatus').textContent = ''; }, 2500);
+    };
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+      navigator.clipboard.writeText(text).then(done, function () {
+        document.getElementById('copyStatus').textContent = 'Copy failed — select manually.';
+      });
+    } else {
+      document.getElementById('copyStatus').textContent = 'Clipboard unavailable — select manually.';
+    }
+  });
+
+  // ---------- Leaflet guard ----------
+  if (typeof L === 'undefined') {
+    document.getElementById('lib-banner').hidden = false;
+    return;
+  }
+
+  // ---------- Osmosis .poly parser ----------
+  function parsePoly(text) {
+    const lines = text.split(/\r?\n/);
+    let idx = 0;
+    while (idx < lines.length && lines[idx].trim() === '') idx++;
+    if (idx >= lines.length) throw new Error('empty .poly');
+    const name = lines[idx++].trim();
+    const rings = [];
+    let current = null;
+    for (; idx < lines.length; idx++) {
+      const line = lines[idx].trim();
+      if (!line) continue;
+      if (line === 'END') {
+        if (current) { rings.push(current); current = null; }
+        continue;
+      }
+      const parts = line.split(/\s+/);
+      if (parts.length === 2) {
+        const lon = Number(parts[0]);
+        const lat = Number(parts[1]);
+        if (!Number.isFinite(lon) || !Number.isFinite(lat)) throw new Error('bad coordinate: ' + line);
+        if (!current) current = [];
+        current.push({ lon: lon, lat: lat });
+      } else {
+        // optional ring id (integer) — ignored
+        if (current && current.length) { rings.push(current); current = null; }
+      }
+    }
+    if (current && current.length) rings.push(current);
+    if (!rings.length || !rings[0].length) throw new Error('no rings parsed');
+    return { name: name, rings: rings };
+  }
+
+  function ringAreaKm2(ring) {
+    const n = ring.length;
+    if (n < 3) return 0;
+    let cLat = 0, cLon = 0;
+    for (let i = 0; i < n; i++) { cLat += ring[i].lat; cLon += ring[i].lon; }
+    cLat /= n; cLon /= n;
+    const cos = Math.cos(cLat * Math.PI / 180);
+    let s = 0;
+    for (let i = 0; i < n; i++) {
+      const a = ring[i], b = ring[(i + 1) % n];
+      const x1 = (a.lon - cLon) * 111320 * cos, y1 = (a.lat - cLat) * 110540;
+      const x2 = (b.lon - cLon) * 111320 * cos, y2 = (b.lat - cLat) * 110540;
+      s += x1 * y2 - x2 * y1;
+    }
+    return Math.abs(s) / 2 / 1e6;
+  }
+
+  // Ray casting; ring in lon/lat.
+  function pointInRing(lat, lon, ring) {
+    let inside = false;
+    for (let i = 0, j = ring.length - 1; i < ring.length; j = i++) {
+      const yi = ring[i].lat, xi = ring[i].lon;
+      const yj = ring[j].lat, xj = ring[j].lon;
+      const intersect = ((yi > lat) !== (yj > lat)) &&
+        (lon < (xj - xi) * (lat - yi) / (yj - yi) + xi);
+      if (intersect) inside = !inside;
+    }
+    return inside;
+  }
+
+  // ---------- Map ----------
+  const map = L.map('map', { zoomControl: true, preferCanvas: false });
+
+  const osm = L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+    maxZoom: 19,
+    attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors'
+  });
+  const topo = L.tileLayer('https://{s}.tile.opentopomap.org/{z}/{x}/{y}.png', {
+    maxZoom: 17,
+    attribution: 'Map data &copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors, SRTM | Map style &copy; <a href="https://opentopomap.org">OpenTopoMap</a> (CC-BY-SA)'
+  });
+  const esri = L.tileLayer('https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}', {
+    maxZoom: 19,
+    attribution: 'Tiles &copy; Esri — Source: Esri, Maxar, Earthstar Geographics, and the GIS User Community'
+  });
+  const hillshade = L.tileLayer('https://server.arcgisonline.com/ArcGIS/rest/services/Elevation/World_Hillshade/MapServer/tile/{z}/{y}/{x}', {
+    maxZoom: 16,
+    opacity: 0.4,
+    attribution: 'Hillshade &copy; Esri'
+  });
+
+  topo.addTo(map);
+  L.control.layers(
+    { 'OpenTopoMap': topo, 'OpenStreetMap': osm, 'Esri World Imagery': esri },
+    { 'Esri World Hillshade': hillshade },
+    { position: 'topleft', collapsed: true }
+  ).addTo(map);
+  L.control.scale({ imperial: false, position: 'bottomright' }).addTo(map);
+
+  // Plan bbox fallback: -84.45,9.65 -> -83.65,10.25
+  const planBbox = L.rectangle([[9.65, -84.45], [10.25, -83.65]], {
+    color: '#3b82f6', weight: 2, dashArray: '7 6', fill: false, interactive: true
+  }).addTo(map);
+  planBbox.bindTooltip('Plan bbox fallback — NOT the final boundary', {
+    permanent: true, direction: 'center', className: 'plan-bbox-label', opacity: 1
+  });
+
+  // ---------- Data-driven polygon ----------
+  let polyLayer = null;
+  let polyBounds = null;
+
+  function fitPolygon() {
+    if (!polyBounds) return;
+    map.fitBounds(polyBounds, { padding: [30, 30] });
+  }
+
+  function buildLegend(name) {
+    const legend = L.control({ position: 'bottomleft' });
+    legend.onAdd = function () {
+      const div = L.DomUtil.create('div');
+      div.style.cssText = 'background:#1f1d1b;color:#f3f0e9;padding:9px 11px;border-radius:7px;font-size:11px;line-height:1.7;box-shadow:0 2px 10px rgba(0,0,0,.45);min-width:170px;';
+      div.innerHTML =
+        '<div style="font-weight:700;margin-bottom:3px;color:#fdba74;">' + escapeHtml(name) + '</div>' +
+        '<div><span class="legend-swatch" style="background:rgba(249,115,22,.25);border:2px solid #f97316;"></span>Draft polygon</div>' +
+        '<div><span class="legend-swatch" style="border:2px dashed #3b82f6;"></span>Plan bbox (not final)</div>' +
+        '<div><span class="legend-swatch" style="background:#22c55e;border-radius:50%;width:10px;height:10px;"></span>Seed city</div>' +
+        '<div><span class="legend-swatch" style="background:#ef4444;border-radius:50%;width:10px;height:10px;"></span>Expected outside</div>' +
+        '<div><span class="legend-swatch" style="background:#c084fc;border:2px solid #fbbf24;border-radius:50%;width:10px;height:10px;"></span>Mountain landmark</div>';
+      return div;
+    };
+    legend.addTo(map);
+  }
+
+  function escapeHtml(s) {
+    return String(s).replace(/[&<>"']/g, function (c) {
+      return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c];
+    });
+  }
+
+  fetch('valle_central.poly', { cache: 'no-store' })
+    .then(function (res) {
+      if (!res.ok) throw new Error('HTTP ' + res.status);
+      return res.text();
+    })
+    .then(function (text) {
+      const parsed = parsePoly(text);
+      const outer = parsed.rings[0];
+      const latlngs = outer.map(function (p) { return [p.lat, p.lon]; });
+
+      polyLayer = L.polygon(latlngs, {
+        color: '#f97316', weight: 3, opacity: 1, fillColor: '#f97316', fillOpacity: 0.18
+      }).addTo(map);
+      polyLayer.bindPopup(
+        '<strong>' + escapeHtml(parsed.name) + '</strong><br>' +
+        'Vertices: ' + outer.length.toLocaleString() + '<br>' +
+        'Rings: ' + parsed.rings.length
+      );
+
+      polyBounds = polyLayer.getBounds();
+      fitPolygon();
+      buildLegend(parsed.name);
+
+      // Filter plan bbox to reveal what it over/under-covers.
+      document.getElementById('stat-area').textContent = ringAreaKm2(outer).toLocaleString('en-US', { maximumFractionDigits: 0 }) + ' km²';
+      document.getElementById('stat-vertices').textContent = outer.length.toLocaleString('en-US');
+      let cLat = 0, cLon = 0;
+      outer.forEach(function (p) { cLat += p.lat; cLon += p.lon; });
+      cLat /= outer.length; cLon /= outer.length;
+      document.getElementById('stat-center').textContent = cLat.toFixed(5) + ', ' + cLon.toFixed(5);
+
+      const b = polyBounds;
+      document.getElementById('stat-bbox').textContent =
+        b.getWest().toFixed(4) + ', ' + b.getSouth().toFixed(4) + '  →  ' +
+        b.getEast().toFixed(4) + ', ' + b.getNorth().toFixed(4);
+
+      // ---------- Control points ----------
+      const points = [
+        { name: 'San José', lat: 9.9325, lon: -84.0796, kind: 'seed', expect: 'inside' },
+        { name: 'Alajuela', lat: 10.0162, lon: -84.2116, kind: 'seed', expect: 'inside' },
+        { name: 'Heredia', lat: 9.9981, lon: -84.1165, kind: 'seed', expect: 'inside' },
+        { name: 'Cartago', lat: 9.8644, lon: -83.9194, kind: 'seed', expect: 'inside' },
+        { name: 'San Ramón', lat: 10.0875, lon: -84.4700, kind: 'seed', expect: 'inside' },
+        { name: 'Paraíso', lat: 9.8383, lon: -83.8656, kind: 'seed', expect: 'inside' },
+        { name: 'Puntarenas', lat: 9.9763, lon: -84.8384, kind: 'outside', expect: 'outside' },
+        { name: 'Liberia', lat: 10.6346, lon: -85.4407, kind: 'outside', expect: 'outside' },
+        { name: 'Turrialba', lat: 9.9050, lon: -83.6800, kind: 'outside', expect: 'outside' },
+        { name: 'Irazú', lat: 9.9794, lon: -83.8525, kind: 'mountain', expect: 'inside' },
+        { name: 'Poás', lat: 10.1978, lon: -84.2331, kind: 'mountain', expect: 'inside' }
+      ];
+
+      const style = {
+        seed:     { color: '#86efac', fillColor: '#22c55e', fillOpacity: 0.95 },
+        outside:  { color: '#fecaca', fillColor: '#ef4444', fillOpacity: 0.95 },
+        mountain: { color: '#fbbf24', fillColor: '#c084fc', fillOpacity: 0.95 }
+      };
+      const kindLabel = { seed: 'Seed city', outside: 'Expected outside', mountain: 'Mountain landmark' };
+
+      points.forEach(function (pt) {
+        const inside = pointInRing(pt.lat, pt.lon, outer);
+        const computed = inside ? 'inside' : 'outside';
+        const mismatch = computed !== pt.expect;
+
+        const marker = L.circleMarker([pt.lat, pt.lon], {
+          radius: 8, weight: 2, opacity: 1,
+          color: style[pt.kind].color,
+          fillColor: style[pt.kind].fillColor,
+          fillOpacity: style[pt.kind].fillOpacity
+        }).addTo(map);
+
+        marker.bindTooltip(
+          pt.name + ' — ' + (mismatch ? '⚠ mismatch' : 'ok'),
+          { direction: 'top', offset: [0, -8] }
+        );
+
+        marker.bindPopup(
+          '<strong>' + escapeHtml(pt.name) + '</strong><br>' +
+          '<span style="opacity:.7">' + kindLabel[pt.kind] + '</span><br>' +
+          'Expected: <strong>' + pt.expect + '</strong><br>' +
+          'Computed: <strong>' + computed + '</strong><br>' +
+          (mismatch
+            ? '<span style="display:inline-block;margin-top:5px;padding:2px 7px;border-radius:4px;background:#7f1d1d;color:#fecaca;font-weight:700;font-size:11px;">⚠ MISMATCH</span>'
+            : '<span style="display:inline-block;margin-top:5px;padding:2px 7px;border-radius:4px;background:#14532d;color:#bbf7d0;font-weight:700;font-size:11px;">✓ matches</span>')
+        );
+      });
+
+      // Fit control on the map.
+      const FitControl = L.Control.extend({
+        onAdd: function () {
+          const wrap = L.DomUtil.create('div', 'leaflet-bar');
+          const btn = L.DomUtil.create('button', 'fit-btn', wrap);
+          btn.type = 'button';
+          btn.textContent = 'Fit polygon';
+          btn.setAttribute('aria-label', 'Fit map to the draft polygon');
+          L.DomEvent.disableClickPropagation(wrap);
+          L.DomEvent.on(btn, 'click', fitPolygon);
+          return wrap;
+        }
+      });
+      new FitControl({ position: 'topright' }).addTo(map);
+      document.getElementById('fitPolyBtn').addEventListener('click', fitPolygon);
+    })
+    .catch(function (err) {
+      console.error('Failed to load/parse .poly:', err);
+      document.getElementById('poly-banner').hidden = false;
+      const b = L.latLngBounds([[9.65, -84.45], [10.25, -83.65]]);
+      map.fitBounds(b, { padding: [30, 30] });
+    });
+})();
+</script>
+</body>
+</html>

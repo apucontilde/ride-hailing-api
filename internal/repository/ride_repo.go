@@ -296,6 +296,48 @@ func (r *RideRepo) FindRidesByDriver(driverID string, limit, offset int) ([]mode
 	return rides, total, nil
 }
 
+// rideStatusTimestampColumn maps a ride status to the rides column that records
+// when it was entered. It returns "" for a status with no timestamp column.
+//
+// The set is a fixed switch, never a column name built from input: status is
+// caller-supplied (and, for no_driver_available, arrives from dispatch), so
+// deriving an identifier from it would be an injection seam.
+func rideStatusTimestampColumn(status string) string {
+	switch status {
+	case "accepted":
+		return "accepted_at"
+	case "driver_arrived":
+		return "driver_arrived_at"
+	case "in_progress":
+		return "started_at"
+	case "completed":
+		return "completed_at"
+	case "cancelled":
+		return "cancelled_at"
+	default:
+		return ""
+	}
+}
+
+// updateRideStatusQuery builds the parameterised UPDATE for one status with no
+// string interpolation. withTimestamp reports whether $2 is the timestamp (and
+// $3 the id); without a timestamp column the id is $2.
+//
+// A status with no timestamp column (no_driver_available, pending, or any future
+// value) must omit the column entirely: the old unconditional Sprintf emitted
+// `SET status=$1, =$2, ...`, which Postgres rejects. Unknown values fall through
+// here safely because the rides CHECK constraint rejects them anyway.
+func updateRideStatusQuery(status string) (query string, withTimestamp bool) {
+	col := rideStatusTimestampColumn(status)
+	if col == "" {
+		return "UPDATE rides SET status=$1, updated_at=NOW() WHERE id=$2", false
+	}
+	return fmt.Sprintf(
+		"UPDATE rides SET status=$1, %s=$2, updated_at=NOW() WHERE id=$3",
+		col,
+	), true
+}
+
 func (r *RideRepo) UpdateRideStatus(rideID, status string, timestamp *time.Time) error {
 	now := timestamp
 	if now == nil {
@@ -303,25 +345,13 @@ func (r *RideRepo) UpdateRideStatus(rideID, status string, timestamp *time.Time)
 		now = &t
 	}
 
-	statusCol := ""
-	switch status {
-	case "accepted":
-		statusCol = "accepted_at"
-	case "driver_arrived":
-		statusCol = "driver_arrived_at"
-	case "in_progress":
-		statusCol = "started_at"
-	case "completed":
-		statusCol = "completed_at"
-	case "cancelled":
-		statusCol = "cancelled_at"
+	query, withTimestamp := updateRideStatusQuery(status)
+	var err error
+	if withTimestamp {
+		_, err = r.db.Exec(query, status, *now, rideID)
+	} else {
+		_, err = r.db.Exec(query, status, rideID)
 	}
-
-	query := fmt.Sprintf(
-		"UPDATE rides SET status=$1, %s=$2, updated_at=NOW() WHERE id=$3",
-		statusCol,
-	)
-	_, err := r.db.Exec(query, status, *now, rideID)
 	return wrapDB("update ride status", err)
 }
 
