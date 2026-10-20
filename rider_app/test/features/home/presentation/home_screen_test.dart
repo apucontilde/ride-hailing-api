@@ -1749,6 +1749,82 @@ void main() {
   );
 
   testWidgets(
+    'a locate with only a destination keeps the fix center (no auto-fit override)',
+    (WidgetTester tester) async {
+      fakeLocation
+        ..availability = LocationAvailability.granted
+        ..position = testPosition(9.92, -84.08);
+      dioAdapter.onGet(
+        ApiEndpoints.navigationRoute,
+        (server) => server.replyCallback(200, legRouteBody),
+      );
+
+      // No manual pickup: the device fix is the route origin, so a locate
+      // press changes the route-plan family key.
+      await pumpHome(tester, destination: destinationPlace);
+      await pumpRoute(tester);
+      await tester.pump();
+
+      // The initial none → ready route auto-fit once.
+      expect(find.byTooltip('Current location'), findsOneWidget);
+
+      // A moved fix re-keys the preview family (ready → loading → ready). That
+      // transient refresh must not schedule an auto-fit over the locate.
+      fakeLocation.position = testPosition(9.62, -84.06);
+      await tester.tap(locateButton());
+      await pumpRoute(tester);
+      await tester.pump();
+
+      final camera = mapCamera(tester);
+      expect(camera.center.latitude, closeTo(9.62, 0.0001));
+      expect(camera.center.longitude, closeTo(-84.06, 0.0001));
+      expect(camera.zoom, 16);
+      expect(find.byTooltip('Fit route'), findsOneWidget);
+    },
+  );
+
+  testWidgets(
+    'a locate permission denial tells the truth and moves nothing', (
+      WidgetTester tester,
+    ) async {
+      fakeLocation
+        ..availability = LocationAvailability.denied
+        ..position = testPosition(9.92, -84.08);
+      dioAdapter.onGet(
+        ApiEndpoints.navigationRoute,
+        (server) => server.replyCallback(200, legRouteBody),
+      );
+
+      await pumpHome(
+        tester,
+        pickup: pickupPlace,
+        destination: destinationPlace,
+        withScaffold: true,
+      );
+      await tester.pump();
+      final before = mapCamera(tester).center;
+      final startupFetches = fakeLocation.getCurrentPositionCalls;
+
+      await tester.tap(locateButton());
+      await tester.pump();
+      await tester.pump();
+
+      expect(
+        find.text('Location permission is required to request rides'),
+        findsOneWidget,
+      );
+      expect(
+        fakeLocation.getCurrentPositionCalls,
+        startupFetches,
+        reason: 'a non-granted press never fetches a fix',
+      );
+      expect(find.byTooltip('Current location'), findsOneWidget);
+      expect(mapCamera(tester).center.latitude, closeTo(before.latitude, 1e-9));
+      expect(mapCamera(tester).center.longitude, closeTo(before.longitude, 1e-9));
+    },
+  );
+
+  testWidgets(
     'a stop added re-fits the material route and the next tap locates',
     (WidgetTester tester) async {
       fakeLocation

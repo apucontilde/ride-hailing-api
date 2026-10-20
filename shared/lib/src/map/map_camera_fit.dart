@@ -34,14 +34,22 @@ bool fitMapCamera(
 
 /// Centers [controller] on [point] at [zoom].
 ///
-/// Returns `false` when the camera is not attached or the move was rejected.
+/// Returns `true` once the camera is at the requested center/zoom, including
+/// when it was already there (a repeated locate): `move` answers `false` for an
+/// exact no-op, which is still success. Returns `false` when the camera is not
+/// attached or the move was rejected.
 bool centerMapCamera(
   MapController controller,
   LatLng point, {
   double zoom = 16,
 }) {
   try {
-    return controller.move(point, zoom);
+    if (controller.move(point, zoom)) return true;
+    // `move` answers false when the camera is *already* at the requested
+    // position. That is still success: the target is centered, so the locate
+    // cycle may advance.
+    final current = controller.camera;
+    return current.center == point && current.zoom == zoom;
   } catch (_) {
     return false;
   }

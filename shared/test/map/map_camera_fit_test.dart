@@ -107,6 +107,17 @@ void main() {
       verify(() => controller.move(point, 15)).called(1);
     });
 
+    test('treats an exact repeat center already in place as success', () {
+      final atPoint = MapCamera.initialCamera(
+        MapOptions(initialCenter: point, initialZoom: 16),
+      ).withNonRotatedSize(const Point<double>(800, 600));
+
+      when(() => controller.move(point, 16)).thenReturn(false);
+      when(() => controller.camera).thenReturn(atPoint);
+
+      expect(centerMapCamera(controller, point), isTrue);
+    });
+
     test('returns false when the move is rejected or throws', () {
       when(() => controller.move(point, 16)).thenReturn(false);
       expect(centerMapCamera(controller, point), isFalse);

@@ -303,19 +303,38 @@ class _HomeScreenState extends ConsumerState<HomeScreen>
   bool _canFitRoute(HomeRoutePreview preview) =>
       preview.polyline.length >= 2 || _itineraryPoints().length >= 2;
 
-  /// Material-route key: preview status + pickup/stops/destination coordinates
-  /// ONLY. A device-fix refresh, a silent preview refresh or a same-endpoint
-  /// reroute must not auto-fit or reset the button cycle.
+  /// The last settled route discriminator (`ready`/`estimate`). A transient
+  /// `loading`/`unavailable` preview does not clear it, so a locate press that
+  /// re-keys the route-plan family (the device fix is the origin) does not look
+  /// like a material route change.
+  String? _settledRoutePhase;
+
+  /// Material-route key: the 3-value route discriminator (`none`/`ready`/
+  /// `estimate`, mirroring the driver's contract) + pickup/stops/destination
+  /// coordinates. A device-fix refresh, a silent preview refresh or a
+  /// same-endpoint reroute must not auto-fit or reset the button cycle.
   String _homeRouteKey(HomeRoutePreview preview) {
     String point(double lat, double lng) => '$lat,$lng';
     return <String>[
-      preview.status.name,
+      _homeRoutePhase(preview),
       if (_pickupLocation != null)
         'p:${point(_pickupLocation!.lat, _pickupLocation!.lng)}',
       for (final stop in _stops) 's:${point(stop.lat, stop.lng)}',
       if (_destination != null)
         'd:${point(_destination!.lat, _destination!.lng)}',
     ].join('|');
+  }
+
+  /// The material route discriminator. Only a settled road/estimate route
+  /// updates it; `none → ready` (the road route first arriving) is material and
+  /// auto-fits once, while `ready → loading → ready` from a fix refresh is not.
+  String _homeRoutePhase(HomeRoutePreview preview) {
+    if (preview.isReady) {
+      _settledRoutePhase = 'ready';
+    } else if (preview.isEstimate) {
+      _settledRoutePhase = 'estimate';
+    }
+    return _settledRoutePhase ?? 'none';
   }
 
   /// The locate press: re-resolve availability (keeping the persistent notice

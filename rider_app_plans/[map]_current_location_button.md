@@ -98,8 +98,13 @@ cannot drift.
    - **ActiveRide:** `tripRoute.polyline` when ≥ 2 points, else the itinerary pins (pickup,
      `stopPoints`, dropoff, rider position, driver position).
    - **`routeKey` = material changes only (Option B).**
-     - **Home:** preview `status.name` + pickup/stops/destination coordinates ONLY. Exclude
-       `_currentPosition`, polyline geometry/length and totals.
+     - **Home:** a 3-value route discriminator (`none` / `ready` / `estimate`, mirroring the
+       driver's contract) + pickup/stops/destination coordinates ONLY. Exclude `_currentPosition`,
+       polyline geometry/length and totals. The discriminator is the **last settled** road/estimate
+       phase: a transient `loading`/`unavailable` preview (the route-plan family is re-keyed when a
+       locate press moves the device-fix origin) keeps the settled value, so
+       `ready → loading → ready` is not material. `none → ready` (the road route first arriving)
+       auto-fits once; a locate's own fix refresh neither auto-fits nor resets the cycle.
      - **ActiveRide:** trip-route `status.name` + pickup / `stopPoints` / dropoff coordinates ONLY.
        Exclude `_riderPosition`, the driver position, `fetchedAt` and polyline geometry.
      - **Driver consumer (cross-reference only):** next-waypoint coordinates + route status ONLY,
@@ -151,6 +156,8 @@ import 'package:latlong2/latlong.dart';
 /// Fits [controller] to [points] with the shared camera-fit policy.
 /// Returns `false` when there is nothing to fit (< 2 points) or the camera is
 /// not attached yet; callers keep the fit step pending in that case.
+/// A duplicate fit whose target is already in place also returns `true`
+/// (`fitCamera` answers `false` for that exact no-op).
 bool fitMapCamera(
   MapController controller,
   List<LatLng> points, {
@@ -159,7 +166,9 @@ bool fitMapCamera(
 });
 
 /// Centers [controller] on [point] at [zoom].
-/// Returns `false` when the camera is not attached or the move was rejected.
+/// Returns `true` once the camera is at the requested center/zoom, including
+/// when it was already there (a repeated locate is not a failure); returns
+/// `false` when the camera is not attached or the move was rejected.
 bool centerMapCamera(
   MapController controller,
   LatLng point, {
@@ -248,9 +257,14 @@ export 'src/map/app_map_locate_button.dart';
 - `fitMapCamera`: return `false` when `points.length < 2`; build
   `LatLngBounds.fromPoints(points)` and call
   `controller.fitCamera(CameraFit.bounds(bounds: ..., padding: padding, maxZoom: maxZoom))` inside a
-  `try/catch`; return `true` on success, `false` on any camera-not-attached/rejected move.
+  `try/catch`; return `true` on success. A `fitCamera` `false` whose fitted target
+  (`cameraFit.fit(controller.camera)`) equals the current camera center/zoom is a duplicate fit and
+  still returns `true` (the route is framed); any other false/throw (camera not attached or a
+  rejected move) returns `false`.
 - `centerMapCamera`: call `controller.move(point, zoom)` inside a `try/catch`; return `true` on
-  success, `false` otherwise.
+  success. A `move` `false` whose current camera center/zoom already equals the requested
+  center/zoom is a repeat locate and still returns `true`; any other false/throw (camera not
+  attached or a rejected move) returns `false`.
 - No state, no I/O, no app imports.
 
 **`shared/lib/src/map/app_map_locate_button.dart`** (new):
@@ -294,10 +308,13 @@ export 'src/map/app_map_locate_button.dart';
   polyline with `_fitPadding()`; otherwise delegate to `_fitItinerary()`.
 - Add `bool _canFitRoute(HomeRoutePreview preview)`:
   `preview.polyline.length >= 2 || _itineraryPoints().length >= 2`.
-- Add `String _homeRouteKey(HomeRoutePreview preview)`: preview `status.name` + pickup/stops/
-  destination coordinates ONLY (the material key in decision #4). Exclude `_currentPosition`,
-  polyline geometry/length and totals, so a GPS refresh, a silent preview refresh or a same-endpoint
-  reroute neither auto-fits nor resets the cycle.
+- Add `String _homeRouteKey(HomeRoutePreview preview)`: a 3-value route discriminator (`none` /
+  `ready` / `estimate`) + pickup/stops/destination coordinates ONLY (the material key in decision
+  #4). The discriminator tracks the last **settled** road/estimate phase: `loading`/`unavailable`
+  keep the previous value, so the family re-key caused by a locate's own device-fix update
+  (`ready → loading → ready`) is not material. Exclude `_currentPosition`, polyline geometry/length
+  and totals, so a GPS refresh, a silent preview refresh or a same-endpoint reroute neither
+  auto-fits nor resets the cycle; a genuine `none → ready` still auto-fits once.
 - Add `Future<bool> _locateCurrentPosition()` (do **not** modify `_initLocation`):
   - `ref.read(locationServiceProvider)`, `requestAvailability()`, set `_locationStatus` (this keeps
     the persistent notice truthful);
@@ -408,8 +425,12 @@ Use `mocktail` + a `MockMapController extends Mock implements MapController`.
 - `fitMapCamera` returns `true` and passes the supplied `padding`/`maxZoom` (capture the
   `CameraFit`, cast to `FitBounds`, assert `padding` and `maxZoom`).
 - `fitMapCamera` returns `false` when `fitCamera` throws (camera not attached).
+- `fitMapCamera` treats a duplicate fit already in place (fitted target == current camera) as
+  `true`.
 - `centerMapCamera` calls `move(point, zoom)` and returns `true`.
-- `centerMapCamera` returns `false` when `move` throws.
+- `centerMapCamera` treats an exact repeat center/zoom already in place as `true`.
+- `centerMapCamera` returns `false` when `move` throws or the camera is elsewhere on a rejected
+  move.
 
 ### New shared `shared/test/map/app_map_locate_button_test.dart`
 
@@ -441,6 +462,14 @@ Pump `AppMapLocateButton` inside a minimal `MaterialApp`/`Scaffold`; tap
 - Route-change auto-fit: add a stop (existing `addStopResult` flow) or re-pick the destination; the
   shared widget auto-fits the new material route after the frame and the next tap locates (tooltip
   `Current location`). Duplicate fits from Home's own pin-edit `_fitItinerary` are idempotent.
+- Locate with only a destination (no manual pickup): after the route auto-fit, set a moved fake fix,
+  tap locate, flush the post-frame callback and the re-keyed preview fetch, then assert the camera
+  center is the new fix at zoom 16 and the tooltip is `Fit route`. This is the regression guard for
+  the `ready → loading → ready` family re-key: the transient refresh must not schedule an auto-fit
+  over the locate.
+- Permission-denied locate press: availability denied; tap locate and assert the truthful
+  `Location permission is required to request rides` snackbar, no fix fetch, the camera unchanged,
+  and the cycle unchanged.
 - No-fix locate: `fakeLocation.position = null`, availability granted; after the route auto-fit, tap
   locate and assert the truthful `Unable to get current location` snackbar and that the camera did
   not move / no point was fabricated.
@@ -493,8 +522,9 @@ Pump `AppMapLocateButton` inside a minimal `MaterialApp`/`Scaffold`; tap
    with no driver fix yet is **locked** to `Waiting for driver location…`, return `false`, and **no
    camera move** (the recommended default). Driver follow is **not** paused: `_centerOnDriver`
    (`active_ride_screen.dart:604-611,423-431`) stays exactly as-is.
-5. **Material-change key only (Option B) — resolved.** Home = `status.name` + pickup/stops/
-   destination coords only; ActiveRide = `status.name` + pickup/`stopPoints`/dropoff coords only;
+5. **Material-change key only (Option B) — resolved.** Home = a 3-value route discriminator
+   (`none` / `ready` / `estimate`, last settled across transient `loading`/`unavailable`) + pickup/
+   stops/destination coords only; ActiveRide = `status.name` + pickup/`stopPoints`/dropoff coords only;
    driver consumer = next-waypoint coordinates + route status ONLY, where status is a 3-value
    discriminator: none (`route == null`), ready (`!isEstimate`), estimate (`isEstimate`). `fetchedAt`,
    moving rider/driver GPS fixes and same-endpoint geometry changes are explicitly excluded.
