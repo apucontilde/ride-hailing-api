@@ -9,6 +9,13 @@ import 'package:ride_hailing_shared/ride_hailing_shared.dart';
 
 class MockMapController extends Mock implements MapController {}
 
+/// A real camera at [center]/[zoom] with an attached size, so duplicate checks
+/// compare against a value instead of the unstubbed-getter throw path.
+MapCamera cameraAt(LatLng center, double zoom) =>
+    MapCamera.initialCamera(
+      MapOptions(initialCenter: center, initialZoom: zoom),
+    ).withNonRotatedSize(const Point<double>(800, 600));
+
 void main() {
   late MockMapController controller;
 
@@ -65,12 +72,7 @@ void main() {
 
     test('treats a duplicate fit already in place as success', () {
       const points = [LatLng(9.92, -84.08), LatLng(9.95, -84.12)];
-      final start = MapCamera.initialCamera(
-        MapOptions(
-          initialCenter: const LatLng(9.93, -84.10),
-          initialZoom: 12,
-        ),
-      ).withNonRotatedSize(const Point<double>(800, 600));
+      final start = cameraAt(const LatLng(9.93, -84.10), 12);
       final target = CameraFit.bounds(
         bounds: LatLngBounds.fromPoints(points),
         padding: const EdgeInsets.all(48),
@@ -85,6 +87,35 @@ void main() {
       when(() => controller.camera).thenReturn(alreadyFitted);
 
       expect(fitMapCamera(controller, points), isTrue);
+    });
+
+    test('returns false for a rejected fit with the camera elsewhere', () {
+      const points = [LatLng(9.92, -84.08), LatLng(9.95, -84.12)];
+      final elsewhere = cameraAt(const LatLng(9.50, -84.50), 12);
+
+      when(() => controller.fitCamera(any())).thenReturn(false);
+      when(() => controller.camera).thenReturn(elsewhere);
+
+      expect(fitMapCamera(controller, points), isFalse);
+      // The camera getter is stubbed (not throwing), so a `false` here is the
+      // real rejected-fit branch, not the catch path.
+      verify(() => controller.camera).called(greaterThanOrEqualTo(1));
+    });
+
+    test('returns false for a rejected fit at the same center but a '
+        'different zoom', () {
+      const points = [LatLng(9.92, -84.08), LatLng(9.95, -84.12)];
+      final target = CameraFit.bounds(
+        bounds: LatLngBounds.fromPoints(points),
+        padding: const EdgeInsets.all(48),
+        maxZoom: 16,
+      ).fit(cameraAt(const LatLng(9.93, -84.10), 12));
+      final sameCenterOtherZoom = cameraAt(target.center, target.zoom + 1);
+
+      when(() => controller.fitCamera(any())).thenReturn(false);
+      when(() => controller.camera).thenReturn(sameCenterOtherZoom);
+
+      expect(fitMapCamera(controller, points), isFalse);
     });
   });
 
@@ -108,23 +139,35 @@ void main() {
     });
 
     test('treats an exact repeat center already in place as success', () {
-      final atPoint = MapCamera.initialCamera(
-        MapOptions(initialCenter: point, initialZoom: 16),
-      ).withNonRotatedSize(const Point<double>(800, 600));
-
       when(() => controller.move(point, 16)).thenReturn(false);
-      when(() => controller.camera).thenReturn(atPoint);
+      when(() => controller.camera).thenReturn(cameraAt(point, 16));
 
       expect(centerMapCamera(controller, point), isTrue);
     });
 
-    test('returns false when the move is rejected or throws', () {
+    test('returns false for a rejected move with the camera elsewhere', () {
       when(() => controller.move(point, 16)).thenReturn(false);
-      expect(centerMapCamera(controller, point), isFalse);
+      when(() => controller.camera)
+          .thenReturn(cameraAt(const LatLng(9.50, -84.50), 16));
 
-      reset(controller);
+      expect(centerMapCamera(controller, point), isFalse);
+      // The camera getter is stubbed (not throwing), so a `false` here is the
+      // real rejected-move branch, not the catch path.
+      verify(() => controller.camera).called(greaterThanOrEqualTo(1));
+    });
+
+    test('returns false for a rejected move at the same center but a '
+        'different zoom', () {
+      when(() => controller.move(point, 16)).thenReturn(false);
+      when(() => controller.camera).thenReturn(cameraAt(point, 14));
+
+      expect(centerMapCamera(controller, point), isFalse);
+    });
+
+    test('returns false when the move throws', () {
       when(() => controller.move(point, 16))
           .thenThrow(StateError('camera not attached'));
+
       expect(centerMapCamera(controller, point), isFalse);
     });
   });
