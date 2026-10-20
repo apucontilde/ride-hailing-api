@@ -684,3 +684,98 @@ func TestDispatchOfferClosedOnTimeout(t *testing.T) {
 		t.Errorf("late HandleAccept = %v, want ErrNoActiveOffer", err)
 	}
 }
+
+// TestNoExpiredOfferClosedAfterCommittedAccept is the deterministic §4.1.1
+// timeout-vs-accept boundary proof. The fake repository commits the assignment
+// and then blocks until released, so the shrunk offerTimeout fires while the
+// generation is already claimed (HandleAccept deleted it before acceptRide) and
+// the accept answer has NOT been sent. The timeout branch must observe the
+// claim, block on the parked channel for the claimant's guaranteed answer, and
+// adopt it. It must never record skipOfferTimeout or send
+// ride.offer_closed reason "expired", and the loop must finish accepted with
+// exactly one assignment.
+func TestNoExpiredOfferClosedAfterCommittedAccept(t *testing.T) {
+	old := offerTimeout
+	offerTimeout = 100 * time.Millisecond
+	t.Cleanup(func() { offerTimeout = old })
+
+	const rideID = "ride-boundary"
+	geo := &fakeGeoRepo{drivers: []model.NearbyDriverResult{{DriverID: "driver-a"}}}
+	repo := &fakeRideRepo{
+		assignCommitted: make(chan struct{}),
+		assignRelease:   make(chan struct{}),
+	}
+	hub := newFakeHub("driver-a")
+	svc := newTestDispatch(geo, repo, hub)
+	traces := collectTraces(svc, 1)
+
+	if err := svc.Dispatch(pendingRide(rideID)); err != nil {
+		t.Fatalf("Dispatch: %v", err)
+	}
+	awaitOfferChannel(t, svc, rideID, nil)
+
+	// HandleAccept claims (deletes) the offer, then acceptRide commits the
+	// assignment and blocks inside AssignDriver before the answer is sent.
+	acceptErr := make(chan error, 1)
+	go func() { acceptErr <- svc.HandleAccept("driver-a", rideID) }()
+
+	select {
+	case <-repo.assignCommitted:
+	case <-time.After(5 * time.Second):
+		t.Fatal("AssignDriver never committed")
+	}
+
+	// The timer fires while the generation is claimed and the answer is unsent.
+	time.Sleep(3 * offerTimeout)
+
+	var early dispatchTrace
+	var haveEarly bool
+	select {
+	case early = <-traces:
+		haveEarly = true
+	default:
+	}
+	if haveEarly {
+		t.Errorf("dispatch loop closed before the accept answer was released (outcome=%q); "+
+			"the timeout branch must block for the claimant's answer", early.Outcome())
+	}
+	if reasons := hub.offerClosedReasons(); len(reasons) != 0 {
+		t.Errorf("ride.offer_closed before the accept answer was released = %v, want none", reasons)
+	}
+
+	// Let the committed accept finish and send its answer.
+	close(repo.assignRelease)
+
+	select {
+	case err := <-acceptErr:
+		if err != nil {
+			t.Fatalf("HandleAccept: %v", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("HandleAccept did not return after the assignment was released")
+	}
+
+	tr := early
+	if !haveEarly {
+		tr = awaitTrace(t, traces)
+	}
+	if tr.Outcome() != "accepted" {
+		t.Errorf("outcome = %q, want accepted (never a timeout skip)", tr.Outcome())
+	}
+	if tr.NotPending {
+		t.Error("trace recorded not_pending; the timeout branch did not adopt the accept outcome")
+	}
+	for _, skip := range tr.Skips {
+		if skip.Reason == skipOfferTimeout {
+			t.Errorf("skip = %+v, want no skipOfferTimeout for a committed accept", skip)
+		}
+	}
+	if got := repo.assignmentLog(); len(got) != 1 || got[0] != "driver-a" {
+		t.Errorf("assignments = %v, want exactly [driver-a]", got)
+	}
+	for _, reason := range hub.offerClosedReasons() {
+		if reason == "expired" {
+			t.Errorf("ride.offer_closed reason = %q, want no expired frame after a committed accept", reason)
+		}
+	}
+}

@@ -96,6 +96,13 @@ type fakeRideRepo struct {
 	assignErr error
 	// findErr fails FindByID (the post-offer status-read outage case).
 	findErr error
+	// assignCommitted/assignRelease hold AssignDriver at the point AFTER the
+	// assignment commits and BEFORE the accept funnel answers the parked loop.
+	// This makes the §4.1.1 timeout-vs-accept boundary deterministic: the
+	// timer can fire while the generation is already claimed and no answer has
+	// been sent yet. Both may be nil (the normal path).
+	assignCommitted chan struct{}
+	assignRelease   chan struct{}
 
 	statusUpdates []string
 	assignments   []string
@@ -165,16 +172,29 @@ func (r *fakeRideRepo) UpdateRideStatusFrom(rideID string, expectedFrom []string
 }
 func (r *fakeRideRepo) AssignDriver(rideID, driverID string) error {
 	r.mu.Lock()
-	defer r.mu.Unlock()
 	if r.assignErr != nil {
-		return r.assignErr
+		err := r.assignErr
+		r.mu.Unlock()
+		return err
 	}
 	// Mirror the real repository's WHERE status='pending' guard.
 	if r.status != "" && r.status != "pending" {
+		r.mu.Unlock()
 		return fmt.Errorf("accept ride: %w", repository.ErrConflict)
 	}
 	r.assignments = append(r.assignments, driverID)
 	r.status = "accepted"
+	committed, release := r.assignCommitted, r.assignRelease
+	r.mu.Unlock()
+
+	// The write is committed; a test may hold the caller here to model the
+	// window between the assignment and the funnel's answer.
+	if committed != nil {
+		close(committed)
+	}
+	if release != nil {
+		<-release
+	}
 	return nil
 }
 func (r *fakeRideRepo) setStatus(status string) {

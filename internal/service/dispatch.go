@@ -406,32 +406,78 @@ func (s *DispatchService) offerRideToDriver(rideID, driverID string, attempt, to
 
 	select {
 	case answer := <-offer.ch:
-		switch {
-		case errors.Is(answer.err, ErrOfferWithdrawn):
-			// The server claimed the offer (rider cancel). Stop the loop; the
-			// post-loop re-read records the terminal state.
-			return offerWithdrawn
-		case answer.err != nil:
-			detail := "accept failed"
-			if errIsConflict(answer.err) {
-				detail = "another driver already took the ride"
-			}
-			s.recordSkip(rideID, driverID, attempt, total, skipAcceptFailed, detail)
-			log.Printf("failed to accept ride %s for driver %s: %v", rideID, driverID, answer.err)
-			return offerAcceptFailed
-		case !answer.accepted:
-			s.recordSkip(rideID, driverID, attempt, total, skipDriverDeclined, "driver declined")
-			return offerDeclined
-		default:
-			// HandleAccept already committed the assignment before sending
-			// this answer; the loop must NOT write again.
-			return offerAccepted
-		}
+		return s.resolveOfferAnswer(rideID, driverID, attempt, total, answer)
 	case <-time.After(offerTimeout):
-		s.recordSkip(rideID, driverID, attempt, total, skipOfferTimeout,
-			fmt.Sprintf("no answer within %s", offerTimeout))
-		s.sendOfferClosed(driverID, rideID, "expired")
-		return offerTimedOut
+		// §4.1.1: time.After and the buffered answer channel can be ready at the
+		// same instant, and Go picks among ready select cases pseudo-randomly.
+		// An answer that already arrived wins over the timer: process it through
+		// the same outcome switch without recording a timeout or sending a
+		// frame.
+		select {
+		case answer := <-offer.ch:
+			return s.resolveOfferAnswer(rideID, driverID, attempt, total, answer)
+		default:
+		}
+
+		// Claim THIS generation under the mutex before declaring it expired.
+		// The token is the linearizable answer to "may this generation still be
+		// closed?" (the same claim HandleAccept and WithdrawOffer use).
+		s.offerChannelsMu.Lock()
+		cur, present := s.offerChannels[rideID]
+		claimed := present && cur.token == token
+		if claimed {
+			delete(s.offerChannels, rideID)
+		}
+		s.offerChannelsMu.Unlock()
+
+		switch {
+		case claimed:
+			// Genuinely unanswered: we own the generation, no accept can commit
+			// afterwards (HandleAccept will find no offer).
+			s.recordSkip(rideID, driverID, attempt, total, skipOfferTimeout,
+				fmt.Sprintf("no answer within %s", offerTimeout))
+			s.sendOfferClosed(driverID, rideID, "expired")
+			return offerTimedOut
+		case present:
+			// A replacement generation owns the map entry; leave it untouched
+			// and do not send a frame for it.
+			return offerTimedOut
+		default:
+			// The entry is gone because a claimer already owns this generation
+			// (HandleAccept deletes before acceptRide, WithdrawOffer deletes
+			// before answering). Every claimer sends exactly one answer, so
+			// block for it rather than re-checking or returning a false
+			// timeout. Do NOT record a skip and do NOT send "expired".
+			answer := <-offer.ch
+			return s.resolveOfferAnswer(rideID, driverID, attempt, total, answer)
+		}
+	}
+}
+
+// resolveOfferAnswer maps one parked-offer answer to the loop outcome. It is
+// shared by the normal answer branch and by the §4.1.1 timeout branch so an
+// already-arrived (or claimed-generation) answer is processed identically.
+func (s *DispatchService) resolveOfferAnswer(rideID, driverID string, attempt, total int, answer offerAnswer) offerOutcome {
+	switch {
+	case errors.Is(answer.err, ErrOfferWithdrawn):
+		// The server claimed the offer (rider cancel). Stop the loop; the
+		// post-loop re-read records the terminal state.
+		return offerWithdrawn
+	case answer.err != nil:
+		detail := "accept failed"
+		if errIsConflict(answer.err) {
+			detail = "another driver already took the ride"
+		}
+		s.recordSkip(rideID, driverID, attempt, total, skipAcceptFailed, detail)
+		log.Printf("failed to accept ride %s for driver %s: %v", rideID, driverID, answer.err)
+		return offerAcceptFailed
+	case !answer.accepted:
+		s.recordSkip(rideID, driverID, attempt, total, skipDriverDeclined, "driver declined")
+		return offerDeclined
+	default:
+		// HandleAccept already committed the assignment before sending
+		// this answer; the loop must NOT write again.
+		return offerAccepted
 	}
 }
 
