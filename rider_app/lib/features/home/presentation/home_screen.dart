@@ -1,3 +1,5 @@
+import 'package:flutter/foundation.dart';
+import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
@@ -5,6 +7,7 @@ import 'package:flutter_map/flutter_map.dart';
 import 'package:latlong2/latlong.dart';
 import 'package:ride_hailing_shared/ride_hailing_shared.dart';
 import 'package:rider_app/core/map/rider_map_tile.dart';
+import 'package:rider_app/core/platform/sheet_drag_handle.dart';
 import '../data/home_provider.dart';
 import '../data/home_route_preview.dart';
 import '../data/location_ping_service.dart';
@@ -71,6 +74,11 @@ class _HomeScreenState extends ConsumerState<HomeScreen>
   /// Drives the booking panel's snap and the map/FAB relayout.
   final DraggableScrollableController _sheetController =
       DraggableScrollableController();
+
+  /// The running panel size during a grabber drag, or `null` when no drag is in
+  /// progress. The grabber drives [_sheetController] directly; it is the
+  /// desktop/web mouse path only (the mobile touch path is the scroll drag).
+  double? _sheetDragSize;
 
   /// The size the panel opens at, restored from [homePanelSizeProvider].
   late double _initialSize;
@@ -338,8 +346,9 @@ class _HomeScreenState extends ConsumerState<HomeScreen>
   }
 
   /// The handle's accessible affordance: toggle between the handle-only minimum
-  /// and the opening size. No second drag recognizer exists — resize stays
-  /// list-scroll driven.
+  /// and the opening size. On desktop/web the handle also has a mouse-only drag
+  /// recognizer (see [_buildSheetHandle]); on mobile the list-scroll path stays
+  /// the only resize gesture, so the two never compete.
   void _togglePanelSize() {
     if (!_sheetController.isAttached) return;
     final minSize = _minSheetSize(_availableHeight);
@@ -350,6 +359,67 @@ class _HomeScreenState extends ConsumerState<HomeScreen>
       duration: AppMotion.medium,
       curve: AppMotion.standard,
     );
+  }
+
+  void _onSheetHandleDragStart(DragStartDetails details) {
+    if (!_sheetController.isAttached || _availableHeight <= 0) return;
+    _sheetDragSize = _sheetController.size;
+  }
+
+  void _onSheetHandleDragUpdate(DragUpdateDetails details) {
+    final dragSize = _sheetDragSize;
+    if (dragSize == null ||
+        !_sheetController.isAttached ||
+        _availableHeight <= 0) {
+      return;
+    }
+    final min = _minSheetSize(_availableHeight);
+    final max = _sheetMax.clamp(_initialSize, 0.9).toDouble();
+    // Dragging up has a negative `dy`, so the panel grows.
+    final next = (dragSize - details.delta.dy / _availableHeight)
+        .clamp(min, max)
+        .toDouble();
+    _sheetDragSize = next;
+    _sheetController.jumpTo(next);
+  }
+
+  void _onSheetHandleDragEnd(DragEndDetails details) =>
+      _settleSheetDrag(details.velocity.pixelsPerSecond.dy);
+
+  /// A pointer leaving the window cancels the drag; settle at the nearest snap
+  /// rather than leaving the panel mid-drag with stale state.
+  void _onSheetHandleDragCancel() => _settleSheetDrag(0);
+
+  /// The single end-of-drag landing for end and cancel: `jumpTo`/`animateTo`
+  /// bypass the sheet's own `snapSizes`, so snap to `{min, initial, max}` here,
+  /// honoring the fling direction.
+  void _settleSheetDrag(double velocityDy) {
+    if (_sheetDragSize == null ||
+        !_sheetController.isAttached ||
+        _availableHeight <= 0) {
+      return;
+    }
+    final min = _minSheetSize(_availableHeight);
+    final max = _sheetMax.clamp(_initialSize, 0.9).toDouble();
+    final initial = _initialSize.clamp(min, max).toDouble();
+    final size = _sheetController.size;
+    final snaps = <double>[min, initial, max]..sort();
+    double target;
+    if (velocityDy.abs() > kMinFlingVelocity) {
+      target = velocityDy < 0
+          ? snaps.firstWhere((s) => s > size, orElse: () => max)
+          : snaps.lastWhere((s) => s < size, orElse: () => min);
+    } else {
+      target = snaps.reduce(
+        (a, b) => (a - size).abs() <= (b - size).abs() ? a : b,
+      );
+    }
+    _sheetController.animateTo(
+      target,
+      duration: AppMotion.medium,
+      curve: AppMotion.standard,
+    );
+    _sheetDragSize = null;
   }
 
   /// Measures the booking form (inside a scroll view, so the child gets an
@@ -658,11 +728,17 @@ class _HomeScreenState extends ConsumerState<HomeScreen>
     );
   }
 
-  /// The panel's drag affordance: a 48 dp touch target with a `Semantics`
-  /// min↔opening-size toggle. There is deliberately no `GestureDetector` —
-  /// resize stays list-scroll driven — so the toggle is exposed to
-  /// accessibility services only.
+  /// The panel's drag affordance: a 48 dp target with a `Semantics`
+  /// min↔opening-size toggle. On desktop/web a mouse-only grabber drives
+  /// [_sheetController] directly, superseding the 2026-10-08 "no second drag
+  /// recognizer" lock there; the recognizer is mouse-only because the sheet's
+  /// scrollable accepts trackpad drags, so the two never compete. On mobile the
+  /// callbacks stay null and the list-scroll path remains the resize gesture.
   Widget _buildSheetHandle() {
+    final canDrag = shouldEnableSheetDragHandle(
+      isWeb: kIsWeb,
+      platform: defaultTargetPlatform,
+    );
     return AnimatedBuilder(
       animation: _sheetController,
       builder: (context, child) {
@@ -673,11 +749,22 @@ class _HomeScreenState extends ConsumerState<HomeScreen>
           value: expanded ? 'Expanded' : 'Collapsed',
           button: true,
           onTap: _togglePanelSize,
-          child: const SizedBox(
-            height: 48,
-            child: Center(
-              child: AppSheetHandle(
-                margin: EdgeInsets.only(bottom: AppSpacing.lg),
+          child: GestureDetector(
+            key: const ValueKey<String>('home-sheet-handle'),
+            behavior: HitTestBehavior.opaque,
+            supportedDevices: const <PointerDeviceKind>{
+              PointerDeviceKind.mouse,
+            },
+            onVerticalDragStart: canDrag ? _onSheetHandleDragStart : null,
+            onVerticalDragUpdate: canDrag ? _onSheetHandleDragUpdate : null,
+            onVerticalDragEnd: canDrag ? _onSheetHandleDragEnd : null,
+            onVerticalDragCancel: canDrag ? _onSheetHandleDragCancel : null,
+            child: const SizedBox(
+              height: 48,
+              child: Center(
+                child: AppSheetHandle(
+                  margin: EdgeInsets.only(bottom: AppSpacing.lg),
+                ),
               ),
             ),
           ),

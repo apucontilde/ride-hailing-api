@@ -1,4 +1,6 @@
 import 'package:dio/dio.dart';
+import 'package:flutter/foundation.dart';
+import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_map/flutter_map.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
@@ -10,6 +12,7 @@ import 'package:latlong2/latlong.dart';
 import 'package:ride_hailing_shared/ride_hailing_shared.dart';
 import 'package:rider_app/core/api/endpoints.dart';
 import 'package:rider_app/core/auth/auth_provider.dart';
+import 'package:rider_app/core/platform/sheet_drag_handle.dart';
 import 'package:rider_app/features/home/data/location_service.dart';
 import 'package:rider_app/features/home/data/multi_leg_route_provider.dart';
 import 'package:rider_app/features/home/data/pickup_memory_provider.dart';
@@ -1202,6 +1205,18 @@ void main() {
   double mapHeight(WidgetTester tester) =>
       tester.getSize(find.byKey(const ValueKey<String>('home-map'))).height;
 
+  /// Drags the panel grab handle with the given device kind. The mouse is the
+  /// desktop/web path under test; touch stays on the existing scroll path.
+  Future<void> dragHandle(
+    WidgetTester tester,
+    Offset offset, {
+    PointerDeviceKind kind = PointerDeviceKind.touch,
+  }) => tester.drag(
+    find.byKey(const ValueKey<String>('home-sheet-handle')),
+    offset,
+    kind: kind,
+  );
+
   testWidgets(
     'scrolling the panel up reaches the content-driven max and shrinks the map',
     (WidgetTester tester) async {
@@ -1345,5 +1360,125 @@ void main() {
     await tester.pumpAndSettle();
     expect(handle().properties.value, 'Expanded');
     expect(sheetSize(tester), closeTo(sheet.initialChildSize, 0.01));
+  });
+
+  testWidgets('a mouse drag up on the handle reaches max and shrinks the map', (
+    WidgetTester tester,
+  ) async {
+    debugDefaultTargetPlatformOverride = TargetPlatform.linux;
+    addTearDown(() => debugDefaultTargetPlatformOverride = null);
+
+    await pumpHome(
+      tester,
+      pickup: pickupPlace,
+      destination: destinationPlace,
+      surface: resizeSurface,
+    );
+
+    final sheet = sheetWidget(tester);
+    expect(sheetSize(tester), closeTo(sheet.initialChildSize, 0.001));
+    final beforeMap = mapHeight(tester);
+    expect(beforeMap, closeTo(600 * (1 - sheet.initialChildSize), 1));
+
+    await dragHandle(
+      tester,
+      const Offset(0, -600),
+      kind: PointerDeviceKind.mouse,
+    );
+    await tester.pumpAndSettle();
+
+    expect(sheetSize(tester), closeTo(sheet.maxChildSize, 0.01));
+    expect(mapHeight(tester), lessThan(beforeMap));
+    expect(mapHeight(tester), closeTo(600 * (1 - sheet.maxChildSize), 2));
+    debugDefaultTargetPlatformOverride = null;
+  });
+
+  testWidgets(
+    'a mouse drag down from max on the handle reaches min and lifts the FAB',
+    (WidgetTester tester) async {
+      debugDefaultTargetPlatformOverride = TargetPlatform.linux;
+      addTearDown(() => debugDefaultTargetPlatformOverride = null);
+
+      await pumpHome(
+        tester,
+        pickup: pickupPlace,
+        destination: destinationPlace,
+        surface: resizeSurface,
+      );
+
+      await dragHandle(
+        tester,
+        const Offset(0, -600),
+        kind: PointerDeviceKind.mouse,
+      );
+      await tester.pumpAndSettle();
+      final maxSheet = sheetWidget(tester).maxChildSize;
+      expect(sheetSize(tester), closeTo(maxSheet, 0.01));
+
+      await dragHandle(
+        tester,
+        const Offset(0, 600),
+        kind: PointerDeviceKind.mouse,
+      );
+      await tester.pumpAndSettle();
+
+      final minSheet = sheetWidget(tester).minChildSize;
+      expect(sheetSize(tester), closeTo(minSheet, 0.01));
+      expect(mapHeight(tester), closeTo(600 * (1 - minSheet), 2));
+
+      // The my-location control rides above the collapsed panel: its bottom edge
+      // never dips below the panel's top.
+      final fab = tester.getRect(find.byType(FloatingActionButton));
+      final panel = tester.getRect(find.byType(AppBottomSheet));
+      expect(fab.bottom, lessThanOrEqualTo(panel.top));
+      debugDefaultTargetPlatformOverride = null;
+    },
+  );
+
+  testWidgets('the mouse grabber is inert on Android and touch still resizes', (
+    WidgetTester tester,
+  ) async {
+    debugDefaultTargetPlatformOverride = TargetPlatform.android;
+    addTearDown(() => debugDefaultTargetPlatformOverride = null);
+
+    await pumpHome(
+      tester,
+      pickup: pickupPlace,
+      destination: destinationPlace,
+      surface: resizeSurface,
+    );
+
+    expect(
+      shouldEnableSheetDragHandle(
+        isWeb: false,
+        platform: TargetPlatform.android,
+      ),
+      isFalse,
+    );
+
+    final handle = tester.widget<GestureDetector>(
+      find.byKey(const ValueKey<String>('home-sheet-handle')),
+    );
+    expect(handle.onVerticalDragStart, isNull);
+    expect(handle.onVerticalDragUpdate, isNull);
+    expect(handle.onVerticalDragEnd, isNull);
+    expect(handle.onVerticalDragCancel, isNull);
+
+    final before = sheetSize(tester);
+
+    // A mouse drag cannot start a recognizer on mobile.
+    await dragHandle(
+      tester,
+      const Offset(0, -600),
+      kind: PointerDeviceKind.mouse,
+    );
+    await tester.pumpAndSettle();
+    expect(sheetSize(tester), closeTo(before, 0.001));
+
+    // Touch still drives the existing scroll path.
+    await dragHandle(tester, const Offset(0, -600));
+    await tester.pumpAndSettle();
+    expect(sheetSize(tester), closeTo(sheetWidget(tester).maxChildSize, 0.01));
+    debugDefaultTargetPlatformOverride = null;
   });
 }
