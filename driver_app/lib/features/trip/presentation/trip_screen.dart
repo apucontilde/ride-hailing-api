@@ -38,6 +38,19 @@ String driverTripRouteKey(TripWaypoint? next, RouteCache? route) {
   return '${next?.lat},${next?.lng}:$status';
 }
 
+/// The cached route only when it was requested for [next].
+///
+/// A target change leaves the previous leg's route in the notifier while the
+/// new request is in flight. Reusing it would draw and auto-fit the stale leg,
+/// and the new route's arrival would not change the material key (the target
+/// already carries a `ready` route). Treating a mismatched route as absent is
+/// what makes the change `none → ready`, so only the new leg is ever framed.
+@visibleForTesting
+RouteCache? routeForTarget(TripWaypoint? next, RouteCache? route) {
+  if (next == null || route == null) return null;
+  return route.toLat == next.lat && route.toLng == next.lng ? route : null;
+}
+
 /// Trip journey screen (US-D7/D8/D9, US-11): one stage-driven primary button
 /// over a flutter_map route, driver-initiated cancel, and a clean landing
 /// screen for a completed or cancelled trip.
@@ -338,7 +351,7 @@ class _MapView extends ConsumerWidget {
 
   /// The road-following points, or an empty list when there is no usable
   /// route (so the straight-line fallback draws instead).
-  List<LatLng> get _roadPoints => (route?.polyline ?? const [])
+  List<LatLng> _roadPoints(RouteCache? route) => (route?.polyline ?? const [])
       .map(
         (p) => LatLng(
           (p['lat'] as num?)?.toDouble() ?? 0,
@@ -355,10 +368,10 @@ class _MapView extends ConsumerWidget {
     bool useFallback,
   ) => (!useFallback && road.length >= 2) ? road : focus;
 
-  /// A route exists when there is a drawn road polyline or a two-point focus
-  /// leg. A lone driver fix (or a lone waypoint) is not a route.
-  bool _canFitRoute(List<LatLng> road, List<LatLng> focus) =>
-      road.length >= 2 || focus.length >= 2;
+  /// `hasRoute` means the current action can actually fit at least two drawable
+  /// points: the road when it is drawn, else the dashed focus leg. An estimate
+  /// whose road is hidden and a lone driver/waypoint are not fittable.
+  bool _canFitRoute(List<LatLng> fitPoints) => fitPoints.length >= 2;
 
   /// Center on the driver's live fix, or the one-shot device fallback. Returns
   /// `false` (without moving the camera) when neither yields a fix.
@@ -389,11 +402,16 @@ class _MapView extends ConsumerWidget {
     final driverPoint = driverPosition == null
         ? null
         : LatLng(driverPosition!.lat, driverPosition!.lng);
-    final road = _roadPoints;
+    // Only a route fetched for this exact waypoint is this leg's route. The
+    // notifier keeps the previous target's route until the new request lands;
+    // drawing or fitting it would show/frame the old leg, and its `ready`
+    // status would hide the new route's material `none → ready` transition.
+    final routeForNext = routeForTarget(next, route);
+    final road = _roadPoints(routeForNext);
     // The straight line is the honest fallback: the request failed, or the
     // backend answered with its own estimate. It follows the same
     // driver → next-waypoint leg the road route does.
-    final useFallback = road.length < 2 || (route?.isEstimate ?? false);
+    final useFallback = road.length < 2 || (routeForNext?.isEstimate ?? false);
     final straight = <LatLng>[?driverPoint, ?nextPoint];
 
     final polylines = <Polyline>[
@@ -409,6 +427,7 @@ class _MapView extends ConsumerWidget {
     ];
 
     final focus = <LatLng>[?driverPoint, ?nextPoint];
+    final fitPoints = _routeFitPoints(road, focus, useFallback);
     final initialCenter = driverPoint ?? const LatLng(9.9281, -84.0907);
 
     final tileConfig = ref.watch(driverMapTileConfigProvider);
@@ -447,11 +466,11 @@ class _MapView extends ConsumerWidget {
           right: 16,
           bottom: 16,
           child: AppMapLocateButton(
-            routeKey: driverTripRouteKey(next, route),
-            hasRoute: _canFitRoute(road, focus),
+            routeKey: driverTripRouteKey(next, routeForNext),
+            hasRoute: _canFitRoute(fitPoints),
             onFitRoute: () => fitMapCamera(
               controller,
-              _routeFitPoints(road, focus, useFallback),
+              fitPoints,
               padding: const EdgeInsets.all(48),
               maxZoom: 16,
             ),

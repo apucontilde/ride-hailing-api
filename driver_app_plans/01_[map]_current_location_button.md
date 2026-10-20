@@ -134,16 +134,22 @@ no `driver_app/lib/core/map/` shim.
    region only; it must not sit over `_StageControls` (the `Expanded(flex: 2)` sibling).
 2. **Fit points.** `(!useFallback && road.length >= 2) ? road : focus` — fit the road polyline when it
    is actually drawn; otherwise fit `focus` (driver fix + next waypoint), which is the dashed line
-   actually drawn. `hasRoute`: `road.length >= 2 || focus.length >= 2`. A lone driver fix is **not** a
-   route.
+   actually drawn. `hasRoute`: the **fit points** must contain at least 2 drawable points. Counting
+   the road when an `isEstimate` hides it is wrong: with no driver fix, `focus` is a lone waypoint and
+   the button must offer locate (truthful no-fix), not a stuck fit. A lone driver fix is **not** a
+   route either.
 3. **`routeKey` = material changes only (Option B, driver-specific).**
    `driverTripRouteKey(next, route)` = **next-waypoint coordinates + route status**, where status is
    the 3-value discriminator `none` (`route == null`), `ready` (`!isEstimate`) or `estimate`
-   (`isEstimate`). **Exclude** `fetchedAt`, the moving driver fix, and same-endpoint geometry changes.
-   `none → ready` (the road route arriving) is a **material** change and auto-fits once; `ready →
-   ready` refreshes and same-endpoint reroutes do not auto-fit or reset the cycle. Therefore a 200 m
-   driver refetch — and, by the rider contract's same rule, a silent 30 s route refresh — with the
-   same next waypoint/status must not move the camera.
+   (`isEstimate`). A cached `RouteCache` participates **only when its `toLat,toLng` equal the current
+   next waypoint**; a route left over from the previous target is treated as `none` (never drawn or
+   fitted). That is what makes a target change `none → ready` when the new route lands, instead of
+   starting from the stale target's `ready` and suppressing the new leg's auto-fit. **Exclude**
+   `fetchedAt`, the moving driver fix, and same-endpoint geometry changes. `none → ready` (the road
+   route arriving) is a **material** change and auto-fits once; `ready → ready` refreshes and
+   same-endpoint reroutes do not auto-fit or reset the cycle. Therefore a 200 m driver refetch — and,
+   by the rider contract's same rule, a silent 30 s route refresh — with the same next
+   waypoint/status must not move the camera.
 4. **`onFitRoute`.** `return fitMapCamera(controller, points, padding: const EdgeInsets.all(48),
    maxZoom: 16);`. The shared button owns auto-fit; the driver does **not** schedule its own.
 5. **`onCurrentLocation`.** Start from `ref.read(lastPositionProvider)`. If null, await the one-shot
@@ -328,8 +334,9 @@ Add:
    `ride.updated` / next-waypoint change (e.g. `in_progress` with a moved `dropoffLat`/`dropoffLng`)
    must auto-fit the new leg after the frame and the next tap must locate. Stub the new
    driver→dropoff leg for that stage, assert the post-frame camera contains the new dropoff, and
-   assert the next tap centers on the driver fix at zoom 16. The old "optional" reset note is
-   replaced by this case.
+   assert the next tap centers on the driver fix at zoom 16. Also hold the new leg open with a
+   `Completer`: the pre-response auto-fit must not frame the old leg, and the new route's arrival
+   must frame the new geometry once. The old "optional" reset note is replaced by this case.
 
 Remove any assertion that expected the pre-auto-fit "first press fits" behavior or a `fetchedAt`-driven
 reset.

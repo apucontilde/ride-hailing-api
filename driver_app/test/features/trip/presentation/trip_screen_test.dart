@@ -281,6 +281,40 @@ void main() {
     });
   }
 
+  /// Answers navigation with a road that bends through a destination-specific
+  /// point, so a camera assertion can tell the drawn road apart from the
+  /// straight driver → waypoint focus fallback (which `stubLegRoute` mirrors).
+  /// [gate] can hold a chosen leg open to observe the pre-response frame.
+  void stubBentRoute(
+    LatLng Function(double toLat, double toLng) bendFor, {
+    Future<void> Function(double toLat, double toLng)? gate,
+  }) {
+    when(
+      () => mockDio.get(
+        ApiEndpoints.navigationRoute,
+        queryParameters: any(named: 'queryParameters'),
+      ),
+    ).thenAnswer((invocation) async {
+      final query =
+          invocation.namedArguments[#queryParameters] as Map<String, dynamic>;
+      final fromLat = (query['from_lat'] as num).toDouble();
+      final fromLng = (query['from_lng'] as num).toDouble();
+      final toLat = (query['to_lat'] as num).toDouble();
+      final toLng = (query['to_lng'] as num).toDouble();
+      await gate?.call(toLat, toLng);
+      final bend = bendFor(toLat, toLng);
+      return jsonResponse({
+        'polyline': [
+          {'lat': fromLat, 'lng': fromLng},
+          {'lat': bend.latitude, 'lng': bend.longitude},
+          {'lat': toLat, 'lng': toLng},
+        ],
+        'total_distance_m': 1200,
+        'total_duration_s': 110,
+      });
+    });
+  }
+
   Future<void> pumpTrip(WidgetTester tester) async {
     final router = GoRouter(
       initialLocation: '/trip',
@@ -1245,6 +1279,348 @@ void main() {
         expect(located.zoom, 16);
       },
     );
+
+    testWidgets(
+      'a delayed next-leg route never fits the old leg and frames the new one',
+      (tester) async {
+        container = buildContainer(position: driverFix);
+        addTearDown(container.dispose);
+        // No intermediate stops: the destination becomes the target at
+        // `in_progress`.
+        when(() => mockDio.get(ApiEndpoints.driverRideById('r1'))).thenAnswer(
+          (_) async => jsonResponse({
+            'ride': {
+              'id': 'r1',
+              'status': 'accepted',
+              'pickup_lat': pickupLat,
+              'pickup_lng': pickupLng,
+              'dropoff_lat': dropoffLat,
+              'dropoff_lng': dropoffLng,
+            },
+            'stops': const <Map<String, dynamic>>[],
+          }),
+        );
+        const oldBend = LatLng(9.90, -84.25);
+        const newBend = LatLng(10.02, -84.28);
+        const movedLat = 9.99, movedLng = -84.2;
+        Completer<Response>? newLeg;
+        var requests = 0;
+        when(
+          () => mockDio.get(
+            ApiEndpoints.navigationRoute,
+            queryParameters: any(named: 'queryParameters'),
+          ),
+        ).thenAnswer((invocation) {
+          requests++;
+          if (requests == 1) {
+            return Future.value(
+              jsonResponse({
+                'polyline': [
+                  {'lat': driverFix.lat, 'lng': driverFix.lng},
+                  {'lat': oldBend.latitude, 'lng': oldBend.longitude},
+                  {'lat': pickupLat, 'lng': pickupLng},
+                ],
+                'total_distance_m': 1200,
+                'total_duration_s': 110,
+              }),
+            );
+          }
+          newLeg = Completer<Response>();
+          return newLeg!.future;
+        });
+
+        broadcast(status: 'accepted');
+        await pumpTrip(tester);
+        await pumpRoute(tester);
+        expect(mapCamera(tester).visibleBounds.contains(oldBend), isTrue);
+
+        broadcast(
+          status: 'in_progress',
+          dropoffLat: movedLat,
+          dropoffLng: movedLng,
+          dropoffAddress: 'Moved',
+        );
+        await tester.pump();
+        await tester.pump();
+        await tester.pump();
+
+        // The target changed while the new route is still in flight: the
+        // post-frame auto-fit must frame the new dashed leg, never the old
+        // road (whose distinctive bend is far outside the new leg).
+        expect(requests, 2);
+        final pending = mapCamera(tester).visibleBounds;
+        expect(pending.contains(const LatLng(movedLat, movedLng)), isTrue);
+        expect(pending.contains(oldBend), isFalse);
+
+        newLeg!.complete(
+          jsonResponse({
+            'polyline': [
+              {'lat': driverFix.lat, 'lng': driverFix.lng},
+              {'lat': newBend.latitude, 'lng': newBend.longitude},
+              {'lat': movedLat, 'lng': movedLng},
+            ],
+            'total_distance_m': 5400,
+            'total_duration_s': 500,
+          }),
+        );
+        await pumpRoute(tester);
+
+        // The new road arriving is a separate material transition: it is
+        // framed once and leaves the cycle on the locate half.
+        final fitted = mapCamera(tester).visibleBounds;
+        expect(fitted.contains(newBend), isTrue);
+        expect(fitted.contains(const LatLng(movedLat, movedLng)), isTrue);
+        expect(find.byTooltip('Current location'), findsOneWidget);
+
+        await tester.tap(locateButton());
+        await tester.pump();
+        await tester.pump();
+        final located = mapCamera(tester);
+        expect(located.center.latitude, closeTo(driverFix.lat, 0.0001));
+        expect(located.center.longitude, closeTo(driverFix.lng, 0.0001));
+        expect(located.zoom, 16);
+      },
+    );
+
+    testWidgets(
+      'an intermediate-stop advance frames the new road leg, not the old one',
+      (tester) async {
+        container = buildContainer(position: driverFix);
+        addTearDown(container.dispose);
+        const midBend = LatLng(9.96, -84.02);
+        const destBend = LatLng(9.90, -84.16);
+        Completer<void>? destinationGate;
+        stubBentRoute(
+          (toLat, _) => toLat < 9.945 ? midBend : destBend,
+          gate: (toLat, _) {
+            if (toLat < 9.945) return Future<void>.value();
+            destinationGate = Completer<void>();
+            return destinationGate!.future;
+          },
+        );
+        await pumpTrip(tester);
+        // Let the itinerary load and the pickup leg settle first, so the
+        // in-progress target is the intermediate stop.
+        broadcast(status: 'accepted');
+        await pumpRoute(tester);
+        broadcast(status: 'in_progress');
+        await pumpRoute(tester);
+
+        // At the pickup the target is the intermediate stop.
+        expect(mapCamera(tester).visibleBounds.contains(midBend), isTrue);
+
+        // Reaching the stop advances the target to the destination.
+        container.read(lastPositionProvider.notifier).state = const GeoPoint(
+          9.9400,
+          -84.0900,
+        );
+        await tester.pump();
+        await tester.pump();
+        await tester.pump();
+
+        // The destination leg is still in flight; only once it lands may the
+        // camera move to the new road geometry, and it must not re-use the
+        // old intermediate-stop leg.
+        expect(destinationGate, isNotNull);
+        destinationGate!.complete();
+        await pumpRoute(tester);
+
+        final fitted = mapCamera(tester).visibleBounds;
+        expect(fitted.contains(destBend), isTrue);
+        expect(fitted.contains(const LatLng(dropoffLat, dropoffLng)), isTrue);
+        expect(fitted.contains(midBend), isFalse);
+        expect(find.byTooltip('Current location'), findsOneWidget);
+
+        await tester.tap(locateButton());
+        await tester.pump();
+        await tester.pump();
+        final located = mapCamera(tester);
+        expect(located.center.latitude, closeTo(9.9400, 0.0001));
+        expect(located.center.longitude, closeTo(-84.0900, 0.0001));
+        expect(located.zoom, 16);
+      },
+    );
+
+    testWidgets(
+      'a ready → ready refetch leaves the camera and the cycle untouched',
+      (tester) async {
+        const firstBend = LatLng(9.90, -84.20);
+        const secondBend = LatLng(9.99, -83.99);
+        const movedFix = GeoPoint(pickupLat - 0.004, pickupLng - 0.004);
+        var requests = 0;
+        when(
+          () => mockDio.get(
+            ApiEndpoints.navigationRoute,
+            queryParameters: any(named: 'queryParameters'),
+          ),
+        ).thenAnswer((invocation) async {
+          requests++;
+          final query =
+              invocation.namedArguments[#queryParameters]
+                  as Map<String, dynamic>;
+          final fromLat = (query['from_lat'] as num).toDouble();
+          final fromLng = (query['from_lng'] as num).toDouble();
+          final bend = requests == 1 ? firstBend : secondBend;
+          return jsonResponse({
+            'polyline': [
+              {'lat': fromLat, 'lng': fromLng},
+              {'lat': bend.latitude, 'lng': bend.longitude},
+              {'lat': pickupLat, 'lng': pickupLng},
+            ],
+            'total_distance_m': 1200,
+            'total_duration_s': 110,
+          });
+        });
+        container = buildContainer(position: driverFix);
+        addTearDown(container.dispose);
+        broadcast(status: 'accepted');
+        await pumpTrip(tester);
+        await pumpRoute(tester);
+
+        // The initial auto-fit is the fit half.
+        expect(find.byTooltip('Current location'), findsOneWidget);
+        final before = mapCamera(tester);
+
+        // Moving >200 m refetches the same waypoint (ready → ready). The new
+        // geometry is not a material change: no camera move, no cycle reset.
+        container.read(lastPositionProvider.notifier).state = movedFix;
+        await pumpRoute(tester);
+        expect(requests, 2);
+        final after = mapCamera(tester);
+        expect(after.center.latitude, closeTo(before.center.latitude, 1e-9));
+        expect(after.center.longitude, closeTo(before.center.longitude, 1e-9));
+        expect(after.zoom, closeTo(before.zoom, 1e-9));
+        expect(find.byTooltip('Current location'), findsOneWidget);
+
+        // Still on the locate half; the refetch did not re-arm fit.
+        await tester.tap(locateButton());
+        await tester.pump();
+        await tester.pump();
+        final located = mapCamera(tester);
+        expect(located.center.latitude, closeTo(movedFix.lat, 0.0001));
+        expect(located.center.longitude, closeTo(movedFix.lng, 0.0001));
+        expect(located.zoom, 16);
+      },
+    );
+
+    testWidgets('an estimate auto-fits the drawn dashed leg, not its road', (
+      tester,
+    ) async {
+      const estimateBend = LatLng(9.99, -83.90);
+      when(
+        () => mockDio.get(
+          ApiEndpoints.navigationRoute,
+          queryParameters: any(named: 'queryParameters'),
+        ),
+      ).thenAnswer(
+        (_) async => jsonResponse({
+          'polyline': [
+            {'lat': driverFix.lat, 'lng': driverFix.lng},
+            {'lat': estimateBend.latitude, 'lng': estimateBend.longitude},
+            {'lat': pickupLat, 'lng': pickupLng},
+          ],
+          'total_distance_m': 2900,
+          'total_duration_s': 260,
+          'is_estimate': true,
+        }),
+      );
+      container = buildContainer(position: driverFix);
+      addTearDown(container.dispose);
+      broadcast(status: 'accepted');
+      await pumpTrip(tester);
+      await pumpRoute(tester);
+
+      // The estimate's polyline is not drawn (the dashed straight leg is), so
+      // the fit follows the dashed leg and not the estimate's bend.
+      final fitted = mapCamera(tester).visibleBounds;
+      expect(fitted.contains(LatLng(driverFix.lat, driverFix.lng)), isTrue);
+      expect(fitted.contains(const LatLng(pickupLat, pickupLng)), isTrue);
+      expect(fitted.contains(estimateBend), isFalse);
+      expect(find.byTooltip('Current location'), findsOneWidget);
+    });
+
+    testWidgets('the cached position wins over a differing fallback fix', (
+      tester,
+    ) async {
+      var fallbackCalls = 0;
+      container = buildContainer(
+        position: driverFix,
+        fix: () async {
+          fallbackCalls++;
+          return const LatLng(10.2, -84.6);
+        },
+      );
+      addTearDown(container.dispose);
+      stubLegRoute();
+      broadcast(status: 'accepted');
+      await pumpTrip(tester);
+      await pumpRoute(tester);
+
+      await tester.tap(locateButton());
+      await tester.pump();
+      await tester.pump();
+
+      expect(fallbackCalls, 0);
+      final camera = mapCamera(tester);
+      expect(camera.center.latitude, closeTo(driverFix.lat, 0.0001));
+      expect(camera.center.longitude, closeTo(driverFix.lng, 0.0001));
+      expect(camera.zoom, 16);
+    });
+
+    testWidgets('a no-fix estimate never sticks on the fit half', (
+      tester,
+    ) async {
+      container = buildContainer(position: null, fix: () async => null);
+      addTearDown(container.dispose);
+      // No intermediate stops: the destination is the next waypoint.
+      when(() => mockDio.get(ApiEndpoints.driverRideById('r1'))).thenAnswer(
+        (_) async => jsonResponse({
+          'ride': {
+            'id': 'r1',
+            'status': 'accepted',
+            'pickup_lat': pickupLat,
+            'pickup_lng': pickupLng,
+            'dropoff_lat': dropoffLat,
+            'dropoff_lng': dropoffLng,
+          },
+          'stops': const <Map<String, dynamic>>[],
+        }),
+      );
+      await pumpTrip(tester);
+      broadcast(status: 'in_progress');
+      await tester.pump();
+      await tester.pump();
+
+      // An estimate whose road is undrawn; with no driver fix the only
+      // drawable geometry is the lone waypoint, which is not fittable.
+      final notifier = container.read(tripNotifierProvider.notifier);
+      notifier.state = notifier.state.copyWith(
+        route: RouteCache(
+          polyline: [
+            {'lat': 9.90, 'lng': -84.20},
+            {'lat': dropoffLat, 'lng': dropoffLng},
+          ],
+          distance: 2900,
+          duration: 260,
+          isEstimate: true,
+          originLat: 9.90,
+          originLng: -84.20,
+          toLat: dropoffLat,
+          toLng: dropoffLng,
+          fetchedAt: DateTime(2026, 10, 19),
+        ),
+      );
+      await tester.pump();
+      await tester.pump();
+
+      // Nothing is fittable, so the next action is locate (not a stuck fit).
+      expect(find.byTooltip('Current location'), findsOneWidget);
+      await tester.tap(locateButton());
+      await tester.pump();
+      await tester.pump();
+      expect(find.text('Waiting for your location…'), findsOneWidget);
+      expect(find.byTooltip('Current location'), findsOneWidget);
+    });
 
     testWidgets('a locate with no fix tells the truth and moves nothing', (
       tester,
