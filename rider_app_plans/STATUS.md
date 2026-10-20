@@ -35,6 +35,25 @@
   `_buildDriverInfoSheet:537-556`, `rating <= 0` → "New driver" `:548-550`), driver marker bound to
   `driverLocation` `:449-455`; tick starts `:355-357` and stops on terminal/dispose `:375-387`;
   tests `test/features/home/data/driver_tracking_provider_test.dart`.
+- Single-flight rider cancel + honest status handling — `ActiveRideScreen._cancelRide` sets a local
+  `_cancelInFlight` **before** the confirm dialog, guards `_cancelInFlight || _leaving`, clears it
+  in `finally`, and binds the `Cancel Ride` button to the same busy signal
+  (`onPressed: _cancelInFlight ? null : _cancelRide`) —
+  `features/home/presentation/active_ride_screen.dart:67,184-189,246,968`. The typed
+  `CancelOutcome {success,notFound,conflict,failed}` returned by
+  `RideCreationNotifier.cancelRide` maps `404`→`notFound`, `409`→`conflict`, and everything else
+  (including today's `400`, `422`, `5xx`, transport failures)→`failed`, while `cancelError` keeps
+  the API's public message — `features/home/data/home_provider.dart:255-262,351-388`. UI outcomes:
+  `200` → one success feedback + home; `404` → silent home (dead trip, no misleading error); `409`
+  → API message, stay on trip, no automatic retry; `failed` → retryable error, stay
+  `features/home/presentation/active_ride_screen.dart:220-239`. One-shot
+  `_acknowledgeCancelled` / `_cancelAcknowledged` `:71,250-260` serves both the POST success and
+  the WS `cancelled` echo `:699`, so a fast echo cannot double-ack. `DriverMatchingScreen`'s
+  existing guard is kept (not duplicated) and regression-pinned. Tests
+  `test/features/home/presentation/active_ride_screen_test.dart:604-882` (single-flight, disabled
+  button, `200`+WS one SnackBar, `404`, `409`, `500`),
+  `test/features/home/data/home_provider_test.dart:62-119` (all four outcomes) and
+  `test/features/home/presentation/driver_matching_screen_test.dart:144-185`.
 
 ### [ontrip]
 - Live road route (pickup → stops → dropoff) — `features/home/data/trip_route_provider.dart`
@@ -196,14 +215,30 @@
 
 ### [home]
 - Resizable Home booking panel (drag/scroll + snap; the map really shrinks) —
-  `features/home/presentation/home_screen.dart`: session-only `homePanelSizeProvider` `:22`,
-  `DraggableScrollableController` `:71`, `snap: true` + content-driven max capped `0.9`
-  `:356-369,543-551`, the map's layout box shrinks via `AnimatedBuilder` + `SizedBox('home-map')`
-  `:393-404`, `_fitItinerary` bottom padding tracks the panel `:173-181`, FAB lifted above the
-  panel `:517-531`, keyboard inset padding `:566`; the handle is a 48 dp `Semantics`
-  min↔opening-size toggle with **no** `GestureDetector` `:661-687`. `[map]` honesty / single
-  booking path / `StopList` `NeverScrollableScrollPhysics` invariants intact. Tests
-  `test/features/home/presentation/home_screen_test.dart` (+5, `:1183-1308`).
+  `features/home/presentation/home_screen.dart`: session-only `homePanelSizeProvider` `:26`,
+  `DraggableScrollableController` `:75-76`, `snap: true` + content-driven max capped `0.9`
+  `:91,607-619`, the map's layout box shrinks via `AnimatedBuilder` + `SizedBox('home-map')`
+  `:469-480`, `_fitItinerary` bottom padding tracks the panel `:162,181`, FAB lifted above the
+  panel `:585-599`, keyboard inset padding `:634`. The handle (`_buildSheetHandle` `:737-772`)
+  keeps its 48 dp `Semantics` min↔opening-size toggle/label `:747-751` and **adds a desktop/web
+  mouse-only grabber**: the pure gate `shouldEnableSheetDragHandle`
+  (`core/platform/sheet_drag_handle.dart:5-21`) is wired at `:738-741`, a `GestureDetector` keyed
+  `home-sheet-handle` with `behavior: HitTestBehavior.opaque` and
+  `supportedDevices: {PointerDeviceKind.mouse}` `:752-757` drives `_sheetController` through drag
+  start/update `:364-385`, and a single end/cancel landing `_settleSheetDrag` `:396-422` snaps to
+  `{min, initial, max}` with `animateTo`, honoring fling direction and passing velocity 0 on
+  cancel `:386-391`. **No physics change** (the sheet controller already injects
+  `AlwaysScrollableScrollPhysics`; the `SingleChildScrollView` `:628-635` is untouched). The
+  mobile touch/scroll path is unchanged because the callbacks stay null when the gate is off
+  `:758-761`; the mobile resize gesture remains the list-scroll drag. **Supersedes the 2026-10-08
+  "no second drag recognizer" lock for desktop/web only** — the source comments `:732-735` record
+  it, and the mobile lock survives via the platform gate. `[map]` honesty / single booking path /
+  `StopList` `NeverScrollableScrollPhysics` invariants intact. Tests
+  `test/core/platform/sheet_drag_handle_test.dart:5-43` and
+  `test/features/home/presentation/home_screen_test.dart:1208-1216` (drag helper), `:1365-1437`
+  (mouse up/down reaches max/min), `:1442-1461` (mouse-only `supportedDevices`),
+  `:1467-1562` (cancel settle + drag-cancel callback), `:1567-1616` (fling direction), `:1618-1663`
+  (Android inert + touch still resizes), plus the existing touch/handle-toggle cases `:1315-1363`.
 
 ### [routing]
 - Routing data in the API — landed/superseded by the `api_plans/` series (A* engine
@@ -511,7 +546,7 @@ unless they cross a package, in which case they are repo-relative
 | 29 | **Status chip lied after arrival:** `_getStatusText` had cases only for `driverApproaching`/`onTrip`/`completed` and `default: return 'Matching'`, so `driverArrived` (mapped correctly from backend `driver_arrived` at `ride_status_provider.dart:164-165`) and `matching`/`cancelled`/`noDriverAvailable`/`idle` all rendered the generic `Matching`. — **FIXED** by `[ontrip]_status_labels.md`: the switch is exhaustive with no `default` (each enum value has an explicit label) | post-fix `features/home/presentation/active_ride_screen.dart:1076-1096`; pre-fix `:786-797`; mapping `features/home/data/ride_status_provider.dart:158-177` | medium | [ontrip] |
 | 30 | **ETA throttle bookkeeping leaked across rides (residual of `[ontrip]_driver_arrival_eta.md`):** `DriverEtaNotifier` is a global non-`autoDispose` provider and `stop()` only cancelled the tick — it never reset `_referenceFix`/`_lastRequestAt`, so the D4 "immediate on the first fix after entering `driverApproaching`" guarantee held only for the **session's first ride**. On a later ride the first compute was floored by the previous ride's `_lastRequestAt` (up to 5 s late) and the ≥150 m early trigger compared against a stale fix from the earlier ride. The R1 client compute and the request floor themselves are correct; only the per-ride reset was missing. — **FIXED** by `[ontrip]_eta_state_reset.md`: `_resetThrottle()` clears the reference at every boundary and bumps a ride/session `_generation` that gates any stale in-flight response | post-fix `features/home/data/driver_eta_provider.dart:93-98,116-122,149-169,186-201,219,233,239,243`; pre-fix `:82-88,131-134,243-246`; screen `stop()` on dispose `features/home/presentation/active_ride_screen.dart:140`; regression tests `test/features/home/data/driver_eta_provider_test.dart:281-419` | medium | [ontrip] |
 | 31 | **Test gap (tracked, not a code defect):** the web-reload bootstrap fix was covered only at the unit level (`resolveRedirect` / `SessionBootstrap.run`) plus cold-start and post-login integration; there was **no** full-widget test that mounted `RiderApp`/the router at a reloaded shell location with a stored session to assert it lands on `HomeScreen`. The real browser reload is UNVERIFIABLE in this WSL harness. — **FIXED** by `[test]_rider_coverage_gaps.md` (T1/T2): a full-widget test mounts the real `RiderApp` booted at `/home` and asserts the reload window shows the splash spinner (never `LoginScreen`) and settles on `HomeScreen`; observed RED→GREEN against the `!bootstrapComplete` gate. **Honest scope limit:** the `routerInitialLocationProvider` seam does not discriminate on its own (booting at `/splash` vs `/home` converges because `resolveRedirect` funnels pre-bootstrap entries to `/splash`); T1's real teeth are the gate, and a real browser reload remains UNVERIFIABLE here | post-fix `test/features/auth/presentation/app_reload_test.dart:107,120-145`; seam `core/router/app_router.dart:25-28,33`; unit `test/core/router/app_router_test.dart:50-164`; bootstrap `test/app_bootstrap_test.dart:77-108` | low | [test] |
-| 32 | **Home booking panel does not resize with a mouse on web/desktop:** the panel's only **pointer-drag** resize path is the internal scroll drag (the `Semantics` toggle/`animateTo` at `home_screen.dart:343-353` also resizes, accessibility-only), but Flutter's default `ScrollBehavior.dragDevices` excludes `PointerDeviceKind.mouse`; the 48 dp handle is a `Semantics`-only toggle with no drag recognizer, so a mouse drag on it never reaches `DraggableScrollableSheet`. Touch on mobile works. **Open** — owned by `[home]_panel_drag_desktop_web.md` (desktop/web mouse-only grabber; no physics change — the sheet controller already injects `AlwaysScrollableScrollPhysics`, `draggable_scrollable_sheet.dart:810-820`) | pre-fix `features/home/presentation/home_screen.dart:541-549,558-559,661-664,665-687`; Flutter SDK `widgets/scroll_configuration.dart:29-37,120` (no `mouse`), `widgets/draggable_scrollable_sheet.dart:291-299` (docs: add `dragDevices` or a drag handle) | medium | [home] |
+| 32 | **Home booking panel does not resize with a mouse on web/desktop:** the panel's only **pointer-drag** resize path was the internal scroll drag (the `Semantics` toggle/`animateTo` also resized, accessibility-only), but Flutter's default `ScrollBehavior.dragDevices` excludes `PointerDeviceKind.mouse`; the 48 dp handle was a `Semantics`-only toggle with no drag recognizer, so a mouse drag on it never reached `DraggableScrollableSheet`; touch on mobile worked. — **FIXED** by `[home]_panel_drag_desktop_web.md`: a platform-gated (`shouldEnableSheetDragHandle`) desktop/web-only grabber, keyed `home-sheet-handle`, with `behavior: HitTestBehavior.opaque` and `supportedDevices: {PointerDeviceKind.mouse}`, drives `_sheetController` and settles end **and** cancel on a fling-aware `{min, initial, max}` snap; mobile callbacks stay null so the touch/scroll path is unchanged; no physics change (the sheet controller already injects `AlwaysScrollableScrollPhysics`) | post-fix `features/home/presentation/home_screen.dart:737-772,364-422`, `core/platform/sheet_drag_handle.dart:5-21`; tests `test/core/platform/sheet_drag_handle_test.dart:5-43`, `test/features/home/presentation/home_screen_test.dart:1365-1663`; pre-fix `features/home/presentation/home_screen.dart` handle (old numbering `:661-664,665-687`) | medium | [home] |
 
 *Rows #25–#26 track `tests/AUDIT_REPORT.md` §5.2–§5.3. Both are **resolved**: #25 by Landed `[map]`; #26 by the shared additive timer seam (2026-10-11). #26 is shared-owned (no shared `STATUS.md`).*
 
@@ -522,9 +557,7 @@ unless they cross a package, in which case they are repo-relative
 | `[map]_self_hosted_tile_host.md` | map | `[]` — **deferred; gate met by Landed `[map]`** | **DEFERRED.** Stand up a self-hosted tile server and replace the OSM public host (values-only change to the shared `MapTileConfig`); removes third-party policy risk; infra + migration decisions recorded. Authored once in the rider domain; driver consumes. |
 | `[map]_runtime_remote_tile_config.md` | map | `[]` — **deferred; gate met by Landed `[map]`** | **DEFERRED.** Fetch tile URL/key/attribution at runtime instead of compile-time `String.fromEnvironment`; shared factory unchanged; **compile-time default + last-good-cache fallback** so a config outage never blanks the map. The remote-config endpoint owner/shape is **UNSPECIFIED** (an open question to resolve only when scheduled, **not** an `api_plans` prerequisite). Authored once in the rider domain; driver consumes. |
 | `[release]_app_id_and_store_readiness.md` | release | `[]` | **DEFERRED.** Finalize the real reverse-DNS `applicationId` for **BOTH** apps; update Android/iOS build files; align `MapTileConfig.userAgentPackageName` (must match the chosen id) in the same commit; signing/build config; store metadata/data-safety. Canonical file — the driver domain references it, does not duplicate. Until it lands `userAgentPackageName` tracks the stock `com.example.rider_app`/`com.example.driver_app`. |
-| `01_[tracking]_cancel_single_flight.md` | tracking | `api_plans/[rides]_cancel_accept_race.md` (open; canonical cancel contract) | **Rider single-flight cancel:** local `_cancelInFlight` set before the confirm dialog + disabled Cancel Ride button (one dialog/one POST/one success), one-shot success feedback across POST and the WS echo; `200` → home, `404` → silent home, `409` → API message/no retry, `5xx` → retryable error; matching-screen guard kept; no `shared/` change. |
 | `[map]_current_location_button.md` | map | `[]` | **Rider Home + ActiveRide bottom-right locate/FAB:** first press fits the route (preview polyline or itinerary pins), later presses center on the resolved rider fix; authors the canonical shared `fitMapCamera`/`centerMapCamera` + `AppMapLocateButton` for the driver plan (`driver_app_plans/01_[map]_current_location_button.md`) to consume verbatim. No API change. |
-| `[home]_panel_drag_desktop_web.md` | home | `[]` | **Desktop/web mouse resize (bug #32):** add a platform-gated, mouse-only (`supportedDevices: {mouse}`) grabber (`shouldEnableSheetDragHandle`) that drives `_sheetController` with `jumpTo` + a manual fling-aware snap (`animateTo`), settling on drag end/cancel; keep the existing `Semantics` toggle/label; **no physics change** — the sheet controller already injects `AlwaysScrollableScrollPhysics` (`draggable_scrollable_sheet.dart:810-820`); rider-only (no `shared/`, no API, no driver). Rejected: enabling `PointerDeviceKind.mouse` on the sheet scroll view (would compete with `StopList` reorder). Supersedes the 2026-10-08 "no second drag recognizer" lock for desktop/web only. |
 
 The two `[map]` deferred plans are **siblings, not a chain**: both are alternatives/composables over
 the same shared `MapTileConfig`, gated behind the now-landed `[map]` work (STATUS.md → Landed `[map]`).
@@ -623,6 +656,22 @@ export PATH=~/fvm/default/bin:$HOME/.pub-cache/bin:$PATH   # Linux FVM SDK + Mel
 melos run analyze
 melos run test
 ```
+
+Landing — `[home]_panel_drag_desktop_web.md` (bug #32) + `01_[tracking]_cancel_single_flight.md`,
+2026-10-19: both plans were adversarially verified — the Home panel implementation and the rider
+single-flight cancel were each **CONFIRMED** (the Home review also prompted the test hardening now in
+the tree: mouse-only `supportedDevices`, cancel settle, fling direction). Both plans are condensed
+into Landed `[home]`/`[tracking]` above, their files were deleted, bug #32 is **FIXED**, and both
+Open-plans rows were removed (the `[map]_current_location_button.md` row is retained). Gates were
+independently run immediately before landing (not re-run by this condensation): `melos run analyze`
+clean; `melos run test` green — rider **473**, driver **451**, shared **205 + 1 skipped** (Linux FVM
+SDK + native Melos 8). **UNVERIFIABLE in this WSL harness:** real browser/desktop mouse behavior (the
+widget suite proves the recognizer drives the controller, including cancel and fling). Dangling-
+`depends_on` check re-run after deleting the cancel plan: the cancel plan's
+`api_plans/[rides]_cancel_accept_race.md` dependency disappears with it; the surviving
+`[map]_current_location_button.md` is `[]`, the two deferred `[map]` siblings are `[]`, and the
+deferred `[release]` plan is `[]` — no dangling reference in the rider domain. No driver/api file was
+edited.
 
 Landing — `[ontrip]_eta_state_reset.md` (bug #30) + `[test]_rider_coverage_gaps.md`
 (bugs #31/#27/#28), 2026-10-15: both plans were adversarially verified and **CONFIRMED-LANDED**.
