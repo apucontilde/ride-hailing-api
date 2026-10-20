@@ -212,6 +212,44 @@
   `test/features/navigation/rider_sidebar_test.dart:84`). **Plan↔code drift:** the plan specified
   `APP_VERSION` `defaultValue: 'dev'`; the landed code uses `'1.0.0'` (restores the Settings footer),
   guarded by `test/features/settings/presentation/settings_screen_test.dart:59-69`.
+- Shared camera-fit helpers (canonical contract; cross-app) —
+  `shared/lib/src/map/map_camera_fit.dart:9-33` (`fitMapCamera`: `<2` points, unattached or rejected
+  move → `false`; a duplicate fit already at the target → `true`) and `:41-56` (`centerMapCamera`:
+  exact repeat center/zoom → `true`, unattached/rejected → `false`); barrel export
+  `shared/lib/ride_hailing_shared.dart:31`. Duplicate fit/center count as success so a repeated
+  action advances the locate cycle. Negative camera tests
+  `shared/test/map/map_camera_fit_test.dart:92-119,148-169`.
+- Shared `AppMapLocateButton` (the single cross-app control) —
+  `shared/lib/src/map/app_map_locate_button.dart:12-42` (`routeKey`/`hasRoute`/`onFitRoute`/
+  `onCurrentLocation`/`onLocationUnavailable`), post-frame auto-fit on initial mount and material
+  `routeKey` change `:54-87`, full fit↔locate cycle with failed-action retry `:89-122`, in-flight
+  `_locating` double-tap guard `:48-49,90`, cycle-aware tooltip `:124-125`,
+  `Key('map-locate-button')` `:130`; barrel export `shared/lib/ride_hailing_shared.dart:32`.
+  Shared-only additions, no app shims. Tests `shared/test/map/app_map_locate_button_test.dart`
+  (8 cases: mount auto-fit, full cycle, `routeKey` re-fit, failed auto-fit/locate retry,
+  `hasRoute:false`, unresolved double-tap, icon/colours).
+- Home locate/FAB — the shared button sits in Home's existing panel-aware
+  `Positioned`/`AnimatedBuilder`/`Transform.translate` slot and rides above the panel
+  (`home_screen.dart:677-691`; button `:686-690`); material key
+  `_homeRouteKey`/`_homeRoutePhase` `:316-338` is the **settled** 3-value phase
+  (`none`/`ready`/`estimate`; transient `loading`/`unavailable` keeps the last settled value) plus
+  pickup/stops/destination coordinates only, so a locate-driven `ready→loading→ready` re-key does
+  not auto-fit over the locate while a genuine `none→ready` does; `_fitRoute`/`_canFitRoute`
+  `:289-304` fit the API preview polyline else the itinerary pins; `_locateCurrentPosition`
+  `:343-370` reuses the permission/notice UX, prefers a fresh fix then the cached one, and shows the
+  truthful snackbar without writing a fabricated point. Tests
+  `test/features/home/presentation/home_screen_test.dart:1682-1914` (cycle, locate-only-destination
+  no-auto-fit regression guard, permission denial, no fix, stop re-fit).
+- ActiveRide locate/FAB — shared button above the driver-info sheet
+  `active_ride_screen.dart:946-958` in the bottom stack `:933-963`, sheet measured via
+  `_sheetKey` `:545-549,1046`; material key `_tripRouteKey` `:534-542` is `status.name` +
+  pickup/`stopPoints`/dropoff coordinates only
+  (rider/driver positions, `fetchedAt` and geometry excluded); trip-route fit `_fitTripRoute`
+  `:553-565`; status-aware target `_locatesDriver`/`_locateActiveTarget` `:497-501,570-589`
+  (driver fix for `matching`/`driverApproaching`/`driverArrived`/`onTrip`, rider fix otherwise);
+  a missing target shows `Waiting for driver location…` / `Waiting for your location…` and moves
+  nothing `:593-598`; driver follow is unchanged `:486-494`. Tests
+  `test/features/home/presentation/active_ride_screen_test.dart:2185-2434`.
 
 ### [home]
 - Resizable Home booking panel (drag/scroll + snap; the map really shrinks) —
@@ -557,7 +595,6 @@ unless they cross a package, in which case they are repo-relative
 | `[map]_self_hosted_tile_host.md` | map | `[]` — **deferred; gate met by Landed `[map]`** | **DEFERRED.** Stand up a self-hosted tile server and replace the OSM public host (values-only change to the shared `MapTileConfig`); removes third-party policy risk; infra + migration decisions recorded. Authored once in the rider domain; driver consumes. |
 | `[map]_runtime_remote_tile_config.md` | map | `[]` — **deferred; gate met by Landed `[map]`** | **DEFERRED.** Fetch tile URL/key/attribution at runtime instead of compile-time `String.fromEnvironment`; shared factory unchanged; **compile-time default + last-good-cache fallback** so a config outage never blanks the map. The remote-config endpoint owner/shape is **UNSPECIFIED** (an open question to resolve only when scheduled, **not** an `api_plans` prerequisite). Authored once in the rider domain; driver consumes. |
 | `[release]_app_id_and_store_readiness.md` | release | `[]` | **DEFERRED.** Finalize the real reverse-DNS `applicationId` for **BOTH** apps; update Android/iOS build files; align `MapTileConfig.userAgentPackageName` (must match the chosen id) in the same commit; signing/build config; store metadata/data-safety. Canonical file — the driver domain references it, does not duplicate. Until it lands `userAgentPackageName` tracks the stock `com.example.rider_app`/`com.example.driver_app`. |
-| `[map]_current_location_button.md` | map | `[]` | **Rider Home + ActiveRide bottom-right locate/FAB:** full cycle — auto-fit on initial mount and material route changes, then presses alternate **fit route → current location → fit route → …** (failed action retries); Home's material key is the settled 3-value route phase (`none`/`ready`/`estimate`) + itinerary coordinates, while ActiveRide's key is `status.name` + pickup/stop/dropoff coordinates, so a re-key from a locate's own fix refresh (or a silent refresh) neither auto-fits nor resets the cycle; authors the canonical shared `fitMapCamera`/`centerMapCamera` (duplicate fit/center = success) + `AppMapLocateButton` for the driver plan (`driver_app_plans/01_[map]_current_location_button.md`) to consume verbatim. No API change. |
 
 The two `[map]` deferred plans are **siblings, not a chain**: both are alternatives/composables over
 the same shared `MapTileConfig`, gated behind the now-landed `[map]` work (STATUS.md → Landed `[map]`).
@@ -657,19 +694,38 @@ melos run analyze
 melos run test
 ```
 
+Landing — `[map]_current_location_button.md` (canonical shared locate/fit contract + both rider
+surfaces), 2026-10-20: adversarially reviewed and **CONFIRMED** (static verification; the reviewer's
+one **medium** finding — the Home locate could be overridden by the locate's own `ready→loading→ready`
+route re-key — was fixed with a RED→GREEN regression test for the settled-phase key
+`test/features/home/presentation/home_screen_test.dart:1752-1785`, and the shared negative camera
+cases were added `shared/test/map/map_camera_fit_test.dart:92-119,148-169`). The plan is condensed
+into Landed `[map]` above, its file was deleted, and its Open-plans row removed; the two deferred
+`[map]` siblings and `[release]` remain. Gates (reported by the implementing agent on this landing
+tree; **not re-run** by this condensation): `melos run analyze` clean; `melos run test` green — rider
+**491**, shared **225 passed + 1 skipped**, driver **467** (Linux FVM SDK + native Melos 8; the one
+skip is the browser-only `window.localStorage` case). **UNVERIFIABLE in this WSL harness:** real
+GPS fix acquisition, the OS permission dialog, `FlutterMap` camera animation and touch placement on
+physical hardware. Dangling-`depends_on` check: this plan was `depends_on: []`; every surviving rider
+plan (`[map]_self_hosted_tile_host.md`, `[map]_runtime_remote_tile_config.md`,
+`[release]_app_id_and_store_readiness.md`) is `[]` — no dangling reference in the rider domain. The
+driver plan's reference to this file is its own dependency and disappears with that plan's landing
+(merged first); no driver/api file was edited here.
+
 Landing — `[home]_panel_drag_desktop_web.md` (bug #32) + `01_[tracking]_cancel_single_flight.md`,
 2026-10-19: both plans were adversarially verified — the Home panel implementation and the rider
 single-flight cancel were each **CONFIRMED** (the Home review also prompted the test hardening now in
 the tree: mouse-only `supportedDevices`, cancel settle, fling direction). Both plans are condensed
 into Landed `[home]`/`[tracking]` above, their files were deleted, bug #32 is **FIXED**, and both
-Open-plans rows were removed (the `[map]_current_location_button.md` row is retained). Gates were
+Open-plans rows were removed (the `[map]_current_location_button.md` row was retained at that point;
+it landed 2026-10-20). Gates were
 independently run immediately before landing (not re-run by this condensation): `melos run analyze`
 clean; `melos run test` green — rider **473**, driver **451**, shared **205 + 1 skipped** (Linux FVM
 SDK + native Melos 8). **UNVERIFIABLE in this WSL harness:** real browser/desktop mouse behavior (the
 widget suite proves the recognizer drives the controller, including cancel and fling). Dangling-
 `depends_on` check re-run after deleting the cancel plan: the cancel plan's
-`api_plans/[rides]_cancel_accept_race.md` dependency disappears with it; the surviving
-`[map]_current_location_button.md` is `[]`, the two deferred `[map]` siblings are `[]`, and the
+`api_plans/[rides]_cancel_accept_race.md` dependency disappears with it; the then-surviving
+`[map]_current_location_button.md` was `[]`, the two deferred `[map]` siblings are `[]`, and the
 deferred `[release]` plan is `[]` — no dangling reference in the rider domain. No driver/api file was
 edited.
 
