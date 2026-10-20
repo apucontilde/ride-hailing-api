@@ -198,10 +198,9 @@ class _TripScreenState extends ConsumerState<TripScreen> {
           prevRide?.pickupLng != nextRide?.pickupLng;
       if (stageChanged || destinationChanged) _syncRoute();
     });
-    // A websocket accept mounts this screen on an accepted *placeholder*
-    // before the server commits it, so the post-frame push can race the
-    // accept. The server's `ride.updated` confirmation triggers one more push,
-    // guaranteeing the geofence sees a fix after the ride is really accepted.
+    // The HTTP accept mounts this screen only after the server-confirmed ride
+    // read; a `ride.updated` acceptance still triggers one more push, so the
+    // geofence sees a fix after the ride is really accepted.
     ref.listen<RideState>(rideStateProvider, (previous, next) {
       if (next.currentRide?.status == 'accepted') _publishArrivalFix();
     });

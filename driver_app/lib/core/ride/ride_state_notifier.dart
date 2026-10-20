@@ -163,8 +163,9 @@ class RideStateNotifier extends StateNotifier<RideState> {
 
   /// Clears the legacy optimistic placeholder (`status: accepted` with no
   /// pickup coordinates) for [rideId]. A real accepted ride always carries the
-  /// pickup coordinates, so it is left alone. The offer is cleared in the same
-  /// update either way.
+  /// pickup coordinates, so it is left alone. A *different* outstanding offer
+  /// is never cleared: the `ride.accept_failed` frame names [rideId], not the
+  /// live offer.
   void _clearPhantomFor(String rideId) {
     final held = state.currentRide;
     final isPlaceholder =
@@ -174,7 +175,11 @@ class RideStateNotifier extends StateNotifier<RideState> {
         held.status == 'accepted' &&
         held.pickupLat == null &&
         held.pickupLng == null;
-    state = state.copyWith(clearRide: isPlaceholder, clearOffer: true);
+    final offered = state.offeredRideId;
+    state = state.copyWith(
+      clearRide: isPlaceholder,
+      clearOffer: offered == null || offered == rideId,
+    );
   }
 
   /// Adopts a ride the app learned about over HTTP — the `advance`/cancel
@@ -203,6 +208,20 @@ class RideStateNotifier extends StateNotifier<RideState> {
       if (state.offeredRideId != rideId) return;
       state = state.copyWith(clearOffer: true);
     });
+  }
+
+  /// Stops the local offer deadline before a server-confirmed accept POST.
+  ///
+  /// Once an accept is in flight only the server is authoritative for closing
+  /// the offer: a local 30 s deadline that fires during a slow round-trip (or
+  /// while the committed accept's ride read is retried) would paint
+  /// `Offer expired` over that accept. A retryable failure deliberately does
+  /// not re-arm the timer — the original deadline may already have passed and
+  /// the POST may even have committed before the connection failed, so the
+  /// `ride.updated`/`ride.offer_closed` frames (or the next HTTP read) decide.
+  void beginAccept() {
+    _offerTimer?.cancel();
+    _offerTimer = null;
   }
 
   /// Clears the outstanding offer, recording why (the sheet renders the

@@ -33,11 +33,15 @@ void main() {
     addTearDown(() => events.close());
   });
 
-  Future<void> seedOffer(WidgetTester tester, String rideId) async {
+  Future<void> seedOffer(
+    WidgetTester tester,
+    String rideId, {
+    Duration offerTimeout = const Duration(minutes: 5),
+  }) async {
     notifier = RideStateNotifier(
       mockWs,
       apiClient: MockApiClient(),
-      offerTimeout: const Duration(minutes: 5),
+      offerTimeout: offerTimeout,
     );
     events.add(WsEvent(type: WsEventType.offer, data: {'ride_id': rideId}));
     await tester.pump();
@@ -478,6 +482,101 @@ void main() {
       expect(find.text('Trip accepted'), findsOneWidget);
       verify(() => mockRepo.acceptRideHttp('r1')).called(1);
       expect(notifier.state.currentRide!.pickupLat, 9.93);
+
+      await drainModalTimers(tester);
+    },
+  );
+
+  testWidgets(
+    'a slow accept past the notifier offer deadline never paints '
+    "'Offer expired'",
+    (tester) async {
+      // A short notifier deadline makes the race deterministic: the accept POST
+      // is still in flight when the notifier's independent timer would fire.
+      await seedOffer(tester, 'r1', offerTimeout: const Duration(seconds: 2));
+      final accept = Completer<void>();
+      when(
+        () => mockRepo.acceptRideHttp('r1'),
+      ).thenAnswer((_) => accept.future);
+      stubPendingThenRead(acceptedRide);
+      await pumpSheet(tester);
+      await tester.pump();
+
+      await tapAccept(tester);
+      await tester.pump(const Duration(seconds: 2, milliseconds: 100));
+
+      // The local deadline must not clear the offer or expire the sheet while
+      // the accept's `200` is outstanding; only the server may close it.
+      expect(find.text('Offer expired'), findsNothing);
+      expect(find.byKey(const Key('offer-dismiss-button')), findsNothing);
+      expect(notifier.state.offeredRideId, 'r1');
+
+      accept.complete();
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 300));
+
+      expect(find.text('Trip accepted'), findsOneWidget);
+      expect(notifier.state.currentRide!.status, 'accepted');
+      expect(notifier.state.currentRide!.pickupLat, 9.93);
+      expect(notifier.state.offeredRideId, isNull);
+      verify(() => mockRepo.acceptRideHttp('r1')).called(1);
+
+      await drainModalTimers(tester);
+    },
+  );
+
+  testWidgets(
+    'a pre-200 close does not shadow the post-200 Retry',
+    (tester) async {
+      await seedOffer(tester, 'r1');
+      final accept = Completer<void>();
+      when(
+        () => mockRepo.acceptRideHttp('r1'),
+      ).thenAnswer((_) => accept.future);
+      final read = Completer<Ride>();
+      stubPostAcceptRead(() => read.future);
+      await pumpSheet(tester);
+      await tester.pump();
+
+      await tapAccept(tester);
+      await tester.pump();
+
+      // The rider cancels between the tap and the `200`.
+      events.add(
+        const WsEvent(
+          type: WsEventType.offerClosed,
+          data: {'ride_id': 'r1', 'reason': 'cancelled'},
+        ),
+      );
+      await tester.pump();
+
+      // Ignored while the accept is in flight: it must not pin the sheet to
+      // the expired Dismiss (which would shadow the committed accept's Retry).
+      expect(find.byKey(const Key('offer-dismiss-button')), findsNothing);
+      expect(find.text('The rider cancelled this trip.'), findsNothing);
+
+      accept.complete();
+      await tester.pump();
+
+      // The accept committed (200) but its ride read fails.
+      read.completeError(Exception('read failed'));
+      await tester.pump();
+      await tester.pump();
+
+      expect(find.byKey(const Key('offer-retry-button')), findsOneWidget);
+      expect(find.byKey(const Key('offer-dismiss-button')), findsNothing);
+      expect(find.text('Offer expired'), findsNothing);
+
+      when(
+        () => mockRepo.fetchRide('r1'),
+      ).thenAnswer((_) async => acceptedRide());
+      await tester.tap(find.byKey(const Key('offer-retry-button')));
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 300));
+
+      expect(find.text('Trip accepted'), findsOneWidget);
+      expect(notifier.state.currentRide!.status, 'accepted');
+      verify(() => mockRepo.acceptRideHttp('r1')).called(1);
 
       await drainModalTimers(tester);
     },

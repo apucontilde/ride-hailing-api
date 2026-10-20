@@ -79,6 +79,29 @@ void main() {
     });
   });
 
+  test('beginAccept cancels the local offer deadline', () {
+    // The accept POST owns the offer until the server answers; a local timer
+    // firing mid-round-trip would paint `Offer expired` over a slow `200`.
+    fakeAsync((async) {
+      final notifier = RideStateNotifier(
+        mockWs,
+        apiClient: mockApiClient,
+        offerTimeout: const Duration(milliseconds: 200),
+      );
+      addTearDown(notifier.dispose);
+
+      events.add(offer('r1'));
+      async.flushMicrotasks();
+      expect(notifier.state.offeredRideId, 'r1');
+
+      notifier.beginAccept();
+      async.elapse(const Duration(seconds: 1));
+
+      expect(notifier.state.offeredRideId, 'r1');
+      expect(notifier.state.offerExpiresAt, isNotNull);
+    });
+  });
+
   test('ride.updated replaces the current ride and clears the offer', () async {
     events.add(offer('r1'));
     await flush();
@@ -194,6 +217,22 @@ void main() {
         await flush();
 
         expect(notifier.state.currentRide, isNull);
+      },
+    );
+
+    test(
+      'ride.accept_failed for a different ride leaves the live offer alone',
+      () async {
+        events.add(offer('r2'));
+        await flush();
+        expect(notifier.state.offeredRideId, 'r2');
+
+        events.add(acceptFailed('r1', message: 'Offer expired'));
+        await flush();
+
+        expect(notifier.state.offeredRideId, 'r2');
+        expect(notifier.state.offerExpiresAt, isNotNull);
+        expect(notifier.state.offerClosedReason, isNull);
       },
     );
 

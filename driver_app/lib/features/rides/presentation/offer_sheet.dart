@@ -45,6 +45,13 @@ class _OfferSheetState extends ConsumerState<OfferSheet> {
   /// instead of Accept/Pass. The ride is already assigned.
   bool _acceptConfirmedButUnloaded = false;
 
+  /// An offer close arrived while the accept POST was in flight. The listener
+  /// must not repaint the sheet then (a `200` makes the committed accept own
+  /// the close), so it is remembered and applied only if the accept fails
+  /// retryably.
+  bool _clearWhileAccepting = false;
+  String? _clearWhileAcceptingMessage;
+
   /// This sheet owns the pop: set immediately before `adoptRide`/`clearRide`
   /// on the post-200 paths, so the offered-id listener stands down and cannot
   /// repaint the sheet as expired during the exit animation.
@@ -160,13 +167,17 @@ class _OfferSheetState extends ConsumerState<OfferSheet> {
     // A committed accept is never POSTed twice; only the read is retried.
     if (rideId == null || _expired || _accepting || _acceptConfirmed) return;
     setState(() => _accepting = true);
-    // Freeze the countdown before the round-trip: a 30 s boundary landing
-    // inside the accept/pop must not paint `Offer expired` over a committed
-    // accept.
+    // Freeze both deadlines before the round-trip: the sheet's countdown and
+    // the notifier's independent 30 s timer. A 30 s boundary landing inside
+    // the accept/pop must not clear the offer or paint `Offer expired` over a
+    // committed accept. After this point the server owns the close.
     _cancelCountdown();
+    ref.read(rideStateProvider.notifier).beginAccept();
     try {
       await ref.read(ridesRepositoryProvider).acceptRideHttp(rideId);
       _acceptConfirmed = true; // the POST is done, no re-POST
+      _clearWhileAccepting = false;
+      _clearWhileAcceptingMessage = null;
       _cancelCountdown();
       await _loadAcceptedRide(rideId);
     } on OfferExpiredException catch (e) {
@@ -179,6 +190,16 @@ class _OfferSheetState extends ConsumerState<OfferSheet> {
           .expireOffer(reason: 'expired', message: e.message);
     } on Exception {
       _showMessage('Could not accept. Please try again.');
+      // The offer may have closed while the POST was in flight (rider cancel,
+      // withdrawal). The listener deferred that clear; no accept committed, so
+      // apply it now instead of leaving a live-looking sheet. The notifier's
+      // local deadline stays cancelled: the server/WS remains authoritative.
+      if (_clearWhileAccepting) {
+        final message = _clearWhileAcceptingMessage;
+        _clearWhileAccepting = false;
+        _clearWhileAcceptingMessage = null;
+        _expireNow(message: message);
+      }
     } finally {
       if (mounted) setState(() => _accepting = false);
     }
@@ -337,6 +358,14 @@ class _OfferSheetState extends ConsumerState<OfferSheet> {
           Navigator.of(context).pop();
         } else {
           final state = ref.read(rideStateProvider);
+          if (_accepting) {
+            // A close between the tap and the `200` must not pre-empt the
+            // committed accept's Retry (or paint over it). Remember it: the
+            // accept path applies it only if no accept committed.
+            _clearWhileAccepting = true;
+            _clearWhileAcceptingMessage = state.offerClosedMessage;
+            return;
+          }
           _expireNow(message: state.offerClosedMessage);
         }
       },

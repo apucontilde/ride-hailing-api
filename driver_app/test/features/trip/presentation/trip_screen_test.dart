@@ -315,8 +315,8 @@ void main() {
     testWidgets('a server-confirmed accept after mount publishes again', (
       tester,
     ) async {
-      // WS accept mounts the screen on a placeholder before the server commit;
-      // the confirmation must trigger a post-commit fix.
+      // The accept is server-confirmed, but a later `ride.updated` acceptance
+      // must still trigger a fresh fix.
       await pumpTrip(tester);
       await tester.pump();
       expect(fakeLocation.publishCount, 0);
