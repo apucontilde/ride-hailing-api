@@ -1,21 +1,19 @@
 ---
 tag: arrival
-depends_on: ["[rides]_cancel_accept_race.md"]
+depends_on: ["landed [rides] CAS + accept funnel (api_plans/STATUS.md → Landed [rides])"]
 status: open
 ---
 
 # Plan: evaluate proximity arrival once at accept time
 
-**Stage `01` of the `[arrival]` chain.** Beyond its landed prerequisites (the `[arrival]`
-proximity geofence and the `[dispatch]` accept loop), this plan depends on the **open** chain head
-`[rides]_cancel_accept_race.md`: that plan is the canonical owner of the atomic conditional status
-write and of `ErrTransitionConflict`. This plan does **not** implement or rename those symbols; it
-adopts them verbatim (§2.1, §5).
+**Chain head (unnumbered): its prerequisites are landed.** Beyond the landed `[arrival]`
+proximity geofence and `[dispatch]` accept loop, this plan depends on the now-landed `[rides]`
+cancel/accept race work, which owns the atomic conditional status write and `ErrTransitionConflict`.
+This plan does **not** implement or rename those symbols; it adopts them verbatim (§2.1, §5).
 
-**Sequencing is hard:** stage `01` **cannot land before** `[rides]_cancel_accept_race.md` lands.
-The CAS behavior and its cross-transition regression table belong to that plan (§1.1–§1.3, §5.1
-there), not here. This plan only adds accept-time evaluation and the scenario test that proves it
-cannot duplicate a `driver_arrived` event against the rides plan's CAS.
+The CAS behavior and its cross-transition regression table are already landed (see
+`api_plans/STATUS.md` → Landed `[rides]`), not here. This plan only adds accept-time evaluation and
+the scenario test that proves it cannot duplicate a `driver_arrived` event against that CAS.
 
 This plan is **open**: nothing below is implemented yet.
 
@@ -75,11 +73,11 @@ WebSocket (`driver_app/lib/features/rides/presentation/offer_sheet.dart:135-140`
 **Recommendation: inside `DispatchService.AcceptRide`**, via a narrow evaluator seam implemented
 by `*service.RideService`; the exact ordering relative to the accepted broadcast is D3 (§4).
 
-> **Dependency naming:** after `[rides]_cancel_accept_race.md` lands, this function is renamed
+> **Dependency naming:** with the `[rides]` work now landed, this function is
 > `acceptRide` (unexported) and both the WS and HTTP paths converge through
-> `DispatchService.HandleAccept` (rides plan §4.1). The call site stays the same single accept
-> write; read `AcceptRide` below as "the one accept write" (today `internal/service/dispatch.go:400`,
-> post-dependency `acceptRide`).
+> `DispatchService.HandleAccept` (`internal/service/dispatch.go:522-575`). The call site stays the
+> same single accept write; read `AcceptRide` below as "the one accept write" (`acceptRide`,
+> `internal/service/dispatch.go:646-733`).
 
 | Option | Covers WS accept | Covers HTTP accept | Notes |
 | --- | --- | --- | --- |
@@ -127,11 +125,11 @@ type AcceptArrivalEvaluator interface {
 }
 func (s *DispatchService) SetArrivalEvaluator(e AcceptArrivalEvaluator)
 
-// CAS — ADOPTED VERBATIM from api_plans/[rides]_cancel_accept_race.md §1.1.
+// CAS — ADOPTED VERBATIM from the landed [rides] cancel/accept race (api_plans/STATUS.md → Landed [rides]) §1.1.
 // This plan must not implement, wrap, or rename it:
 //   UpdateRideStatusFrom(rideID string, expectedFrom []string, status string, timestamp *time.Time) (updated bool, err error)
 //   ErrTransitionConflict
-// After that chain head lands, RideService.AdvanceStatus already uses
+// The [rides] CAS is landed: RideService.AdvanceStatus already uses
 // UpdateRideStatusFrom and returns ErrTransitionConflict on updated == false;
 // EvaluateArrivalAtAccept inherits that behaviour by calling AdvanceStatus.
 ```
@@ -296,43 +294,43 @@ Verified client effects of A:
 ## 5. Idempotency and races — D5=A (dependency on the `[rides]` CAS, not an implementation step)
 
 Two writers can hit `accepted → driver_arrived` at nearly the same time: the accept-time
-evaluation and a client `PUT /geo/driver/location` (the app's re-published cached fix). Today the
-transition is not DB-idempotent: `RideService.AdvanceStatus` (`internal/service/ride.go:433-447`)
-does `FindByID` → validate against `validTransitions` (`ride.go:119-126`) → `UpdateRideStatus`
-(`internal/repository/ride_repo.go:299-325`), and that UPDATE has **no `WHERE status = <from>`
-predicate** (interface at `internal/repository/ride_repo.go:25`). Two goroutines that both read
-`accepted` both pass validation and both write, both insert a `ride_events` row, and both
-broadcast/push.
+evaluation and a client `PUT /geo/driver/location` (the app's re-published cached fix). *Before*
+the `[rides]` CAS landed, the transition was not DB-idempotent: `RideService.AdvanceStatus`
+(`internal/service/ride.go:433-447` then) did `FindByID` → validate against `validTransitions`
+(`ride.go:119-126`) → `UpdateRideStatus` (`internal/repository/ride_repo.go:299-325`), whose UPDATE
+had **no `WHERE status = <from>` predicate**. Two goroutines that both read `accepted` could both
+write, both insert a `ride_events` row, and both broadcast/push. That is historical; the CAS below
+is now landed.
 
-**D5 = A is a human-approved behavior, but its canonical owner is
-`api_plans/[rides]_cancel_accept_race.md`.** That chain head:
+**D5 = A is a human-approved behavior, and its canonical owner is the landed `[rides]` CAS work
+(`api_plans/STATUS.md` → Landed `[rides]`).** It:
 - defines the one conditional write `UpdateRideStatusFrom(rideID, expectedFrom []string, status
-  string, timestamp *time.Time) (updated bool, err error)` (rides plan §1.1);
-- adds `ErrTransitionConflict` and maps it to `409 CONFLICT` (rides plan §1.2);
+  string, timestamp *time.Time) (updated bool, err error)`;
+- adds `ErrTransitionConflict` and maps it to `409 CONFLICT`;
 - assigns `RideService.AdvanceStatus` to use it and to return `ErrTransitionConflict` on
-  `updated == false` **before** any event/broadcast/push/completion side effect (rides plan §1.2);
-- owns the cross-transition lost-race regression table (rides plan §1.2 + §5.1).
+  `updated == false` **before** any event/broadcast/push/completion side effect;
+- owns the cross-transition lost-race regression table.
 
 **This plan does not add `ErrTransitionConflict`, does not add the repository method, and does not
 duplicate that table.** It adopts them verbatim and adds only the arrival-specific obligation:
 
-- after `[rides]_cancel_accept_race.md` lands, `AdvanceStatus` is CAS, so an accept-time evaluation
-  racing a client `PUT /geo/driver/location` cannot duplicate the `driver_arrived` event/broadcast/
-  push — exactly one writer wins;
+- `AdvanceStatus` is now CAS, so an accept-time evaluation racing a client
+  `PUT /geo/driver/location` cannot duplicate the `driver_arrived` event/broadcast/push — exactly
+  one writer wins;
 - `EvaluateArrivalAtAccept` calls the same shared `AdvanceStatus` and **logs and swallows**
   `ErrTransitionConflict` on the arrival path (same failure mode as `EvaluateArrival`,
   `internal/service/arrival.go:82-86`), so a lost race never fails the location update and never
   makes the accept fail (`internal/handler/ride.go:681-696` stays `200`).
 
-**Required regression test owned by this plan (new; not in the rides plan):**
+**Required regression test owned by this plan (new; not in the landed `[rides]` CAS work):**
 accept-time evaluation + concurrent `PUT /geo/driver/location` for the same accepted ride with an
 in-radius fix ⇒ exactly **one** transition, one `ride_events` row, one `ride.updated
 driver_arrived` broadcast, one push; the loser returns `ErrTransitionConflict`, which the arrival
 path logs and swallows; the accept still returns success. The per-edge matrix and the other
-cross-transition cases are covered by the rides plan — reference
-`api_plans/[rides]_cancel_accept_race.md` §1.2 and §5.1 rather than repeating them here.
+cross-transition cases are covered by the landed `[rides]` CAS work (see
+`api_plans/STATUS.md` → Landed `[rides]`) rather than repeating them here.
 
-Mocks move in lockstep with the rides plan, not this one: `tests/testutil/mock_repos.go:627` and
+Mocks moved in lockstep with that `[rides]` work, not this one: `tests/testutil/mock_repos.go:627` and
 the fakes embedding `RideRepository` (`internal/service/ride_completion_fare_test.go:30`,
 `internal/service/destination_test.go:44`, `internal/service/arrival_test.go:66`,
 `internal/service/dispatch_test.go:142`) gain `UpdateRideStatusFrom` there. This plan only requires
@@ -432,11 +430,10 @@ D3=A (§4): `accepted` then `driver_arrived`.
      (`:172`).
 6. **Dependency, not a step: atomic CAS (D5, §5).** Do **not** add a repository method, sentinel,
    handler mapping, or cross-transition tests here. `UpdateRideStatusFrom` +
-   `ErrTransitionConflict` and the `AdvanceStatus` rewrite are delivered by the open chain head
-   `[rides]_cancel_accept_race.md` (§1.1–§1.3, §5.1). Stage `01` starts only after that lands;
-   verify `AdvanceStatus` (`internal/service/ride.go:433-447`) already calls
-   `UpdateRideStatusFrom` and returns the sentinel before side effects, then rely on it from
-   `EvaluateArrivalAtAccept`.
+   `ErrTransitionConflict` and the `AdvanceStatus` rewrite are already landed with the `[rides]`
+   CAS work (`api_plans/STATUS.md` → Landed `[rides]`). Implementation may start now; verify
+   `AdvanceStatus` (`internal/service/ride.go:587-608`) already calls `UpdateRideStatusFrom` and
+   returns the sentinel before side effects, then rely on it from `EvaluateArrivalAtAccept`.
 7. **Accept handler:** no response-shape change; the HTTP accept keeps `200
    {"message":"ride accepted"}` (`internal/handler/ride.go:681-696`). This demonstrates the
    evaluation is not a handler concern.
@@ -478,11 +475,12 @@ D3=A (§4): `accepted` then `driver_arrived`.
   accept-time evaluator and a concurrent `PUT /geo/driver/location` for the same accepted ride with
   an in-radius fix. Assert **exactly one** `accepted → driver_arrived` transition, one
   `ride_events` row, one `ride.updated driver_arrived` broadcast, and one push; the loser returns
-  `ErrTransitionConflict` from the rides plan's CAS, the arrival path logs and swallows it, and the
+  `ErrTransitionConflict` from the landed `[rides]` CAS, the arrival path logs and swallows it, and the
   accept still returns success (`200`). Test at service level with a barrier/`await` (never by
   sleeping) and end-to-end through `tests/arrival_geofence_test.go`.
   The general cross-transition lost-race matrix (in_progress, completed, cancels, illegal edges)
-  belongs to `api_plans/[rides]_cancel_accept_race.md` §1.2/§5.1 — do not re-declare it here.
+  belongs to the landed `[rides]` CAS work (`api_plans/STATUS.md` → Landed `[rides]`) — do not
+  re-declare it here.
 - **Handler/end-to-end (`tests/arrival_geofence_test.go`).** The existing harness boots the real
   router with mock repos.
   - `POST /api/v1/driver/rides/:id/accept` for a pending ride whose mocked last fix is inside
@@ -498,7 +496,7 @@ D3=A (§4): `accepted` then `driver_arrived`.
     derived).
   - Existing `TestLivenessWindowBindsInPostgres` remains the pattern for DB-only assertions.
   - The `UpdateRideStatusFrom` integration tests (stale expected status, `no_driver_available`,
-    concurrent CAS) are part of `[rides]_cancel_accept_race.md` §5.4, not this plan.
+    concurrent CAS) are part of `[rides] cancel/accept race (STATUS.md → Landed [rides])` §5.4, not this plan.
 - **Regression:** all existing `arrival_*` suites must pass unchanged (the PUT path still
   advances and still reports the additive nearby fields); `GET /drivers/:id/location` JSON must
   not gain `updated_at`/`age_s` (both are `json:"-"`), pinned by the existing location handler
@@ -551,20 +549,20 @@ D3=A (§4): `accepted` then `driver_arrived`.
    rejected in §4.
 4. **D4 = A — arrive-only entry point.** `EvaluateArrivalAtAccept`; never `ride.nearby`, never
    touches nearby hysteresis state (including `forgetNearState`).
-5. **D5 = A — atomic CAS behavior (owned by `[rides]_cancel_accept_race.md`, adopted here).**
-   The human approved the CAS semantics, but the canonical symbols live in that open chain head:
+5. **D5 = A — atomic CAS behavior (landed with `[rides]`, adopted here).**
+   The human approved the CAS semantics, and the canonical symbols are now landed:
    `UpdateRideStatusFrom(rideID string, expectedFrom []string, status string, timestamp *time.Time)
    (updated bool, err error)` used by `AdvanceStatus`, loser returns `ErrTransitionConflict` (409)
    with no event/broadcast/push/completion side effects. This plan adds neither the method nor the
-   sentinel and does not repeat the cross-transition table (rides plan §1.2, §5.1). Stage `01`
-   cannot land before that plan; its only CAS obligation is the accept-time-evaluation + concurrent
+   sentinel and does not repeat the cross-transition table (see `api_plans/STATUS.md` → Landed
+   `[rides]`). Its only CAS obligation is the accept-time-evaluation + concurrent
    `PUT /geo/driver/location` single-transition test in §9.
 6. **D6 = B — no `model.DriverFix`.** `NearbyDriverResult` gains `UpdatedAt` (`db:"updated_at"`)
    and `AgeS` (`db:"age_s"`); `GetDriverLocation` is extended, not duplicated.
 
-**Remaining open: none at the product/decision level.** The plan is decision-complete; the only
-open items are sequencing and implementation — it **cannot land before**
-`[rides]_cancel_accept_race.md` (the CAS owner), and every step in §8 is still unstarted.
+**Remaining open: none at the product/decision level.** The plan is decision-complete and its
+`[rides]` CAS prerequisite is now landed; the only open items are implementation — every step in
+§8 is still unstarted.
 
 ---
 
@@ -586,7 +584,7 @@ open items are sequencing and implementation — it **cannot land before**
   (`internal/repository/ride_repo.go:299-325`, interface `:25`) has no status precondition; two
   concurrent `AdvanceStatus` calls can both emit `driver_arrived`. The CAS fix
   (`UpdateRideStatusFrom` + `ErrTransitionConflict`) is owned by
-  `[rides]_cancel_accept_race.md` §1.1–§1.2; this plan depends on it and adds only the accept-time
+  `[rides] cancel/accept race (STATUS.md → Landed [rides])` §1.1–§1.2; this plan depends on it and adds only the accept-time
   race test (§9).
 - **The accepted broadcast is at the end of `AcceptRide`** (`dispatch.go:479-480`); under D3=A
   the accept-time evaluation follows it, preserving `accepted → driver_arrived` ordering.
