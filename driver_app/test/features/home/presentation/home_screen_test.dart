@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:dio/dio.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
@@ -265,6 +267,81 @@ void main() {
 
     expect(find.byType(TripScreen), findsOneWidget);
   });
+
+  testWidgets(
+    'a lost accept 200 with a WS accepted leaves the trip route, not the '
+    'offer sheet, on top',
+    (tester) async {
+      // Regression (final adversarial review): with the POST still outstanding,
+      // the WS `ride.updated accepted` cleared the offer while Home pushed
+      // `/trip`. The sheet deferred the clear because `_accepting`, then the
+      // 10 s failure path popped the *top* route (`/trip`) and left the sheet
+      // trapped with Accept blocked and Pass on a null offer id.
+      final accept = Completer<Response<dynamic>>();
+      when(
+        () => mockDio.post(ApiEndpoints.driverRideAccept('r1')),
+      ).thenAnswer((_) => accept.future);
+      when(() => mockDio.get(ApiEndpoints.driverRideById('r1'))).thenAnswer(
+        (_) async => Response(
+          requestOptions: RequestOptions(
+            path: ApiEndpoints.driverRideById('r1'),
+          ),
+          statusCode: 200,
+          data: {
+            'ride': {
+              'id': 'r1',
+              'rider_id': 'u1',
+              'status': 'pending',
+              'pickup_lat': 9.93,
+              'pickup_lng': -84.08,
+              'pickup_address': 'Central Park',
+              'dropoff_lat': 9.95,
+              'dropoff_lng': -84.1,
+              'dropoff_address': 'Airport',
+            },
+          },
+        ),
+      );
+
+      await pumpHome(tester);
+      rideState.onWsEvent(
+        WsEvent(type: WsEventType.offer, data: {'ride_id': 'r1'}),
+      );
+      await tester.pumpAndSettle();
+      expect(find.byType(OfferSheet), findsOneWidget);
+
+      await tester.tap(find.text('Accept'));
+      await tester.pump();
+
+      // The server committed and broadcast the accepted ride, but the POST's
+      // 200 is still outstanding (ultimately lost). The sheet must close now,
+      // before or under Home's post-frame `/trip` push.
+      holdRide();
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 300));
+      await tester.pump();
+
+      expect(find.byType(TripScreen), findsOneWidget);
+      expect(find.byType(OfferSheet), findsNothing);
+      expect(find.text('Offer expired'), findsNothing);
+      expect(find.text('Accept'), findsNothing);
+      expect(find.text('Pass'), findsNothing);
+
+      // The Dio timeout/failure lands later: it must not pop `/trip`, repaint
+      // `Offer expired`, or show a failure over the committed accept.
+      accept.completeError(Exception('receive timeout'));
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 300));
+
+      expect(find.byType(TripScreen), findsOneWidget);
+      expect(find.byType(OfferSheet), findsNothing);
+      expect(find.text('Offer expired'), findsNothing);
+      expect(find.text('Could not accept. Please try again.'), findsNothing);
+      expect(find.byKey(const Key('offer-dismiss-button')), findsNothing);
+      expect(rideState.state.currentRide!.id, 'r1');
+      expect(rideState.state.currentRide!.status, 'accepted');
+    },
+  );
 
   testWidgets(
     'an offer opens the sheet even when the profile cache says offline',

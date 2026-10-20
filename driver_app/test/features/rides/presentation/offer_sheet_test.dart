@@ -685,6 +685,118 @@ void main() {
   );
 
   testWidgets(
+    'a WS accepted removes the presented sheet route, never a trip route on '
+    'top of it',
+    (tester) async {
+      await seedOffer(tester, 'r1');
+      stubRide();
+      await pumpSheet(tester);
+      await tester.pump();
+
+      // Home pushes `/trip` above the open sheet on the post-frame after the
+      // WS accepted arrives. The sheet's route is no longer current.
+      final navigator = Navigator.of(tester.element(find.byType(OfferSheet)));
+      unawaited(
+        navigator.push(
+          MaterialPageRoute<void>(
+            builder: (_) =>
+                const Scaffold(body: Text('Trip screen')),
+          ),
+        ),
+      );
+      await tester.pumpAndSettle();
+      expect(find.text('Trip screen'), findsOneWidget);
+
+      events.add(
+        WsEvent(
+          type: WsEventType.updated,
+          data: {
+            'ride_id': 'r1',
+            'status': 'accepted',
+            'pickup': {'lat': 9.93, 'lng': -84.08, 'address': 'Central Park'},
+            'dropoff': {'lat': 9.95, 'lng': -84.10, 'address': 'Airport'},
+          },
+        ),
+      );
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 300));
+
+      // The trip route survives; the sheet's own route was removed instead of
+      // popping the top route.
+      expect(find.text('Trip screen'), findsOneWidget);
+      expect(find.text('Trip accepted'), findsOneWidget);
+      expect(find.text('Offer expired'), findsNothing);
+
+      // Leaving the trip lands on the harness home, not a trapped sheet.
+      navigator.pop();
+      await tester.pumpAndSettle();
+      expect(find.text('open'), findsOneWidget);
+      expect(find.byType(OfferSheet), findsNothing);
+
+      notifier.beginAccept(); // cancel the outstanding offer deadline timer
+      await drainModalTimers(tester);
+    },
+  );
+
+  testWidgets(
+    'a late WS accepted still closes as accepted after a 404 already cleared '
+    'the offer',
+    (tester) async {
+      await seedOffer(tester, 'r1');
+      stubRide();
+      var calls = 0;
+      when(() => mockRepo.acceptRideHttp('r1')).thenAnswer((_) async {
+        calls++;
+        if (calls == 1) throw Exception('receive timeout');
+        throw OfferExpiredException('no active offer for this ride');
+      });
+      await pumpSheet(tester);
+      await tester.pump();
+
+      // First tap fails retryably: the sheet stays usable and the offer is
+      // still held.
+      await tapAccept(tester);
+      await tester.pump();
+      expect(find.text('Accept'), findsOneWidget);
+      expect(notifier.state.offeredRideId, 'r1');
+
+      // Second tap answers 404: the offer is cleared and the sheet pins itself
+      // to `Trip no longer available`.
+      await tapAccept(tester);
+      await tester.pump();
+      expect(notifier.state.offeredRideId, isNull);
+      expect(find.text('Trip no longer available'), findsOneWidget);
+
+      // The server had committed after all. With the offered id already null,
+      // only the held-ride listener can recover the accept.
+      events.add(
+        WsEvent(
+          type: WsEventType.updated,
+          data: {
+            'ride_id': 'r1',
+            'status': 'accepted',
+            'pickup': {'lat': 9.93, 'lng': -84.08, 'address': 'Central Park'},
+            'dropoff': {'lat': 9.95, 'lng': -84.10, 'address': 'Airport'},
+          },
+        ),
+      );
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 300));
+
+      expect(find.byType(OfferSheet), findsNothing);
+      expect(find.text('Offer expired'), findsNothing);
+      expect(find.text('Trip no longer available'), findsNothing);
+      expect(find.byKey(const Key('offer-dismiss-button')), findsNothing);
+      expect(find.text('Trip accepted'), findsOneWidget);
+      expect(notifier.state.currentRide!.status, 'accepted');
+      expect(notifier.state.currentRide!.pickupLat, 9.93);
+      verify(() => mockRepo.acceptRideHttp('r1')).called(2);
+
+      await drainModalTimers(tester);
+    },
+  );
+
+  testWidgets(
     'a pre-200 close deferred by an in-flight accept applies once when the '
     'POST fails without committing',
     (tester) async {

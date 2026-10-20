@@ -53,10 +53,15 @@ class _OfferSheetState extends ConsumerState<OfferSheet> {
   bool _clearWhileAccepting = false;
   String? _clearWhileAcceptingMessage;
 
-  /// This sheet owns the pop: set immediately before `adoptRide`/`clearRide`
-  /// on the post-200 paths, so the offered-id listener stands down and cannot
-  /// repaint the sheet as expired during the exit animation.
+  /// This sheet owns the close: set immediately before `adoptRide`/`clearRide`
+  /// on the post-200 and WS-confirmed paths, so the listeners stand down and
+  /// cannot repaint the sheet as expired during the exit animation.
   bool _postAcceptClose = false;
+
+  /// The sheet route has already been dismissed. Guards the post-200 read and
+  /// the accept failure handler from popping a second route (or showing a
+  /// failure SnackBar) after the WS confirmed the accept first.
+  bool _closed = false;
 
   int _loadFailures = 0;
   bool _triedCurrentFallback = false;
@@ -180,8 +185,18 @@ class _OfferSheetState extends ConsumerState<OfferSheet> {
       _clearWhileAccepting = false;
       _clearWhileAcceptingMessage = null;
       _cancelCountdown();
+      // The WS may already have confirmed this accept and closed the sheet
+      // while the POST was outstanding; the held ride is adopted, so do not
+      // re-read or pop anything else.
+      if (_postAcceptClose) return;
       await _loadAcceptedRide(rideId);
     } on OfferExpiredException catch (e) {
+      if (_postAcceptClose) return;
+      // A 404/409 can race a server-confirmed assignment (the POST was retried
+      // after a lost response). The held accepted ride is the truthful
+      // outcome; only a genuine no-offer result pins `Trip no longer
+      // available`.
+      if (_closeAsAcceptedFromServerUpdate()) return;
       // Pin the user-facing copy before clearing the offer: the offered-id
       // listener runs synchronously and would otherwise paint the raw API
       // sentence first (and `_expireNow` is idempotent).
@@ -196,6 +211,7 @@ class _OfferSheetState extends ConsumerState<OfferSheet> {
       // ride is the one truthful outcome; never show a failure or expire over
       // it. This also covers a clear that arrived while `_accepting` only
       // deferred (no commit) unless the WS has since confirmed the accept.
+      if (_closed || _postAcceptClose) return;
       if (_closeAsAcceptedFromServerUpdate()) return;
       _showMessage('Could not accept. Please try again.');
       // The offer may have closed while the POST was in flight (rider cancel,
@@ -296,8 +312,9 @@ class _OfferSheetState extends ConsumerState<OfferSheet> {
   /// `Offer expired`. Close once, as accepted, and never re-POST.
   ///
   /// Returns true when this helper owns the close. A genuine clear with no
-  /// accepted held ride still falls through to the explicit Dismiss (bug #20),
-  /// and the direct 404/409 path never reaches this helper.
+  /// accepted held ride still falls through to the explicit Dismiss (bug #20).
+  /// The 404/409 path also consults this helper, because a retried POST can
+  /// race a server-confirmed assignment.
   bool _closeAsAcceptedFromServerUpdate() {
     final ride = ref.read(rideStateProvider).currentRide;
     // A server-confirmed accepted ride always carries the pickup coordinates;
@@ -336,22 +353,43 @@ class _OfferSheetState extends ConsumerState<OfferSheet> {
     });
   }
 
+  /// Dismisses **this sheet's** route, never the top route.
+  ///
+  /// Home pushes `/trip` on the post-frame after the WS accepted arrives, and
+  /// the sheet's close can run after that push: a plain `Navigator.pop()` would
+  /// then pop `/trip` and leave the trapped sheet on screen. When the sheet's
+  /// modal route is no longer current (a trip route is above it), remove that
+  /// route directly instead.
+  void _dismissSheetRoute() {
+    final route = ModalRoute.of(context);
+    final navigator = Navigator.of(context);
+    if (route == null) {
+      navigator.pop();
+      return;
+    }
+    if (route.isCurrent) {
+      navigator.pop();
+    } else if (route.isActive) {
+      navigator.removeRoute(route);
+    }
+  }
+
   void _closeAsAccepted() {
-    if (!mounted) return;
-    Navigator.of(context).pop();
-    ScaffoldMessenger.of(
-      context,
-    ).showSnackBar(const SnackBar(content: Text('Trip accepted')));
+    if (!mounted || _closed) return;
+    _closed = true;
+    final messenger = ScaffoldMessenger.of(context);
+    _dismissSheetRoute();
+    messenger.showSnackBar(const SnackBar(content: Text('Trip accepted')));
   }
 
   /// Closes the sheet after a committed accept that turned out to be terminal
   /// (or not this driver's). No "Trip accepted" claim.
   void _closeAsEnded(String message) {
-    if (!mounted) return;
-    Navigator.of(context).pop();
-    ScaffoldMessenger.of(
-      context,
-    ).showSnackBar(SnackBar(content: Text(message)));
+    if (!mounted || _closed) return;
+    _closed = true;
+    final messenger = ScaffoldMessenger.of(context);
+    _dismissSheetRoute();
+    messenger.showSnackBar(SnackBar(content: Text(message)));
   }
 
   void _showMessage(String message) {
@@ -378,6 +416,21 @@ class _OfferSheetState extends ConsumerState<OfferSheet> {
 
   @override
   Widget build(BuildContext context) {
+    // A server-confirmed accepted ride for the presented offer is the committed
+    // accept, whether or not the offer id is still set. Listening to the ride
+    // (not only the offer) recovers the late case where a retryable failure
+    // left the sheet usable, a later tap answered 404 and cleared the offer,
+    // and only then did `ride.updated accepted` arrive. This runs before the
+    // offered-id listener, so the sheet closes before Home's post-frame
+    // `/trip` push instead of deferring behind `_accepting`.
+    ref.listen<Ride?>(
+      rideStateProvider.select((state) => state.currentRide),
+      (previous, next) {
+        if (!mounted || _postAcceptClose) return;
+        _closeAsAcceptedFromServerUpdate();
+      },
+    );
+
     // An offer ending is not an accidental dismissal. A different live offer
     // replaces this sheet, so close it to stop the two from stacking. The
     // presented offer clearing (the server's own 30 s window, an acceptance
@@ -400,6 +453,12 @@ class _OfferSheetState extends ConsumerState<OfferSheet> {
           Navigator.of(context).pop();
         } else {
           final state = ref.read(rideStateProvider);
+          // The server may have committed and cleared the offer after the
+          // accept POST failed retryably (or before its `200` arrived). A held
+          // accepted ride for this sheet is the one truthful outcome. Checked
+          // *before* `_accepting`: a WS-confirmed accept must close now, not
+          // wait for the POST failure while Home pushes `/trip` above it.
+          if (_closeAsAcceptedFromServerUpdate()) return;
           if (_accepting) {
             // A close between the tap and the `200` must not pre-empt the
             // committed accept's Retry (or paint over it). Remember it: the
@@ -408,10 +467,6 @@ class _OfferSheetState extends ConsumerState<OfferSheet> {
             _clearWhileAcceptingMessage = state.offerClosedMessage;
             return;
           }
-          // The server may have committed and cleared the offer after the
-          // accept POST failed retryably (or before its `200` arrived). A held
-          // accepted ride for this sheet is the one truthful outcome.
-          if (_closeAsAcceptedFromServerUpdate()) return;
           _expireNow(message: state.offerClosedMessage);
         }
       },
