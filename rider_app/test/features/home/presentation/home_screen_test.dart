@@ -1435,6 +1435,186 @@ void main() {
     },
   );
 
+  // D5 no-trackpad-competition invariant: the handle's drag recognizer is
+  // mouse-only. Trackpad drags stay with the sheet's scrollable, so deleting
+  // `supportedDevices` must fail here rather than silently re-introducing two
+  // competing recognizers.
+  testWidgets('the sheet handle only accepts mouse pointers', (
+    WidgetTester tester,
+  ) async {
+    debugDefaultTargetPlatformOverride = TargetPlatform.linux;
+    addTearDown(() => debugDefaultTargetPlatformOverride = null);
+
+    await pumpHome(
+      tester,
+      pickup: pickupPlace,
+      destination: destinationPlace,
+      surface: resizeSurface,
+    );
+
+    final handle = tester.widget<GestureDetector>(
+      find.byKey(const ValueKey<String>('home-sheet-handle')),
+    );
+    expect(handle.supportedDevices, const <PointerDeviceKind>{
+      PointerDeviceKind.mouse,
+    });
+    // The mouse path is active on desktop, so the recognizer exists to filter.
+    expect(handle.onVerticalDragStart, isNotNull);
+    expect(handle.onVerticalDragCancel, isNotNull);
+    debugDefaultTargetPlatformOverride = null;
+  });
+
+  testWidgets('a cancelled handle drag settles on a snap point', (
+    WidgetTester tester,
+  ) async {
+    debugDefaultTargetPlatformOverride = TargetPlatform.linux;
+    addTearDown(() => debugDefaultTargetPlatformOverride = null);
+
+    await pumpHome(
+      tester,
+      pickup: pickupPlace,
+      destination: destinationPlace,
+      surface: resizeSurface,
+    );
+
+    final sheet = sheetWidget(tester);
+    final snaps = <double>[
+      sheet.minChildSize,
+      sheet.initialChildSize,
+      sheet.maxChildSize,
+    ];
+    final initial = sheet.initialChildSize;
+
+    // Grow the panel mid-drag, then cancel the pointer as if it left the
+    // window. Flutter delivers a post-threshold cancel through the drag-end
+    // callback, so this pins that a cancelled pointer still settles on a snap
+    // instead of leaving the panel stranded between snap points.
+    final gesture = await tester.startGesture(
+      tester.getCenter(find.byKey(const ValueKey<String>('home-sheet-handle'))),
+      kind: PointerDeviceKind.mouse,
+    );
+    await gesture.moveBy(const Offset(0, -100));
+    await tester.pump();
+    expect(sheetSize(tester), greaterThan(initial));
+
+    await gesture.cancel();
+    await tester.pumpAndSettle();
+
+    expect(tester.takeException(), isNull);
+    final settled = sheetSize(tester);
+    expect(
+      snaps.any((snap) => (settled - snap).abs() < 0.01),
+      isTrue,
+      reason: 'a cancelled drag settled at $settled, not a snap point $snaps',
+    );
+    debugDefaultTargetPlatformOverride = null;
+  });
+
+  // The pointer-cancel callback itself: once the drag has been accepted,
+  // Flutter reports a `PointerCancelEvent` as the drag-end callback, so the
+  // `onVerticalDragCancel` branch it guards can be reached only by invoking it
+  // directly. It must run the same settle and must not throw.
+  testWidgets('the drag-cancel callback settles a live drag on a snap point', (
+    WidgetTester tester,
+  ) async {
+    debugDefaultTargetPlatformOverride = TargetPlatform.linux;
+    addTearDown(() => debugDefaultTargetPlatformOverride = null);
+
+    await pumpHome(
+      tester,
+      pickup: pickupPlace,
+      destination: destinationPlace,
+      surface: resizeSurface,
+    );
+
+    final sheet = sheetWidget(tester);
+    final snaps = <double>[
+      sheet.minChildSize,
+      sheet.initialChildSize,
+      sheet.maxChildSize,
+    ];
+    final initial = sheet.initialChildSize;
+    final handleFinder = find.byKey(
+      const ValueKey<String>('home-sheet-handle'),
+    );
+
+    final gesture = await tester.startGesture(
+      tester.getCenter(handleFinder),
+      kind: PointerDeviceKind.mouse,
+    );
+    await gesture.moveBy(const Offset(0, -100));
+    await tester.pump();
+    expect(sheetSize(tester), greaterThan(initial));
+
+    final cancel = tester
+        .widget<GestureDetector>(handleFinder)
+        .onVerticalDragCancel;
+    expect(cancel, isNotNull);
+    cancel!();
+    await gesture.cancel();
+    await tester.pumpAndSettle();
+
+    expect(tester.takeException(), isNull);
+    final settled = sheetSize(tester);
+    expect(
+      snaps.any((snap) => (settled - snap).abs() < 0.01),
+      isTrue,
+      reason: 'a cancelled drag settled at $settled, not a snap point $snaps',
+    );
+    debugDefaultTargetPlatformOverride = null;
+  });
+
+  testWidgets('a mouse fling up snaps up and a fling down snaps down', (
+    WidgetTester tester,
+  ) async {
+    debugDefaultTargetPlatformOverride = TargetPlatform.linux;
+    addTearDown(() => debugDefaultTargetPlatformOverride = null);
+
+    await pumpHome(
+      tester,
+      pickup: pickupPlace,
+      destination: destinationPlace,
+      surface: resizeSurface,
+    );
+
+    final sheet = sheetWidget(tester);
+    final initial = sheet.initialChildSize;
+    final min = sheet.minChildSize;
+    final max = sheet.maxChildSize;
+    final handle = find.byKey(const ValueKey<String>('home-sheet-handle'));
+
+    // An upward fling from the opening size lands on the next snap above it.
+    await tester.flingFrom(
+      tester.getCenter(handle),
+      const Offset(0, -100),
+      1000,
+      deviceKind: PointerDeviceKind.mouse,
+    );
+    await tester.pumpAndSettle();
+    expect(sheetSize(tester), closeTo(max, 0.01));
+
+    // A downward fling from max lands on the next snap below it.
+    await tester.flingFrom(
+      tester.getCenter(handle),
+      const Offset(0, 100),
+      1000,
+      deviceKind: PointerDeviceKind.mouse,
+    );
+    await tester.pumpAndSettle();
+    expect(sheetSize(tester), closeTo(initial, 0.01));
+
+    // A downward fling from the opening size reaches the handle-only minimum.
+    await tester.flingFrom(
+      tester.getCenter(handle),
+      const Offset(0, 100),
+      1000,
+      deviceKind: PointerDeviceKind.mouse,
+    );
+    await tester.pumpAndSettle();
+    expect(sheetSize(tester), closeTo(min, 0.01));
+    debugDefaultTargetPlatformOverride = null;
+  });
+
   testWidgets('the mouse grabber is inert on Android and touch still resizes', (
     WidgetTester tester,
   ) async {
