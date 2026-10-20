@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:dio/dio.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_map/flutter_map.dart';
@@ -595,6 +597,290 @@ void main() {
     expect(find.text('Home'), findsOneWidget);
     // A driver-side cancel is a cancel: keep the pickup for a retry.
     expect(container.read(pickupMemoryProvider).restoreOnHome, isTrue);
+
+    await settleAndDispose(tester);
+  });
+
+  testWidgets('a second cancel tap while the POST is in flight posts exactly once',
+      (WidgetTester tester) async {
+    fixture();
+    final gate = Completer<void>();
+    var cancelPosts = 0;
+    dioAdapter.onPost(
+      '/api/v1/rides/ride-1/cancel',
+      (server) => server.replyCallbackAsync(200, (_) async {
+        cancelPosts++;
+        await gate.future;
+        return {'ride': {'id': 'ride-1', 'status': 'cancelled'}};
+      }),
+    );
+    emit(acceptedEvent());
+
+    await tester.pumpWidget(buildRouter());
+    await tester.pump();
+
+    // Two taps in the same frame: the first installs the guard synchronously
+    // before the `showDialog` await, so the second cannot stack a dialog.
+    await tester.tap(find.text('Cancel Ride'));
+    await tester.tap(find.text('Cancel Ride'));
+    await tester.pump();
+
+    expect(
+      find.text('Cancel this ride?'),
+      findsOneWidget,
+      reason: 'only one confirmation dialog may ever appear',
+    );
+
+    await tester.tap(find.text('Yes, Cancel'));
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 10));
+    expect(cancelPosts, 1);
+
+    // The POST is parked. Both entry points share the guard: the button is
+    // disabled, and the back arrow's `_cancelRide` early-returns.
+    await tester.tap(find.byType(AppBackButton));
+    await tester.pump();
+    expect(find.text('Cancel this ride?'), findsNothing);
+    expect(cancelPosts, 1);
+
+    gate.complete();
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 10));
+    await tester.pump();
+
+    expect(cancelPosts, 1, reason: 'one confirmed cancel, one POST');
+    expect(find.text('Ride cancelled successfully'), findsOneWidget);
+    expect(find.text('Home'), findsOneWidget);
+
+    await settleAndDispose(tester);
+  });
+
+  testWidgets(
+    'the Cancel Ride button is disabled while the cancel POST is in flight',
+    (WidgetTester tester) async {
+      fixture();
+      final gate = Completer<void>();
+      var cancelPosts = 0;
+      dioAdapter.onPost(
+        '/api/v1/rides/ride-1/cancel',
+        (server) => server.replyCallbackAsync(200, (_) async {
+          cancelPosts++;
+          await gate.future;
+          return {'ride': {'id': 'ride-1', 'status': 'cancelled'}};
+        }),
+      );
+      emit(acceptedEvent());
+
+      await tester.pumpWidget(buildRouter());
+      await tester.pump();
+
+      AppButton cancelButton() => tester.widget<AppButton>(
+            find.widgetWithText(AppButton, 'Cancel Ride'),
+          );
+      expect(cancelButton().onPressed, isNotNull);
+
+      await tester.tap(find.text('Cancel Ride'));
+      await tester.pump();
+      // The busy flag is set before the dialog opens.
+      expect(cancelButton().onPressed, isNull);
+
+      await tester.tap(find.text('Yes, Cancel'));
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 10));
+      expect(cancelPosts, 1);
+      expect(cancelButton().onPressed, isNull);
+
+      gate.complete();
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 10));
+      await tester.pump();
+
+      // After completion the screen leaves home rather than re-enabling on a
+      // dead trip.
+      expect(find.text('Home'), findsOneWidget);
+
+      await settleAndDispose(tester);
+    },
+  );
+
+  testWidgets(
+    'a 200 cancel and the WS cancelled echo show one success SnackBar',
+    (WidgetTester tester) async {
+      fixture();
+      final gate = Completer<void>();
+      var cancelPosts = 0;
+      dioAdapter.onPost(
+        '/api/v1/rides/ride-1/cancel',
+        (server) => server.replyCallbackAsync(200, (_) async {
+          cancelPosts++;
+          await gate.future;
+          return {'ride': {'id': 'ride-1', 'status': 'cancelled'}};
+        }),
+      );
+      emit(acceptedEvent());
+
+      await tester.pumpWidget(buildRouter());
+      await tester.pump();
+
+      await tester.tap(find.text('Cancel Ride'));
+      await tester.pump();
+      await tester.tap(find.text('Yes, Cancel'));
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 10));
+      expect(cancelPosts, 1);
+
+      // The server's own `ride.updated cancelled` echo wins the race while the
+      // POST is still parked. It must acknowledge and leave once; the POST's
+      // later 200 must not add a second SnackBar or navigation.
+      await emitAndSettle(tester, {
+        'type': 'ride.updated',
+        'data': {
+          'ride_id': 'ride-1',
+          'status': 'cancelled',
+          'cancelled_by': 'rider',
+        },
+      });
+
+      expect(find.text('Home'), findsOneWidget);
+      expect(
+        find.text('Ride cancelled successfully'),
+        findsOneWidget,
+        reason: 'one cancellation must be acknowledged once',
+      );
+
+      gate.complete();
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 10));
+      await tester.pump();
+
+      expect(cancelPosts, 1);
+      expect(find.text('Ride cancelled successfully'), findsOneWidget);
+
+      await settleAndDispose(tester);
+    },
+  );
+
+  testWidgets('a 404 cancel goes home without a generic error',
+      (WidgetTester tester) async {
+    fixture();
+    dioAdapter.onPost(
+      '/api/v1/rides/ride-1/cancel',
+      (server) => server.reply(404, {
+        'error': {'code': 'NOT_FOUND', 'message': 'ride not found'},
+      }),
+    );
+    emit(acceptedEvent());
+
+    await tester.pumpWidget(buildRouter());
+    await tester.pump();
+
+    await tester.tap(find.text('Cancel Ride'));
+    await tester.pump();
+    await tester.tap(find.text('Yes, Cancel'));
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 10));
+    await tester.pump();
+
+    expect(find.text('Home'), findsOneWidget);
+    expect(find.text('ride not found'), findsNothing);
+    expect(find.text('Ride not found'), findsNothing);
+    expect(find.text('Ride cancelled successfully'), findsNothing);
+    // A dead trip view is still a cancel exit: keep the pickup for a retry.
+    expect(container.read(pickupMemoryProvider).restoreOnHome, isTrue);
+
+    await settleAndDispose(tester);
+  });
+
+  testWidgets(
+    'a 409 cancel shows the API message and does not navigate or retry',
+    (WidgetTester tester) async {
+      fixture();
+      var cancelPosts = 0;
+      dioAdapter.onPost(
+        '/api/v1/rides/ride-1/cancel',
+        (server) => server.replyCallback(409, (_) {
+          cancelPosts++;
+          return {
+            'error': {
+              'code': 'CONFLICT',
+              'message': 'ride can no longer be cancelled',
+            },
+          };
+        }),
+      );
+      emit(acceptedEvent());
+
+      await tester.pumpWidget(buildRouter());
+      await tester.pump();
+
+      await tester.tap(find.text('Cancel Ride'));
+      await tester.pump();
+      await tester.tap(find.text('Yes, Cancel'));
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 10));
+      await tester.pump();
+
+      expect(cancelPosts, 1);
+      expect(find.text('ride can no longer be cancelled'), findsOneWidget);
+      expect(find.text('Home'), findsNothing);
+
+      // A 409 is terminal for this action: no automatic re-POST.
+      await tester.pump(const Duration(seconds: 1));
+      await tester.pump();
+      expect(cancelPosts, 1);
+      expect(find.text('Home'), findsNothing);
+
+      await settleAndDispose(tester);
+    },
+  );
+
+  testWidgets('a 500 cancel shows a retryable error and does not navigate',
+      (WidgetTester tester) async {
+    fixture();
+    var cancelPosts = 0;
+    dioAdapter.onPost(
+      '/api/v1/rides/ride-1/cancel',
+      (server) => server.replyCallback(500, (_) {
+        cancelPosts++;
+        return {
+          'error': {'code': 'INTERNAL', 'message': 'failed to cancel ride'},
+        };
+      }),
+    );
+    emit(acceptedEvent());
+
+    await tester.pumpWidget(buildRouter());
+    await tester.pump();
+
+    await tester.tap(find.text('Cancel Ride'));
+    await tester.pump();
+    await tester.tap(find.text('Yes, Cancel'));
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 10));
+    await tester.pump();
+
+    expect(cancelPosts, 1);
+    expect(find.text('failed to cancel ride'), findsOneWidget);
+    expect(find.text('Home'), findsNothing);
+
+    // Drop the error SnackBar (it floats over the sheet's Cancel button), then
+    // a fresh tap must find the guard reset: one new dialog and exactly one
+    // more POST.
+    ScaffoldMessenger.of(tester.element(find.byType(ActiveRideScreen)))
+        .removeCurrentSnackBar();
+    await tester.pump();
+
+    await tester.tap(find.text('Cancel Ride'));
+    await tester.pump();
+    expect(find.text('Cancel this ride?'), findsOneWidget);
+
+    await tester.tap(find.text('Yes, Cancel'));
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 10));
+    await tester.pump();
+
+    expect(cancelPosts, 2);
+    expect(find.text('Home'), findsNothing);
 
     await settleAndDispose(tester);
   });

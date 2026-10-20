@@ -59,6 +59,16 @@ class _ActiveRideScreenState extends ConsumerState<ActiveRideScreen>
   bool _mapReady = false;
   bool _completionHandled = false;
   bool _leaving = false;
+
+  /// One local busy signal for the whole cancel flow: it is set **before**
+  /// `showDialog` so a quick second tap cannot stack another confirmation, and
+  /// it is cleared in `finally`. `RideCreationState.isCancelling` is not usable
+  /// here — it turns true only after confirmation.
+  bool _cancelInFlight = false;
+
+  /// One successful cancellation gets one success SnackBar, whether the signal
+  /// is the POST response or the server's own `ride.updated cancelled` echo.
+  bool _cancelAcknowledged = false;
   String? _detailRequestedFor;
 
   @override
@@ -172,43 +182,81 @@ class _ActiveRideScreenState extends ConsumerState<ActiveRideScreen>
   }
 
   Future<void> _cancelRide() async {
-    final rideId = ref.read(rideStatusProvider).rideId;
-    if (rideId == null) return;
+    // Single-flight across the confirm dialog and the POST. The flag is set
+    // synchronously before the first await; `_leaving` keeps a late tap from
+    // reopening a dialog while the screen is navigating away.
+    if (_cancelInFlight || _leaving) return;
+    setState(() => _cancelInFlight = true);
+    try {
+      final rideId = ref.read(rideStatusProvider).rideId;
+      if (rideId == null) return;
 
-    final confirmed = await showDialog<bool>(
-      context: context,
-      builder: (dialogContext) {
-        return AlertDialog(
-          title: const Text('Cancel this ride?'),
-          content: const Text('Are you sure you want to cancel this ride?'),
-          actions: [
-            TextButton(
-              onPressed: () => Navigator.of(dialogContext).pop(false),
-              child: const Text('Keep Ride'),
-            ),
-            TextButton(
-              onPressed: () => Navigator.of(dialogContext).pop(true),
-              child: const Text('Yes, Cancel'),
-            ),
-          ],
-        );
-      },
-    );
-    if (confirmed != true || !mounted) return;
-
-    await ref.read(rideCreationProvider.notifier).cancelRide(rideId);
-    if (!mounted) return;
-
-    final creationState = ref.read(rideCreationProvider);
-    if (creationState.cancelError != null) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text(creationState.cancelError!)),
+      final confirmed = await showDialog<bool>(
+        context: context,
+        builder: (dialogContext) {
+          return AlertDialog(
+            title: const Text('Cancel this ride?'),
+            content: const Text('Are you sure you want to cancel this ride?'),
+            actions: [
+              TextButton(
+                onPressed: () => Navigator.of(dialogContext).pop(false),
+                child: const Text('Keep Ride'),
+              ),
+              TextButton(
+                onPressed: () => Navigator.of(dialogContext).pop(true),
+                child: const Text('Yes, Cancel'),
+              ),
+            ],
+          );
+        },
       );
-      return;
+      if (confirmed != true || !mounted) return;
+
+      final outcome =
+          await ref.read(rideCreationProvider.notifier).cancelRide(rideId);
+      if (!mounted) return;
+
+      switch (outcome) {
+        case CancelOutcome.success:
+          _acknowledgeCancelled();
+          break;
+        case CancelOutcome.notFound:
+          // "Missing or not yours" has no rider action and is not an outage:
+          // leave the dead trip view without a misleading error.
+          _goHomeAfterCancel();
+          break;
+        case CancelOutcome.conflict:
+          final conflictMessage = ref.read(rideCreationProvider).cancelError ??
+              'Ride can no longer be cancelled';
+          ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(content: Text(conflictMessage)),
+          );
+          break;
+        case CancelOutcome.failed:
+          // Today's 400, 422, 5xx and transport failures stay retryable by a
+          // fresh tap once the guard resets below.
+          final failureMessage = ref.read(rideCreationProvider).cancelError ??
+              'Failed to cancel ride';
+          ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(content: Text(failureMessage)),
+          );
+          break;
+      }
+    } finally {
+      if (mounted) setState(() => _cancelInFlight = false);
     }
-    ScaffoldMessenger.of(context).showSnackBar(
-      const SnackBar(content: Text('Ride cancelled successfully')),
-    );
+  }
+
+  /// One cancellation, one success message and one exit. Both the rider's own
+  /// `200` and the server's `ride.updated cancelled` (driver-initiated, or an
+  /// echo of the rider's POST) call this, so a fast echo cannot double-ack.
+  void _acknowledgeCancelled() {
+    if (!_cancelAcknowledged) {
+      _cancelAcknowledged = true;
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Ride cancelled successfully')),
+      );
+    }
     _goHomeAfterCancel();
   }
 
@@ -648,10 +696,7 @@ class _ActiveRideScreenState extends ConsumerState<ActiveRideScreen>
       } else if (next.status == RideStatus.cancelled) {
         _tracker.stop();
         _tripRoute.stop();
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text('Ride cancelled successfully')),
-        );
-        _goHomeAfterCancel();
+        _acknowledgeCancelled();
       } else {
         // The id can land on any non-terminal transition (arrived, on trip).
         unawaited(_ensureRideDetail());
@@ -920,7 +965,7 @@ class _ActiveRideScreenState extends ConsumerState<ActiveRideScreen>
               label: 'Cancel Ride',
               variant: AppButtonVariant.danger,
               expand: true,
-              onPressed: _cancelRide,
+              onPressed: _cancelInFlight ? null : _cancelRide,
             ),
           ],
         ),

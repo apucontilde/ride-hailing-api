@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
@@ -136,6 +138,55 @@ void main() {
     expect(container.read(pickupMemoryProvider).restoreOnHome, isTrue);
 
     await tester.pump(const Duration(seconds: 5));
+    await tester.pump(const Duration(milliseconds: 1));
+  });
+
+  testWidgets('a second cancel tap while the cancel POST is in flight posts once',
+      (WidgetTester tester) async {
+    dioAdapter.onGet(
+      '/api/v1/rides/current',
+      (server) =>
+          server.reply(200, {'ride': {'id': 'ride-1', 'status': 'pending'}}),
+    );
+    final gate = Completer<void>();
+    var cancelPosts = 0;
+    dioAdapter.onPost(
+      '/api/v1/rides/ride-1/cancel',
+      (server) => server.replyCallbackAsync(200, (_) async {
+        cancelPosts++;
+        await gate.future;
+        return {'ride': {'id': 'ride-1', 'status': 'cancelled'}};
+      }),
+    );
+    await makeMatching(tester);
+
+    await tester.pumpWidget(buildRouter());
+    await tester.pump();
+
+    // First tap starts the POST and parks it on `gate`.
+    await tester.tap(find.text('Cancel request'));
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 10));
+    expect(cancelPosts, 1);
+
+    // Second tap while the request is in flight must be dropped by the existing
+    // `_cancelInFlight` early return.
+    await tester.tap(find.text('Cancel request'));
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 10));
+
+    expect(cancelPosts, 1, reason: 'the second tap must not post again');
+
+    gate.complete();
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 10));
+    await tester.pump();
+
+    expect(cancelPosts, 1);
+    expect(find.text('Home'), findsOneWidget);
+
+    await tester.pump(const Duration(seconds: 5));
+    await tester.pumpWidget(const SizedBox());
     await tester.pump(const Duration(milliseconds: 1));
   });
 

@@ -59,6 +59,68 @@ void main() {
       expect(notifier.state.cancelError, 'Ride cannot be cancelled');
     });
 
+    test('200 returns CancelOutcome.success', () async {
+      dioAdapter.onPost(
+        '/api/v1/rides/ride-1/cancel',
+        (server) => server.reply(200, {
+          'ride': {'id': 'ride-1', 'status': 'cancelled'},
+        }),
+      );
+
+      final outcome = await notifier.cancelRide('ride-1');
+
+      expect(outcome, CancelOutcome.success);
+      expect(notifier.state.isCancelling, isFalse);
+      expect(notifier.state.cancelError, isNull);
+    });
+
+    test('404 returns CancelOutcome.notFound and keeps the API message', () async {
+      dioAdapter.onPost(
+        '/api/v1/rides/ride-1/cancel',
+        (server) => server.reply(404, {
+          'error': {'code': 'NOT_FOUND', 'message': 'ride not found'},
+        }),
+      );
+
+      final outcome = await notifier.cancelRide('ride-1');
+
+      expect(outcome, CancelOutcome.notFound);
+      expect(notifier.state.isCancelling, isFalse);
+      expect(notifier.state.cancelError, 'ride not found');
+    });
+
+    test('409 returns CancelOutcome.conflict', () async {
+      dioAdapter.onPost(
+        '/api/v1/rides/ride-1/cancel',
+        (server) => server.reply(409, {
+          'error': {
+            'code': 'CONFLICT',
+            'message': 'ride can no longer be cancelled',
+          },
+        }),
+      );
+
+      final outcome = await notifier.cancelRide('ride-1');
+
+      expect(outcome, CancelOutcome.conflict);
+      expect(notifier.state.cancelError, 'ride can no longer be cancelled');
+    });
+
+    test('500 returns CancelOutcome.failed', () async {
+      dioAdapter.onPost(
+        '/api/v1/rides/ride-1/cancel',
+        (server) => server.reply(500, {
+          'error': {'code': 'INTERNAL', 'message': 'failed to cancel ride'},
+        }),
+      );
+
+      final outcome = await notifier.cancelRide('ride-1');
+
+      expect(outcome, CancelOutcome.failed);
+      expect(notifier.state.isCancelling, isFalse);
+      expect(notifier.state.cancelError, 'failed to cancel ride');
+    });
+
     test('reset clears cancel state', () async {
       dioAdapter.onPost(
         '/api/v1/rides/ride-1/cancel',

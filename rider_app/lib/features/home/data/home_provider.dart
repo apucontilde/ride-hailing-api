@@ -254,6 +254,13 @@ class RideCreationState {
   }
 }
 
+/// The honest result of one `POST /rides/:id/cancel`, derived from the HTTP
+/// status (mapped `ApiException` first, raw response second).
+///
+/// [cancelError] keeps carrying the API's public `message`; this outcome is the
+/// caller's signal for **what to do**, not another copy of the text.
+enum CancelOutcome { success, notFound, conflict, failed }
+
 class RideCreationNotifier extends StateNotifier<RideCreationState> {
   final ApiClient _apiClient;
   bool _disposed = false;
@@ -341,25 +348,43 @@ class RideCreationNotifier extends StateNotifier<RideCreationState> {
     return null;
   }
 
-  Future<void> cancelRide(String rideId) async {
+  Future<CancelOutcome> cancelRide(String rideId) async {
     state = state.copyWith(isCancelling: true, cancelError: null);
     try {
       await _apiClient.dio.post(ApiEndpoints.cancelRide(rideId));
-      if (_disposed) return;
+      if (_disposed) return CancelOutcome.success;
       state = state.copyWith(isCancelling: false);
+      return CancelOutcome.success;
     } on DioException catch (e) {
-      if (_disposed) return;
+      final mapped = e.error;
+      final statusCode =
+          mapped is ApiException ? mapped.statusCode : e.response?.statusCode;
+      if (_disposed) return _cancelOutcomeForStatus(statusCode);
       state = state.copyWith(
         isCancelling: false,
         cancelError: _errorMessage(e),
       );
+      return _cancelOutcomeForStatus(statusCode);
     } on ApiException catch (e) {
-      if (_disposed) return;
+      if (_disposed) return _cancelOutcomeForStatus(e.statusCode);
       state = state.copyWith(
         isCancelling: false,
         cancelError: e.message,
       );
+      return _cancelOutcomeForStatus(e.statusCode);
     }
+  }
+
+  /// `200` (including an idempotent repeat) is the only success; `404` and `409`
+  /// are the two honest client-visible conflicts, everything else (today's
+  /// `400`, `422`, `5xx`, transport failures with no status) stays retryable as
+  /// a generic failure.
+  static CancelOutcome _cancelOutcomeForStatus(int? statusCode) {
+    return switch (statusCode) {
+      404 => CancelOutcome.notFound,
+      409 => CancelOutcome.conflict,
+      _ => CancelOutcome.failed,
+    };
   }
 
   void reset() {
