@@ -67,7 +67,6 @@ class DriverWebSocketService {
   Future<void> connect({required String token}) => _inner.connect(token: token);
   Future<void> disconnect() => _inner.disconnect();
   bool get isConnected => _inner.isConnected;
-  void acceptOffer(String rideId) => _inner.acceptOffer(rideId);
   void declineOffer(String rideId) => _inner.declineOffer(rideId);
   void ping() => _inner.ping();
   void dispose() => _inner.dispose();

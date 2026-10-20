@@ -63,10 +63,13 @@ class _TripScreenState extends ConsumerState<TripScreen> {
     final position = ref.read(lastPositionProvider);
     final ride = trip.currentRide;
     if (ride == null || position == null) return;
-    final target =
-        ref.read(tripNotifierProvider.notifier).nextWaypoint(trip.stage, ride);
+    final target = ref
+        .read(tripNotifierProvider.notifier)
+        .nextWaypoint(trip.stage, ride);
     if (target == null) return;
-    ref.read(tripNotifierProvider.notifier).fetchRoute(
+    ref
+        .read(tripNotifierProvider.notifier)
+        .fetchRoute(
           fromLat: position.lat,
           fromLng: position.lng,
           toLat: target.lat,
@@ -106,8 +109,8 @@ class _TripScreenState extends ConsumerState<TripScreen> {
         key: const Key('trip-cancel-dialog'),
         title: const Text('Cancel this trip?'),
         content: const Text(
-          'The rider is notified and the trip goes back to dispatch. '
-          'This cannot be undone.',
+          'The rider is notified and the trip is cancelled. '
+          'It will not be offered to another driver. This cannot be undone.',
         ),
         actions: [
           TextButton(
@@ -165,15 +168,16 @@ class _TripScreenState extends ConsumerState<TripScreen> {
         ref.watch(ratedRideStatusProvider(ride?.id ?? '')).valueOrNull ??
             RatingStatus.unknown;
     final ratedRides = ref.watch(ratedRidesProvider);
-    final canRate = ride != null &&
-        ride.id.isNotEmpty &&
-        ratingStatus.canPrompt;
+    final canRate =
+        ride != null && ride.id.isNotEmpty && ratingStatus.canPrompt;
 
     // The ordered itinerary and the immediate next waypoint (map marker + route
     // target). Reading through the notifier keeps the proximity heuristic in one
     // place; the screen rebuilds on the state/position changes below.
     final notifier = ref.read(tripNotifierProvider.notifier);
-    final waypoints = ride == null ? const <TripWaypoint>[] : notifier.waypointsFor(ride);
+    final waypoints = ride == null
+        ? const <TripWaypoint>[]
+        : notifier.waypointsFor(ride);
     final next = ride == null ? null : notifier.nextWaypoint(stage, ride);
 
     // Refetch on GPS moves (collapsed by the 200 m cache), when the target
@@ -187,7 +191,8 @@ class _TripScreenState extends ConsumerState<TripScreen> {
       final prevRide = previous?.currentRide;
       final nextRide = next.currentRide;
       final stageChanged = previous?.stage != next.stage;
-      final destinationChanged = prevRide?.dropoffLat != nextRide?.dropoffLat ||
+      final destinationChanged =
+          prevRide?.dropoffLat != nextRide?.dropoffLat ||
           prevRide?.dropoffLng != nextRide?.dropoffLng ||
           prevRide?.pickupLat != nextRide?.pickupLat ||
           prevRide?.pickupLng != nextRide?.pickupLng;
@@ -199,6 +204,19 @@ class _TripScreenState extends ConsumerState<TripScreen> {
     // guaranteeing the geofence sees a fix after the ride is really accepted.
     ref.listen<RideState>(rideStateProvider, (previous, next) {
       if (next.currentRide?.status == 'accepted') _publishArrivalFix();
+    });
+    // The notifier asks for an exit when the ride is not this driver's trip
+    // (404 cancel, `no_driver_available`); `_finishTrip()` is the single place
+    // that clears the stores and returns Home. Cancel failures are surfaced
+    // once, when the message changes.
+    ref.listen<TripState>(tripNotifierProvider, (previous, next) {
+      if (next.exitRequested) _finishTrip();
+      if (next.cancelError != null &&
+          next.cancelError != previous?.cancelError) {
+        ScaffoldMessenger.of(
+          context,
+        ).showSnackBar(SnackBar(content: Text(next.cancelError!)));
+      }
     });
 
     return PopScope(
@@ -295,8 +313,7 @@ class _MapView extends ConsumerWidget {
     required this.onFit,
   });
 
-  LatLng? get _nextPoint =>
-      next == null ? null : LatLng(next!.lat, next!.lng);
+  LatLng? get _nextPoint => next == null ? null : LatLng(next!.lat, next!.lng);
 
   IconData get _nextIcon {
     if (next == null) return Icons.place;
@@ -315,10 +332,12 @@ class _MapView extends ConsumerWidget {
   /// The road-following points, or an empty list when there is no usable
   /// route (so the straight-line fallback draws instead).
   List<LatLng> get _roadPoints => (route?.polyline ?? const [])
-      .map((p) => LatLng(
+      .map(
+        (p) => LatLng(
             (p['lat'] as num?)?.toDouble() ?? 0,
             (p['lng'] as num?)?.toDouble() ?? 0,
-          ))
+        ),
+      )
       .toList();
 
   @override
@@ -343,17 +362,10 @@ class _MapView extends ConsumerWidget {
           pattern: StrokePattern.dashed(segments: const [12, 8]),
         ),
       if (!useFallback)
-        Polyline(
-          points: road,
-          strokeWidth: 5,
-          color: AppColors.routeReady,
-        ),
+        Polyline(points: road, strokeWidth: 5, color: AppColors.routeReady),
     ];
 
-    final focus = <LatLng>[
-      ?driverPoint,
-      ?nextPoint,
-    ];
+    final focus = <LatLng>[?driverPoint, ?nextPoint];
     final initialCenter = driverPoint ?? const LatLng(9.9281, -84.0907);
     if (focus.length >= 2) {
       // The destination is part of the key so a destination-only `ride.updated`
@@ -369,10 +381,7 @@ class _MapView extends ConsumerWidget {
     final tile = ref.watch(mapTileLayerProvider(tileConfig));
     return FlutterMap(
       mapController: controller,
-      options: MapOptions(
-        initialCenter: initialCenter,
-        initialZoom: 13,
-      ),
+      options: MapOptions(initialCenter: initialCenter, initialZoom: 13),
       children: [
         ?tile,
         PolylineLayer(polylines: polylines),
@@ -565,17 +574,14 @@ class _StageControls extends StatelessWidget {
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.stretch,
               children: [
-                Text(
-                  switch (stage) {
+                Text(switch (stage) {
                     TripStage.pre => 'Waiting for the trip to start',
                     TripStage.enrouteToPickup => 'Drive to the pickup',
                     TripStage.arrived => 'Arrived at the pickup',
                     TripStage.driving => 'Driving to the dropoff',
                     TripStage.post => 'Trip completed',
                     TripStage.cancelled => 'Trip cancelled',
-                  },
-                  style: Theme.of(context).textTheme.headlineSmall,
-                ),
+                }, style: Theme.of(context).textTheme.headlineSmall),
                 const SizedBox(height: 4),
                 _ItineraryList(waypoints: waypoints, next: next),
                 if (route != null && route!.distance > 0) ...[
@@ -616,7 +622,8 @@ class _StageControls extends StatelessWidget {
             ),
           // `pending` has no driver-side transition, and there is nothing to
           // drive at all without a ride.
-          TripStage.pre => ride == null
+          TripStage.pre =>
+            ride == null
               ? const SizedBox.shrink()
               : AppButton(
                   key: const Key('trip-primary-button'),
@@ -624,8 +631,7 @@ class _StageControls extends StatelessWidget {
                   variant: AppButtonVariant.secondary,
                   onPressed: null,
                 ),
-          TripStage.post || TripStage.cancelled =>
-            const SizedBox.shrink(),
+          TripStage.post || TripStage.cancelled => const SizedBox.shrink(),
         },
         const SizedBox(height: 8),
         if (canCancel)
@@ -687,10 +693,7 @@ class _StageControls extends StatelessWidget {
             children: [
               Text(label, style: style),
               if (note != null)
-                Text(
-                  note,
-                  style: Theme.of(context).textTheme.bodySmall,
-                ),
+                Text(note, style: Theme.of(context).textTheme.bodySmall),
             ],
           ),
         ),

@@ -50,18 +50,25 @@ class DriverRating {
 
   factory DriverRating.fromJson(Map<String, dynamic> json) {
     final id = json['id'] as String? ?? '';
-    final rideId = json['ride_id'] as String? ?? json['rideId'] as String? ?? '';
-    final raterRole = json['rater_role'] as String? ?? json['raterRole'] as String? ?? 'rider';
+    final rideId =
+        json['ride_id'] as String? ?? json['rideId'] as String? ?? '';
+    final raterRole =
+        json['rater_role'] as String? ??
+        json['raterRole'] as String? ??
+        'rider';
     final score = (json['score'] as num?)?.toInt() ?? 0;
     final comment = json['comment'] as String?;
-    final createdAtStr = json['created_at'] as String? ?? json['createdAt'] as String?;
+    final createdAtStr =
+        json['created_at'] as String? ?? json['createdAt'] as String?;
     return DriverRating(
       id: id,
       rideId: rideId,
       raterRole: raterRole,
       score: score,
       comment: comment,
-      createdAt: createdAtStr != null ? DateTime.parse(createdAtStr) : DateTime.now(),
+      createdAt: createdAtStr != null
+          ? DateTime.parse(createdAtStr)
+          : DateTime.now(),
     );
   }
 }
@@ -116,24 +123,28 @@ class RidesRepository {
 
   /// Fetch full ride detail for the offer dialog.
   Future<Ride> fetchRide(String id) async {
-    final response = await apiClient.dio.get(
-      ApiEndpoints.driverRideById(id),
-    );
+    final response = await apiClient.dio.get(ApiEndpoints.driverRideById(id));
     final data = response.data as Map<String, dynamic>;
     final rideData = data['ride'] as Map<String, dynamic>? ?? data;
     return Ride.fromJson(rideData);
   }
 
-  /// HTTP fallback accept when the WS is dead.
-  /// Throws [OfferExpiredException] on 409 (offer lost / ride taken).
+  /// Server-confirmed accept (`POST /driver/rides/:id/accept`). Resolves only
+  /// after the assignment committed (200).
+  ///
+  /// 404 (no live offer for this driver) and 409 (ride no longer pending) both
+  /// mean the offer is gone for the driver and throw [OfferExpiredException],
+  /// preserving the API message. 422 is a programming error and, like 5xx /
+  /// network failures, is rethrown so the sheet stays usable and retryable.
   Future<void> acceptRideHttp(String id) async {
     try {
-      await apiClient.dio.post(
-        ApiEndpoints.driverRideAccept(id),
-      );
+      await apiClient.dio.post(ApiEndpoints.driverRideAccept(id));
     } on DioException catch (e) {
-      if (e.response?.statusCode == 409) {
-        throw OfferExpiredException();
+      final status = e.response?.statusCode;
+      if (status == 404 || status == 409) {
+        throw OfferExpiredException(
+          apiErrorMessage(e, 'Offer expired or ride taken'),
+        );
       }
       rethrow;
     }
@@ -144,9 +155,7 @@ class RidesRepository {
   /// `fetchRide` stays ride-only for the offer sheet; this is the trip layer's
   /// itinerary source. Degrades to `[]` when the `stops` key is absent.
   Future<RideItinerary> fetchRideItinerary(String id) async {
-    final response = await apiClient.dio.get(
-      ApiEndpoints.driverRideById(id),
-    );
+    final response = await apiClient.dio.get(ApiEndpoints.driverRideById(id));
     final data = response.data as Map<String, dynamic>;
     final rideData = data['ride'] as Map<String, dynamic>? ?? data;
     return RideItinerary(
@@ -207,7 +216,8 @@ class RidesRepository {
 
   /// Parses the `stops` sibling, ordered by `sequence`; `[]` when absent.
   static List<RideStop> _parseStops(Object? raw) {
-    final stops = (raw as List<dynamic>? ?? const [])
+    final stops =
+        (raw as List<dynamic>? ?? const [])
         .whereType<Map<String, dynamic>>()
         .map(RideStop.fromJson)
         .toList()

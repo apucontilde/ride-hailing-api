@@ -148,8 +148,52 @@ void main() {
     expect(find.text('Drive to the pickup'), findsOneWidget);
   });
 
-  testWidgets('the Home-mount fallback restores a ride the bootstrap did not',
+  testWidgets(
+    'an accept_failed on Home clears the phantom and a later accepted ride '
+    'still pushes /trip',
       (tester) async {
+      await pumpHome(tester);
+
+      // Pre-fix shape: an optimistic accepted placeholder with no coordinates.
+      rideState.onWsEvent(
+        WsEvent(
+          type: WsEventType.updated,
+          data: {'ride_id': 'r1', 'status': 'accepted'},
+        ),
+      );
+      await tester.pumpAndSettle();
+      expect(find.byType(TripScreen), findsOneWidget);
+
+      // Back to Home (a non-terminal trip may be left).
+      tester.state<NavigatorState>(find.byType(Navigator).first).pop();
+      await tester.pumpAndSettle();
+      expect(find.byType(HomeScreen), findsOneWidget);
+
+      rideState.onWsEvent(
+        const WsEvent(
+          type: WsEventType.acceptFailed,
+          data: {
+            'ride_id': 'r1',
+            'code': 'OFFER_EXPIRED',
+            'message': 'Offer expired',
+          },
+        ),
+      );
+      await tester.pumpAndSettle();
+
+      expect(rideState.state.currentRide, isNull);
+      expect(find.byType(TripScreen), findsNothing);
+
+      // The latch reset by the null ride must let a real accepted ride push.
+      holdRide();
+      await tester.pumpAndSettle();
+      expect(find.byType(TripScreen), findsOneWidget);
+    },
+  );
+
+  testWidgets('the Home-mount fallback restores a ride the bootstrap did not', (
+    tester,
+  ) async {
     // This mount happens without `SessionBootstrap.run()` (as in a standalone
     // widget test), so `restoreAttempted` is false and Home's own
     // `_restoreActiveTrip` fetches. In production the bootstrap owns the launch
@@ -367,14 +411,12 @@ void main() {
     );
   });
 
-  testWidgets('going online shows the background-tracking notice once',
-      (tester) async {
+  testWidgets('going online shows the background-tracking notice once', (
+    tester,
+  ) async {
     var opened = 0;
     when(
-      () => mockDio.put(
-        ApiEndpoints.driverMeStatus,
-        data: any(named: 'data'),
-      ),
+      () => mockDio.put(ApiEndpoints.driverMeStatus, data: any(named: 'data')),
     ).thenAnswer(
       (_) async => Response(
         requestOptions: RequestOptions(path: ApiEndpoints.driverMeStatus),
@@ -457,8 +499,9 @@ void main() {
     );
   });
 
-  testWidgets('the permanent-denial banner offers the settings deep-link',
-      (tester) async {
+  testWidgets('the permanent-denial banner offers the settings deep-link', (
+    tester,
+  ) async {
     var opened = 0;
     final deniedContainer = ProviderContainer(
       overrides: [

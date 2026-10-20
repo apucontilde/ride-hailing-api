@@ -6,6 +6,8 @@
 enum WsEventType {
   offer,
   updated,
+  offerClosed, // ride.offer_closed
+  acceptFailed, // ride.accept_failed
   location,
   other;
 
@@ -13,6 +15,8 @@ enum WsEventType {
   static WsEventType fromRaw(String? raw) => switch (raw) {
         'ride.offer' => WsEventType.offer,
         'ride.updated' => WsEventType.updated,
+    'ride.offer_closed' => WsEventType.offerClosed,
+    'ride.accept_failed' => WsEventType.acceptFailed,
         'driver.location' => WsEventType.location,
         _ => WsEventType.other,
       };

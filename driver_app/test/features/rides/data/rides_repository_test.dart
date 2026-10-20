@@ -6,6 +6,7 @@ import 'package:driver_app/core/api/endpoints.dart';
 import 'package:driver_app/features/rides/data/rides_repository.dart';
 
 class MockApiClient extends Mock implements ApiClient {}
+
 class MockDio extends Mock implements Dio {}
 
 void main() {
@@ -22,7 +23,8 @@ void main() {
 
   group('RidesRepository', () {
     test('fetchRide parses full Ride', () async {
-      when(() => mockDio.get(any())).thenAnswer((_) async => Response(
+      when(() => mockDio.get(any())).thenAnswer(
+        (_) async => Response(
         requestOptions: RequestOptions(path: '/api/v1/driver/rides/r1'),
         statusCode: 200,
         data: {
@@ -37,9 +39,10 @@ void main() {
             'dropoff_lng': -84.10,
             'dropoff_address': 'Airport',
             'total_fare': 12.50,
-          }
         },
-      ));
+          },
+        ),
+      );
 
       final ride = await repo.fetchRide('r1');
       expect(ride.id, 'r1');
@@ -48,14 +51,20 @@ void main() {
     });
 
     test('acceptRideHttp throws OfferExpiredException on 409', () async {
-      when(() => mockDio.post(any())).thenThrow(DioException(
-        requestOptions: RequestOptions(path: '/api/v1/driver/rides/r1/accept'),
+      when(() => mockDio.post(any())).thenThrow(
+        DioException(
+          requestOptions: RequestOptions(
+            path: '/api/v1/driver/rides/r1/accept',
+          ),
         response: Response(
-          requestOptions: RequestOptions(path: '/api/v1/driver/rides/r1/accept'),
+            requestOptions: RequestOptions(
+              path: '/api/v1/driver/rides/r1/accept',
+            ),
           statusCode: 409,
           data: {'message': 'Offer expired'},
         ),
-      ));
+        ),
+      );
 
       expect(
         () => repo.acceptRideHttp('r1'),
@@ -63,11 +72,74 @@ void main() {
       );
     });
 
+    test('acceptRideHttp throws OfferExpiredException on 404', () async {
+      when(() => mockDio.post(any())).thenThrow(
+        DioException(
+          requestOptions: RequestOptions(
+            path: '/api/v1/driver/rides/r1/accept',
+          ),
+          error: NotFoundException('no active offer for this ride'),
+          response: Response(
+            requestOptions: RequestOptions(
+              path: '/api/v1/driver/rides/r1/accept',
+            ),
+            statusCode: 404,
+            data: {
+              'error': {
+                'code': 'NOT_FOUND',
+                'message': 'no active offer for this ride',
+              },
+            },
+          ),
+        ),
+      );
+
+      await expectLater(
+        () => repo.acceptRideHttp('r1'),
+        throwsA(
+          isA<OfferExpiredException>().having(
+            (e) => e.message,
+            'message',
+            'no active offer for this ride',
+          ),
+        ),
+      );
+    });
+
+    test('acceptRideHttp rethrows 422 and 500 as retryable failures', () async {
+      for (final status in [422, 500]) {
+        when(() => mockDio.post(any())).thenThrow(
+          DioException(
+            requestOptions: RequestOptions(
+              path: '/api/v1/driver/rides/r1/accept',
+            ),
+            response: Response(
+              requestOptions: RequestOptions(
+                path: '/api/v1/driver/rides/r1/accept',
+              ),
+              statusCode: status,
+              data: {
+                'error': {'code': 'X', 'message': 'nope'},
+              },
+            ),
+          ),
+        );
+
+        await expectLater(
+          () => repo.acceptRideHttp('r1'),
+          throwsA(isA<DioException>()),
+          reason: 'status $status must stay retryable',
+        );
+      }
+    });
+
     group('currentRide', () {
       test('parses the active ride for the launch restore', () async {
-        when(() => mockDio.get(any())).thenAnswer((_) async => Response(
-              requestOptions:
-                  RequestOptions(path: '/api/v1/driver/rides/current'),
+        when(() => mockDio.get(any())).thenAnswer(
+          (_) async => Response(
+            requestOptions: RequestOptions(
+              path: '/api/v1/driver/rides/current',
+            ),
               statusCode: 200,
               data: {
                 'ride': {
@@ -77,9 +149,10 @@ void main() {
                   'pickup_lat': 9.93,
                   'dropoff_lat': 9.95,
                   'total_fare': 7.5,
-                }
               },
-            ));
+            },
+          ),
+        );
 
         final ride = await repo.currentRide();
 
@@ -91,12 +164,15 @@ void main() {
       });
 
       test('returns null when the driver has no active ride', () async {
-        when(() => mockDio.get(any())).thenAnswer((_) async => Response(
-              requestOptions:
-                  RequestOptions(path: '/api/v1/driver/rides/current'),
+        when(() => mockDio.get(any())).thenAnswer(
+          (_) async => Response(
+            requestOptions: RequestOptions(
+              path: '/api/v1/driver/rides/current',
+            ),
               statusCode: 200,
               data: {'ride': null},
-            ));
+          ),
+        );
 
         expect(await repo.currentRide(), isNull);
       });
@@ -112,8 +188,12 @@ void main() {
           );
 
       test('parses the rides and the pagination metadata', () async {
-        when(() => mockDio.get(any(),
-            queryParameters: any(named: 'queryParameters'))).thenAnswer(
+        when(
+          () => mockDio.get(
+            any(),
+            queryParameters: any(named: 'queryParameters'),
+          ),
+        ).thenAnswer(
           (_) async => historyResponse({
             'rides': [
               {
@@ -147,38 +227,54 @@ void main() {
       });
 
       test('sends 1-based page/per_page, not limit/offset', () async {
-        when(() => mockDio.get(any(),
-            queryParameters: any(named: 'queryParameters'))).thenAnswer(
+        when(
+          () => mockDio.get(
+            any(),
+            queryParameters: any(named: 'queryParameters'),
+          ),
+        ).thenAnswer(
           (_) async => historyResponse({'rides': const [], 'total': 0}),
         );
 
         await repo.history(page: 3, perPage: 50);
 
-        verify(() => mockDio.get(
+        verify(
+          () => mockDio.get(
               '/api/v1/driver/rides/history',
               queryParameters: {'page': 3, 'per_page': 50},
-            )).called(1);
+          ),
+        ).called(1);
       });
 
       test('defaults to the first page of 20', () async {
-        when(() => mockDio.get(any(),
-            queryParameters: any(named: 'queryParameters'))).thenAnswer(
+        when(
+          () => mockDio.get(
+            any(),
+            queryParameters: any(named: 'queryParameters'),
+          ),
+        ).thenAnswer(
           (_) async => historyResponse({'rides': const [], 'total': 0}),
         );
 
         await repo.history();
 
-        final captured = verify(() => mockDio.get(captureAny(),
-            queryParameters: captureAny(named: 'queryParameters'))).captured;
+        final captured = verify(
+          () => mockDio.get(
+            captureAny(),
+            queryParameters: captureAny(named: 'queryParameters'),
+          ),
+        ).captured;
         expect(captured[0], '/api/v1/driver/rides/history');
         expect(captured[1], {'page': 1, 'per_page': 20});
       });
 
       test('survives a response with no rides or metadata', () async {
-        when(() => mockDio.get(any(),
-            queryParameters: any(named: 'queryParameters'))).thenAnswer(
-          (_) async => historyResponse(const {}),
-        );
+        when(
+          () => mockDio.get(
+            any(),
+            queryParameters: any(named: 'queryParameters'),
+          ),
+        ).thenAnswer((_) async => historyResponse(const {}));
 
         final page = await repo.history();
 
@@ -191,11 +287,14 @@ void main() {
     });
 
     group('fetchMyRatings', () {
-      void whenGetRatings() => when(() => mockDio.get(
+      void whenGetRatings() =>
+          when(
+            () => mockDio.get(
             any(),
             queryParameters: any(named: 'queryParameters'),
             cancelToken: any(named: 'cancelToken'),
-          )).thenAnswer(
+            ),
+          ).thenAnswer(
             (_) async => Response(
               requestOptions: RequestOptions(path: '/api/v1/driver/ratings'),
               statusCode: 200,
@@ -208,48 +307,56 @@ void main() {
 
         await repo.fetchMyRatings(page: 2, perPage: 50);
 
-        verify(() => mockDio.get(
+        verify(
+          () => mockDio.get(
               '/api/v1/driver/ratings',
               queryParameters: {'page': 2, 'per_page': 50},
               cancelToken: any(named: 'cancelToken'),
-            )).called(1);
+          ),
+        ).called(1);
       });
 
-      test('a ride_id sends the existence filter and no page/per_page',
+      test(
+        'a ride_id sends the existence filter and no page/per_page',
           () async {
         whenGetRatings();
 
-        await repo.fetchMyRatings(rideId: '11111111-1111-1111-1111-111111111111');
+          await repo.fetchMyRatings(
+            rideId: '11111111-1111-1111-1111-111111111111',
+          );
 
-        verify(() => mockDio.get(
+          verify(
+            () => mockDio.get(
               '/api/v1/driver/ratings',
               queryParameters: {
                 'ride_id': '11111111-1111-1111-1111-111111111111',
               },
               cancelToken: any(named: 'cancelToken'),
-            )).called(1);
-      });
+            ),
+          ).called(1);
+        },
+      );
     });
 
     group('rateRide', () {
       setUp(() {
-        when(() => mockDio.post(any(), data: any(named: 'data')))
-            .thenAnswer((_) async => Response(
+        when(() => mockDio.post(any(), data: any(named: 'data'))).thenAnswer(
+          (_) async => Response(
                   requestOptions: RequestOptions(
                     path: '/api/v1/driver/rides/r1/rate',
                   ),
                   statusCode: 200,
                   data: {'message': 'rating submitted'},
-                ));
+          ),
+        );
       });
 
       test('posts the score and the comment', () async {
         await repo.rateRide(rideId: 'r1', score: 5, comment: 'Great rider');
 
-        final captured = verify(() => mockDio.post(
-              captureAny(),
-              data: captureAny(named: 'data'),
-            )).captured;
+        final captured = verify(
+          () => mockDio.post(captureAny(), data: captureAny(named: 'data')),
+        ).captured;
         expect(captured[0], '/api/v1/driver/rides/r1/rate');
         // `score`, not `rating`: the server binds `score` with
         // `binding:"required"`, so a `rating` key would 400.
@@ -260,17 +367,17 @@ void main() {
         await repo.rateRide(rideId: 'r1', score: 3, comment: '   ');
         await repo.rateRide(rideId: 'r1', score: 1);
 
-        final captured = verify(() => mockDio.post(
-              any(),
-              data: captureAny(named: 'data'),
-            )).captured;
+        final captured = verify(
+          () => mockDio.post(any(), data: captureAny(named: 'data')),
+        ).captured;
         expect(captured, [
           {'score': 3},
           {'score': 1},
         ]);
       });
 
-      test('refuses a score outside 1..5 without touching the network',
+      test(
+        'refuses a score outside 1..5 without touching the network',
           () async {
         await expectLater(
           () => repo.rateRide(rideId: 'r1', score: 0),
@@ -282,7 +389,8 @@ void main() {
         );
 
         verifyNever(() => mockDio.post(any(), data: any(named: 'data')));
-      });
+        },
+      );
     });
 
     group('fetchRideItinerary', () {
@@ -341,10 +449,12 @@ void main() {
 
     group('routeEstimate', () {
       test('pins the query params and parses the estimate', () async {
-        when(() => mockDio.get(
+        when(
+          () => mockDio.get(
               ApiEndpoints.navigationRoute,
               queryParameters: any(named: 'queryParameters'),
-            )).thenAnswer(
+          ),
+        ).thenAnswer(
           (_) async => Response(
             requestOptions: RequestOptions(path: ApiEndpoints.navigationRoute),
             statusCode: 200,
@@ -366,7 +476,8 @@ void main() {
           toLng: -84.10,
         );
 
-        verify(() => mockDio.get(
+        verify(
+          () => mockDio.get(
               ApiEndpoints.navigationRoute,
               queryParameters: {
                 'from_lat': 9.93,
@@ -374,7 +485,8 @@ void main() {
                 'to_lat': 9.95,
                 'to_lng': -84.10,
               },
-            )).called(1);
+          ),
+        ).called(1);
         expect(estimate.distanceM, 4200);
         expect(estimate.durationS, 380);
         expect(estimate.isEstimate, isTrue);

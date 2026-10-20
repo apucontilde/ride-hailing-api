@@ -105,27 +105,158 @@ void main() {
     expect(notifier.state.offeredRideId, 'r1');
   });
 
-  test('acceptOffer sends the accept and flips to an accepted placeholder',
-      () async {
+  group('offer lifecycle frames', () {
+    WsEvent offerClosed(String rideId, String reason) => WsEvent(
+      type: WsEventType.offerClosed,
+      data: {'ride_id': rideId, 'reason': reason},
+    );
+
+    WsEvent acceptFailed(String rideId, {String? message}) => WsEvent(
+      type: WsEventType.acceptFailed,
+      data: {'ride_id': rideId, 'code': 'OFFER_EXPIRED', 'message': ?message},
+    );
+
+    void seedPlaceholder({String rideId = 'r1'}) {
+      events.add(updated({'ride_id': rideId, 'status': 'accepted'}));
+    }
+
+    test('ride.offer_closed clears the offer and records the reason', () async {
     events.add(offer('r1'));
     await flush();
 
-    await notifier.acceptOffer();
+      events.add(offerClosed('r1', 'cancelled'));
+      await flush();
 
-    verify(() => mockWs.acceptOffer('r1')).called(1);
     expect(notifier.state.offeredRideId, isNull);
-    expect(notifier.state.offerExpiresAt, isNull);
+      expect(notifier.state.offerClosedReason, 'cancelled');
+      expect(
+        notifier.state.offerClosedMessage,
+        'The rider cancelled this trip.',
+      );
+    });
+
+    test('ride.offer_closed for a different ride is ignored', () async {
+      events.add(offer('r1'));
+      await flush();
+
+      events.add(offerClosed('r2', 'expired'));
+      await flush();
+
+      expect(notifier.state.offeredRideId, 'r1');
+      expect(notifier.state.offerClosedReason, isNull);
+    });
+
+    test('ride.accept_failed clears the phantom ride and keeps it out of '
+        'currentRide', () async {
+      seedPlaceholder();
+      await flush();
+      expect(notifier.state.currentRide!.pickupLat, isNull);
+
+      events.add(acceptFailed('r1', message: 'Offer expired'));
+      await flush();
+
+      expect(notifier.state.currentRide, isNull);
+      expect(notifier.state.offeredRideId, isNull);
+      expect(notifier.state.offerClosedReason, 'accept_failed');
+      expect(notifier.state.offerClosedMessage, 'Offer expired');
+    });
+
+    test(
+      'ride.accept_failed leaves a server-confirmed accepted ride alone',
+      () async {
+        events.add(
+          updated({
+            'ride_id': 'r1',
+            'status': 'accepted',
+            'pickup': {'lat': 9.93, 'lng': -84.08},
+          }),
+        );
+        await flush();
+        expect(notifier.state.currentRide!.pickupLat, 9.93);
+
+        events.add(acceptFailed('r1', message: 'Offer expired'));
+        await flush();
+
+        expect(notifier.state.currentRide!.id, 'r1');
+        expect(notifier.state.currentRide!.status, 'accepted');
+        expect(notifier.state.offeredRideId, isNull);
+      },
+    );
+
+    test(
+      'ride.accept_failed clears the phantom so Home\'s latch can reset',
+      () async {
+        seedPlaceholder();
+        await flush();
+        expect(notifier.state.currentRide, isNotNull);
+
+        events.add(acceptFailed('r1'));
+        await flush();
+
+        expect(notifier.state.currentRide, isNull);
+      },
+    );
+
+    test('the next ride.offer clears the previous offer_closed reason and '
+        'message', () async {
+      events.add(offer('r1'));
+      await flush();
+      notifier.expireOffer(reason: 'expired', message: 'Offer expired');
+      await flush();
+      expect(notifier.state.offerClosedReason, 'expired');
+      expect(notifier.state.offerClosedMessage, 'Offer expired');
+
+      events.add(offer('r2'));
+      await flush();
+
+      expect(notifier.state.offeredRideId, 'r2');
+      expect(notifier.state.offerClosedReason, isNull);
+      expect(notifier.state.offerClosedMessage, isNull);
+    });
+  });
+
+  test('a cancelled ride.updated reaches an offered driver', () async {
+    events.add(offer('r1'));
+    await flush();
+    expect(notifier.state.currentRide, isNull);
+
+    events.add(
+      updated({
+        'ride_id': 'r1',
+        'status': 'cancelled',
+        'cancelled_by': 'rider',
+      }),
+    );
+    await flush();
+
     final ride = notifier.state.currentRide;
     expect(ride, isNotNull);
     expect(ride!.id, 'r1');
-    expect(ride.status, 'accepted');
+    expect(ride.status, 'cancelled');
+    expect(ride.cancelledBy, 'rider');
+    expect(notifier.state.offeredRideId, isNull);
   });
 
-  test('acceptOffer is a no-op with no outstanding offer', () async {
-    await notifier.acceptOffer();
+  test(
+    'a cancelled update for a phantom placeholder maps it to terminal',
+    () async {
+      events.add(updated({'ride_id': 'r1', 'status': 'accepted'}));
+      await flush();
+      expect(notifier.state.currentRide!.status, 'accepted');
 
-    verifyNever(() => mockWs.acceptOffer(any()));
-  });
+      events.add(
+        updated({
+          'ride_id': 'r1',
+          'status': 'cancelled',
+          'cancelled_by': 'rider',
+        }),
+      );
+      await flush();
+
+      expect(notifier.state.currentRide!.status, 'cancelled');
+      expect(notifier.state.currentRide!.cancelledBy, 'rider');
+    },
+  );
 
   test('declineOffer sends the decline and clears the offer', () async {
     events.add(offer('r1'));
@@ -142,10 +273,12 @@ void main() {
     events.add(updated({'id': 'r1', 'rider_id': 'u1', 'status': 'accepted'}));
     await flush();
 
-    events.add(const WsEvent(
+    events.add(
+      const WsEvent(
       type: WsEventType.location,
       data: {'lat': 9.93, 'lng': -84.08},
-    ));
+      ),
+    );
     await flush();
 
     expect(notifier.state.currentRide!.id, 'r1');
@@ -160,11 +293,13 @@ void main() {
     await flush();
 
     expect(notifier.state.offeredRideId, 'r1');
-    verifyNever(() => mockWs.acceptOffer('r2'));
+    expect(notifier.state.offerClosedReason, isNull);
   });
 
   test('clearRide resets the current ride', () async {
-    events.add(updated({'id': 'r1', 'rider_id': 'u1', 'status': 'in_progress'}));
+    events.add(
+      updated({'id': 'r1', 'rider_id': 'u1', 'status': 'in_progress'}),
+    );
     await flush();
     expect(notifier.state.currentRide, isNotNull);
 
@@ -202,10 +337,12 @@ void main() {
       events.add(updated(accepted));
       await flush();
 
-      events.add(const WsEvent(
+      events.add(
+        const WsEvent(
         type: WsEventType.updated,
         data: {'ride_id': 'r1', 'status': 'driver_arrived'},
-      ));
+        ),
+      );
       await flush();
 
       final ride = notifier.state.currentRide!;
@@ -219,7 +356,8 @@ void main() {
       events.add(updated(accepted));
       await flush();
 
-      events.add(const WsEvent(
+      events.add(
+        const WsEvent(
         type: WsEventType.updated,
         data: {
           'ride_id': 'r1',
@@ -231,7 +369,8 @@ void main() {
             'total': 13.2,
           },
         },
-      ));
+        ),
+      );
       await flush();
 
       final ride = notifier.state.currentRide!;
@@ -247,33 +386,31 @@ void main() {
       events.add(updated(accepted));
       await flush();
 
-      events.add(const WsEvent(
+      events.add(
+        const WsEvent(
         type: WsEventType.updated,
         data: {
           'ride_id': 'r1',
           'status': 'cancelled',
           'cancelled_by': 'rider',
         },
-      ));
+        ),
+      );
       await flush();
 
       expect(notifier.state.currentRide!.cancelledBy, 'rider');
     });
 
     test('a new ride replaces a terminal held ride', () async {
-      events.add(updated({
-        'ride_id': 'r1',
-        'status': 'completed',
-        'rider_id': 'u1',
-      }));
+      events.add(
+        updated({'ride_id': 'r1', 'status': 'completed', 'rider_id': 'u1'}),
+      );
       await flush();
       expect(notifier.state.currentRide!.status, 'completed');
 
-      events.add(updated({
-        'ride_id': 'r2',
-        'status': 'accepted',
-        'rider_id': 'u2',
-      }));
+      events.add(
+        updated({'ride_id': 'r2', 'status': 'accepted', 'rider_id': 'u2'}),
+      );
       await flush();
 
       final ride = notifier.state.currentRide!;
@@ -281,34 +418,35 @@ void main() {
       expect(ride.status, 'accepted');
     });
 
-    test('a different ride is ignored when held ride is non-terminal', () async {
-      events.add(updated({
-        'ride_id': 'r1',
-        'status': 'in_progress',
-        'rider_id': 'u1',
-      }));
+    test(
+      'a different ride is ignored when held ride is non-terminal',
+      () async {
+        events.add(
+          updated({'ride_id': 'r1', 'status': 'in_progress', 'rider_id': 'u1'}),
+        );
       await flush();
 
-      events.add(updated({
-        'ride_id': 'r2',
-        'status': 'accepted',
-        'rider_id': 'u2',
-      }));
+        events.add(
+          updated({'ride_id': 'r2', 'status': 'accepted', 'rider_id': 'u2'}),
+        );
       await flush();
 
       final ride = notifier.state.currentRide!;
       expect(ride.id, 'r1');
       expect(ride.status, 'in_progress');
-    });
+      },
+    );
 
     test('an event for a different ride is ignored', () async {
       events.add(updated(accepted));
       await flush();
 
-      events.add(const WsEvent(
+      events.add(
+        const WsEvent(
         type: WsEventType.updated,
         data: {'ride_id': 'r2', 'status': 'cancelled'},
-      ));
+        ),
+      );
       await flush();
 
       final ride = notifier.state.currentRide!;
@@ -320,33 +458,36 @@ void main() {
       events.add(updated(accepted));
       await flush();
 
-      events.add(const WsEvent(
-        type: WsEventType.updated,
-        data: {'status': 'completed'},
-      ));
+      events.add(
+        const WsEvent(type: WsEventType.updated, data: {'status': 'completed'}),
+      );
       await flush();
 
       expect(notifier.state.currentRide!.status, 'accepted');
     });
   });
 
-  test('adoptRide stores a ride learned over HTTP and clears the offer',
+  test(
+    'adoptRide stores a ride learned over HTTP and clears the offer',
       () async {
     events.add(offer('r7'));
     await flush();
 
-    notifier.adoptRide(const Ride(
+      notifier.adoptRide(
+        const Ride(
       id: 'r7',
       riderId: 'u9',
       status: 'in_progress',
       pickupLat: 9.93,
       pickupLng: -84.08,
-    ));
+        ),
+      );
 
     expect(notifier.state.offeredRideId, isNull);
     expect(notifier.state.currentRide!.id, 'r7');
     expect(notifier.state.currentRide!.status, 'in_progress');
-  });
+    },
+  );
 
   test('adoptRide ignores an id-less ride', () {
     notifier.adoptRide(const Ride(id: '', riderId: 'u', status: 'accepted'));

@@ -15,10 +15,21 @@ class RideState {
   final String? offeredRideId;
   final DateTime? offerExpiresAt;
 
+  /// Why the outstanding offer closed (`expired`, `declined`, `cancelled`,
+  /// `accepted_elsewhere`, `withdrawn`, `accept_failed`). Null until a close
+  /// frame (or an explicit local expiry) records one; cleared by the next
+  /// `ride.offer`.
+  final String? offerClosedReason;
+
+  /// The public sentence the offer sheet renders for [offerClosedReason].
+  final String? offerClosedMessage;
+
   const RideState({
     this.currentRide,
     this.offeredRideId,
     this.offerExpiresAt,
+    this.offerClosedReason,
+    this.offerClosedMessage,
   });
 
   RideState copyWith({
@@ -27,11 +38,20 @@ class RideState {
     String? offeredRideId,
     DateTime? offerExpiresAt,
     bool clearOffer = false,
+    String? offerClosedReason,
+    String? offerClosedMessage,
+    bool clearOfferClosed = false,
   }) {
     return RideState(
       currentRide: clearRide ? null : currentRide ?? this.currentRide,
       offeredRideId: clearOffer ? null : offeredRideId ?? this.offeredRideId,
       offerExpiresAt: clearOffer ? null : offerExpiresAt ?? this.offerExpiresAt,
+      offerClosedReason: clearOfferClosed
+          ? null
+          : offerClosedReason ?? this.offerClosedReason,
+      offerClosedMessage: clearOfferClosed
+          ? null
+          : offerClosedMessage ?? this.offerClosedMessage,
     );
   }
 }
@@ -67,6 +87,10 @@ class RideStateNotifier extends StateNotifier<RideState> {
         _onOffer(event.data['ride_id'] as String?);
       case WsEventType.updated:
         _onRideUpdated(event.data);
+      case WsEventType.offerClosed:
+        _onOfferClosed(event.data);
+      case WsEventType.acceptFailed:
+        _onAcceptFailed(event.data);
       case WsEventType.location:
         break;
       case WsEventType.other:
@@ -100,6 +124,59 @@ class RideStateNotifier extends StateNotifier<RideState> {
     );
   }
 
+  /// A `ride.offer_closed` frame carries the reason the offer ended. It only
+  /// applies to the outstanding offer (or, when the offer was already cleared,
+  /// to a held ride with the same id — the following `ride.updated` owns the
+  /// ride). It never touches [RideState.currentRide].
+  void _onOfferClosed(Map<String, dynamic> data) {
+    final rideId = data['ride_id'] as String?;
+    if (rideId == null || rideId.isEmpty) return;
+    final offered = state.offeredRideId;
+    if (offered != null && rideId != offered) return;
+    if (offered == null && state.currentRide?.id != rideId) return;
+    final reason = data['reason'] as String?;
+    expireOffer(reason: reason, message: _offerClosedMessage(reason));
+  }
+
+  /// A `ride.accept_failed` frame means the accept never committed. Clear the
+  /// offer and, if the old optimistic placeholder is still held, null it so
+  /// Home's `_tripPushed` latch can reset. A server-confirmed accepted ride
+  /// (with coordinates) is never touched.
+  void _onAcceptFailed(Map<String, dynamic> data) {
+    final rideId = data['ride_id'] as String?;
+    if (rideId == null || rideId.isEmpty) return;
+    // Never clear a different, currently outstanding offer.
+    if (state.offeredRideId == null || state.offeredRideId == rideId) {
+      expireOffer(reason: 'accept_failed', message: data['message'] as String?);
+    }
+    _clearPhantomFor(rideId);
+  }
+
+  static String _offerClosedMessage(String? reason) => switch (reason) {
+    'expired' => 'Offer expired',
+    'cancelled' => 'The rider cancelled this trip.',
+    'declined' ||
+    'accepted_elsewhere' ||
+    'withdrawn' => 'This offer is no longer available.',
+    _ => 'This offer is no longer available.',
+  };
+
+  /// Clears the legacy optimistic placeholder (`status: accepted` with no
+  /// pickup coordinates) for [rideId]. A real accepted ride always carries the
+  /// pickup coordinates, so it is left alone. The offer is cleared in the same
+  /// update either way.
+  void _clearPhantomFor(String rideId) {
+    final held = state.currentRide;
+    final isPlaceholder =
+        held != null &&
+        held.id == rideId &&
+        !held.isTerminal &&
+        held.status == 'accepted' &&
+        held.pickupLat == null &&
+        held.pickupLng == null;
+    state = state.copyWith(clearRide: isPlaceholder, clearOffer: true);
+  }
+
   /// Adopts a ride the app learned about over HTTP — the `advance`/cancel
   /// responses, or the `GET /driver/rides/current` launch restore — so the
   /// websocket store and the HTTP store agree on what the driver holds.
@@ -119,6 +196,8 @@ class RideStateNotifier extends StateNotifier<RideState> {
     state = state.copyWith(
       offeredRideId: rideId,
       offerExpiresAt: DateTime.now().add(offerTimeout),
+      // A stale close reason must never label the new offer.
+      clearOfferClosed: true,
     );
     _offerTimer = Timer(offerTimeout, () {
       if (state.offeredRideId != rideId) return;
@@ -126,29 +205,15 @@ class RideStateNotifier extends StateNotifier<RideState> {
     });
   }
 
-  /// Accepts the outstanding offer over the websocket (primary path) and flips
-  /// the UI immediately to an accepted placeholder; the server's `ride.updated`
-  /// broadcast replaces it with real ride data.
-  Future<void> acceptOffer() async {
-    final rideId = state.offeredRideId;
-    if (rideId == null) return;
-    websocket.acceptOffer(rideId);
-    _claimOffer(rideId);
-  }
-
-  /// Claims the outstanding offer after a successful HTTP accept (the
-  /// websocket may be dead). No WS message is sent.
-  void claimOfferViaHttp() {
-    final rideId = state.offeredRideId;
-    if (rideId == null) return;
-    _claimOffer(rideId);
-  }
-
-  void _claimOffer(String rideId) {
+  /// Clears the outstanding offer, recording why (the sheet renders the
+  /// message and pins itself to the explicit Dismiss). Never touches the held
+  /// ride: `ride.updated`/`adoptRide` own that.
+  void expireOffer({String? reason, String? message}) {
     _offerTimer?.cancel();
     state = state.copyWith(
-      currentRide: Ride(id: rideId, riderId: '', status: 'accepted'),
       clearOffer: true,
+      offerClosedReason: reason,
+      offerClosedMessage: message,
     );
   }
 
@@ -161,15 +226,17 @@ class RideStateNotifier extends StateNotifier<RideState> {
     state = state.copyWith(clearOffer: true);
   }
 
-  /// Resets the held ride + location after completion/cancellation
-  /// acknowledgement.
-  void clearRide() {
-    state = state.copyWith(clearRide: true);
+  /// Resets the held ride after completion/cancellation acknowledgement.
+  /// [clearOffer] also drops an outstanding offer (the post-200
+  /// `no_driver_available` path, where the ride is not this driver's trip).
+  void clearRide({bool clearOffer = false}) {
+    state = state.copyWith(clearRide: true, clearOffer: clearOffer);
   }
 }
 
-final rideStateProvider =
-    StateNotifierProvider<RideStateNotifier, RideState>((ref) {
+final rideStateProvider = StateNotifierProvider<RideStateNotifier, RideState>((
+  ref,
+) {
   return RideStateNotifier(
     ref.read(driverWebSocketServiceProvider),
     apiClient: ref.read(apiClientProvider),

@@ -84,12 +84,14 @@ void main() {
     int durationS = 420,
     bool isEstimate = false,
   }) {
-    when(() => mockRepo.routeEstimate(
+    when(
+      () => mockRepo.routeEstimate(
           fromLat: any(named: 'fromLat'),
           fromLng: any(named: 'fromLng'),
           toLat: any(named: 'toLat'),
           toLng: any(named: 'toLng'),
-        )).thenAnswer(
+      ),
+    ).thenAnswer(
       (_) async => RouteEstimate(
         distanceM: distanceM,
         durationS: durationS,
@@ -126,16 +128,19 @@ void main() {
     await drainModalTimers(tester);
   });
 
-  testWidgets('a failed estimate shows the placeholder, never a number',
-      (tester) async {
+  testWidgets('a failed estimate shows the placeholder, never a number', (
+    tester,
+  ) async {
     await seedOffer(tester, 'r1');
     stubRide();
-    when(() => mockRepo.routeEstimate(
+    when(
+      () => mockRepo.routeEstimate(
           fromLat: any(named: 'fromLat'),
           fromLng: any(named: 'fromLng'),
           toLat: any(named: 'toLat'),
           toLng: any(named: 'toLng'),
-        )).thenThrow(Exception('no route'));
+      ),
+    ).thenThrow(Exception('no route'));
     await pumpSheet(tester);
     await tester.pump();
 
@@ -145,8 +150,9 @@ void main() {
     await drainModalTimers(tester);
   });
 
-  testWidgets('renders the real cents, never rounded to whole dollars',
-      (tester) async {
+  testWidgets('renders the real cents, never rounded to whole dollars', (
+    tester,
+  ) async {
     await seedOffer(tester, 'r1');
     stubRide();
     await pumpSheet(tester);
@@ -162,8 +168,9 @@ void main() {
     await drainModalTimers(tester);
   });
 
-  testWidgets('prefixes the API currency when the ride carries one',
-      (tester) async {
+  testWidgets('prefixes the API currency when the ride carries one', (
+    tester,
+  ) async {
     await seedOffer(tester, 'r1');
     stubRide(fareCurrency: 'USD');
     await pumpSheet(tester);
@@ -185,8 +192,9 @@ void main() {
     await drainModalTimers(tester);
   });
 
-  testWidgets('expiry replaces the actions with a single Dismiss',
-      (tester) async {
+  testWidgets('expiry replaces the actions with a single Dismiss', (
+    tester,
+  ) async {
     await seedOffer(tester, 'r1');
     stubRide();
     await pumpSheet(tester);
@@ -211,8 +219,9 @@ void main() {
     await drainModalTimers(tester);
   });
 
-  testWidgets('the held offer clearing pins the sheet to its expired Dismiss',
-      (tester) async {
+  testWidgets('the held offer clearing pins the sheet to its expired Dismiss', (
+    tester,
+  ) async {
     await seedOffer(tester, 'r1');
     stubRide();
     await pumpSheet(tester);
@@ -264,7 +273,8 @@ void main() {
     // Cancel the second offer's outstanding expiry timer before teardown.
     notifier.declineOffer();
     await drainModalTimers(tester);
-  });
+    },
+  );
 
   testWidgets('a live offer survives the system back gesture', (tester) async {
     await seedOffer(tester, 'r1');
@@ -280,61 +290,495 @@ void main() {
     await drainModalTimers(tester);
   });
 
-  testWidgets('accept over a live websocket sends nested accept and pops',
+  // ---------------------------------------------------------------- accept
+  //
+  // Accept is HTTP-primary and server-confirmed. A `200` is followed by a real
+  // `GET /driver/rides/:id`; only that ride is adopted. The offer sheet must
+  // never paint `Offer expired` for a committed accept (manual review
+  // 2026-10-19), including during the pop animation or after a late
+  // `ride.offer_closed {reason:"expired"}` frame.
+
+  Ride pendingRide() => const Ride(
+    id: 'r1',
+    riderId: 'u1',
+    status: 'pending',
+    pickupLat: 9.93,
+    pickupLng: -84.08,
+    pickupAddress: 'Central Park',
+    dropoffLat: 9.95,
+    dropoffLng: -84.10,
+    dropoffAddress: 'Airport',
+    totalFare: 12.4,
+  );
+
+  Ride acceptedRide({String status = 'accepted'}) => Ride(
+    id: 'r1',
+    riderId: 'u1',
+    status: status,
+    pickupLat: 9.93,
+    pickupLng: -84.08,
+    pickupAddress: 'Central Park',
+    dropoffLat: 9.95,
+    dropoffLng: -84.10,
+    dropoffAddress: 'Airport',
+    totalFare: 12.4,
+  );
+
+  /// The sheet loads the pending ride first; the post-accept read returns
+  /// [second] (default: a real accepted ride).
+  void stubPendingThenRead(Ride Function() second) {
+    var calls = 0;
+    when(() => mockRepo.fetchRide('r1')).thenAnswer((_) async {
+      calls++;
+      return calls == 1 ? pendingRide() : second();
+    });
+  }
+
+  void stubPostAcceptRead(Future<Ride> Function() second) {
+    var calls = 0;
+    when(() => mockRepo.fetchRide('r1')).thenAnswer((_) async {
+      calls++;
+      if (calls == 1) return pendingRide();
+      return second();
+    });
+  }
+
+  void stubAccept200() {
+    when(() => mockRepo.acceptRideHttp('r1')).thenAnswer((_) async {});
+  }
+
+  Future<void> tapAccept(WidgetTester tester) async {
+    await tester.tap(find.text('Accept'));
+    await tester.pump();
+  }
+
+  testWidgets(
+    "a live-socket accept never paints 'Offer expired' during the pop "
+    '(manual review 2026-10-19)',
       (tester) async {
     await seedOffer(tester, 'r1');
-    stubRide();
     when(() => mockWs.isConnected).thenReturn(true);
+      stubAccept200();
+      stubPendingThenRead(acceptedRide);
     await pumpSheet(tester);
     await tester.pump();
 
-    await tester.tap(find.text('Accept'));
+      await tapAccept(tester);
+      await tester.pump(const Duration(milliseconds: 150));
+
+      verify(() => mockRepo.acceptRideHttp('r1')).called(1);
+      verifyNever(() => mockWs.declineOffer(any()));
+      expect(find.text('Offer expired'), findsNothing);
+      expect(find.text('Trip accepted'), findsOneWidget);
+      expect(notifier.state.currentRide!.pickupLat, 9.93);
+      expect(notifier.state.offeredRideId, isNull);
+
+      await drainModalTimers(tester);
+    },
+  );
+
+  testWidgets(
+    "the dead-socket HTTP 200 path never paints 'Offer expired' during the "
+    'pop',
+    (tester) async {
+      await seedOffer(tester, 'r1');
+      when(() => mockWs.isConnected).thenReturn(false);
+      stubAccept200();
+      stubPendingThenRead(acceptedRide);
+      await pumpSheet(tester);
+      await tester.pump();
+
+      await tapAccept(tester);
+      await tester.pump(const Duration(milliseconds: 150));
+
+      verify(() => mockRepo.acceptRideHttp('r1')).called(1);
+      verifyNever(() => mockWs.declineOffer(any()));
+      expect(find.text('Offer expired'), findsNothing);
+      expect(find.text('Trip accepted'), findsOneWidget);
+      expect(notifier.state.currentRide!.pickupLat, 9.93);
+
+      await drainModalTimers(tester);
+    },
+  );
+
+  testWidgets(
+    'a late offer_closed expired during the post-200 ride read does not '
+    'expire the sheet',
+    (tester) async {
+      await seedOffer(tester, 'r1');
+      stubAccept200();
+      final read = Completer<Ride>();
+      stubPostAcceptRead(() => read.future);
+      await pumpSheet(tester);
+      await tester.pump();
+
+      await tapAccept(tester);
+      await tester.pump();
+
+      events.add(
+        const WsEvent(
+          type: WsEventType.offerClosed,
+          data: {'ride_id': 'r1', 'reason': 'expired'},
+        ),
+      );
+      await tester.pump();
+
+      expect(find.text('Offer expired'), findsNothing);
+      expect(find.byKey(const Key('offer-dismiss-button')), findsNothing);
+      expect(find.byType(OfferSheet), findsOneWidget);
+
+      read.complete(acceptedRide());
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 300));
+
+      expect(find.text('Trip accepted'), findsOneWidget);
+      verify(() => mockRepo.acceptRideHttp('r1')).called(1);
+
+      await drainModalTimers(tester);
+    },
+  );
+
+  testWidgets(
+    'a late offer_closed expired while the post-200 Retry is pending does '
+    'not expire and Retry still pops',
+    (tester) async {
+      await seedOffer(tester, 'r1');
+      stubAccept200();
+      var calls = 0;
+      when(() => mockRepo.fetchRide('r1')).thenAnswer((_) async {
+        calls++;
+        if (calls == 1) return pendingRide();
+        throw Exception('read failed');
+      });
+      await pumpSheet(tester);
+      await tester.pump();
+
+      await tapAccept(tester);
+      await tester.pump();
+
+      events.add(
+        const WsEvent(
+          type: WsEventType.offerClosed,
+          data: {'ride_id': 'r1', 'reason': 'expired'},
+        ),
+      );
+      await tester.pump();
+
+      expect(find.byKey(const Key('offer-retry-button')), findsOneWidget);
+      expect(find.text('Offer expired'), findsNothing);
+      expect(find.byKey(const Key('offer-dismiss-button')), findsNothing);
+
+      when(
+        () => mockRepo.fetchRide('r1'),
+      ).thenAnswer((_) async => acceptedRide());
+      await tester.tap(find.byKey(const Key('offer-retry-button')));
     await tester.pump();
     await tester.pump(const Duration(milliseconds: 300));
 
-    verify(() => mockWs.acceptOffer('r1')).called(1);
+      expect(find.text('Trip accepted'), findsOneWidget);
+      verify(() => mockRepo.acceptRideHttp('r1')).called(1);
+      expect(notifier.state.currentRide!.pickupLat, 9.93);
+
+      await drainModalTimers(tester);
+    },
+  );
+
+  testWidgets('a genuine clear with no accept in flight still pins the explicit '
+      'Dismiss expiry', (tester) async {
+    await seedOffer(tester, 'r1');
+    stubRide();
+    await pumpSheet(tester);
+    await tester.pump();
+
+    expect(find.text('Accept'), findsOneWidget);
+
+    // No accept was committed or in flight: the withdrawal is a genuine close.
+    notifier.declineOffer();
+    await tester.pump();
+
     verifyNever(() => mockRepo.acceptRideHttp(any()));
-    expect(notifier.state.currentRide, isNotNull);
-    expect(find.text('Trip accepted'), findsOneWidget);
+    expect(find.text('Offer expired'), findsOneWidget);
+    expect(find.byKey(const Key('offer-dismiss-button')), findsOneWidget);
+    expect(find.byType(OfferSheet), findsOneWidget);
+
+    await tester.tap(find.byKey(const Key('offer-dismiss-button')));
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 300));
+    expect(find.byType(OfferSheet), findsNothing);
 
     await drainModalTimers(tester);
   });
 
-  testWidgets('accept with a dead websocket falls back to HTTP',
-      (tester) async {
+  testWidgets('an accept over a live websocket still uses the HTTP endpoint', (
+    tester,
+  ) async {
     await seedOffer(tester, 'r1');
-    stubRide();
-    when(() => mockWs.isConnected).thenReturn(false);
-    when(() => mockRepo.acceptRideHttp('r1')).thenAnswer((_) async {});
+    when(() => mockWs.isConnected).thenReturn(true);
+    stubAccept200();
+    stubPendingThenRead(acceptedRide);
     await pumpSheet(tester);
     await tester.pump();
 
-    await tester.tap(find.text('Accept'));
-    await tester.pump();
+    await tapAccept(tester);
+    await tester.pump(const Duration(milliseconds: 300));
 
-    verifyNever(() => mockWs.acceptOffer(any()));
     verify(() => mockRepo.acceptRideHttp('r1')).called(1);
-    expect(notifier.state.currentRide, isNotNull);
+    verifyNever(() => mockWs.declineOffer(any()));
+    // Only the fetched ride is ever held; no hand-built placeholder.
+    expect(notifier.state.currentRide!.pickupLat, 9.93);
+
+    await drainModalTimers(tester);
+  });
+
+  testWidgets('200 closes only after the real ride is adopted', (tester) async {
+    await seedOffer(tester, 'r1');
+    stubAccept200();
+    stubPendingThenRead(acceptedRide);
+    await pumpSheet(tester);
+    await tester.pump();
+
+    await tapAccept(tester);
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 300));
+
+    expect(notifier.state.currentRide!.pickupLat, isNotNull);
+    expect(notifier.state.currentRide!.status, 'accepted');
+    expect(notifier.state.offeredRideId, isNull);
+    expect(find.byType(OfferSheet), findsNothing);
     expect(find.text('Trip accepted'), findsOneWidget);
 
     await drainModalTimers(tester);
   });
 
-  testWidgets('409 from the HTTP fallback shows trip no longer available',
-      (tester) async {
+  testWidgets("404 from the HTTP accept closes as expired with 'Trip no longer "
+      'available', (tester) async {
     await seedOffer(tester, 'r1');
     stubRide();
-    when(() => mockWs.isConnected).thenReturn(false);
-    when(() => mockRepo.acceptRideHttp('r1'))
-        .thenThrow(OfferExpiredException());
+    when(
+      () => mockRepo.acceptRideHttp('r1'),
+    ).thenThrow(OfferExpiredException('no active offer for this ride'));
     await pumpSheet(tester);
     await tester.pump();
 
-    await tester.tap(find.text('Accept'));
+    await tapAccept(tester);
     await tester.pump();
 
     expect(find.text('Trip no longer available'), findsOneWidget);
+    expect(find.byKey(const Key('offer-dismiss-button')), findsOneWidget);
     expect(notifier.state.currentRide, isNull);
+    expect(notifier.state.offeredRideId, isNull);
+
+    await drainModalTimers(tester);
+  });
+
+  testWidgets("409 from the HTTP accept closes as expired with 'Trip no longer "
+      'available', (tester) async {
+    await seedOffer(tester, 'r1');
+    stubRide();
+    when(
+      () => mockRepo.acceptRideHttp('r1'),
+    ).thenThrow(OfferExpiredException());
+    await pumpSheet(tester);
+    await tester.pump();
+
+    await tapAccept(tester);
+    await tester.pump();
+
+    expect(find.text('Trip no longer available'), findsOneWidget);
+    expect(find.byKey(const Key('offer-dismiss-button')), findsOneWidget);
+    expect(notifier.state.currentRide, isNull);
+
+    await drainModalTimers(tester);
+  });
+
+  testWidgets(
+    '500 from the HTTP accept keeps the sheet usable and shows a retryable '
+    'message',
+      (tester) async {
+    await seedOffer(tester, 'r1');
+    stubRide();
+      when(
+        () => mockRepo.acceptRideHttp('r1'),
+      ).thenThrow(Exception('server exploded'));
+    await pumpSheet(tester);
+    await tester.pump();
+
+      await tapAccept(tester);
+      await tester.pump();
+
+      expect(find.text('Accept'), findsOneWidget);
+      expect(find.text('Pass'), findsOneWidget);
+      expect(find.text('Offer expired'), findsNothing);
+      expect(find.text('Could not accept. Please try again.'), findsOneWidget);
+      expect(notifier.state.currentRide, isNull);
+
+      await drainModalTimers(tester);
+    },
+  );
+
+  testWidgets('a 200 whose ride read fails offers a retry and never re-POSTs '
+      'accept', (tester) async {
+    await seedOffer(tester, 'r1');
+    stubAccept200();
+    var calls = 0;
+    when(() => mockRepo.fetchRide('r1')).thenAnswer((_) async {
+      calls++;
+      if (calls == 1) return pendingRide();
+      throw Exception('read failed');
+    });
+    await pumpSheet(tester);
+    await tester.pump();
+
+    await tapAccept(tester);
+    await tester.pump();
+
+    expect(find.byKey(const Key('offer-retry-button')), findsOneWidget);
+    expect(find.text('Accept'), findsNothing);
+    expect(notifier.state.currentRide, isNull);
+    expect(find.byType(OfferSheet), findsOneWidget);
+
+    when(
+      () => mockRepo.fetchRide('r1'),
+    ).thenAnswer((_) async => acceptedRide());
+    await tester.tap(find.byKey(const Key('offer-retry-button')));
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 300));
+
+    verify(() => mockRepo.acceptRideHttp('r1')).called(1);
+    expect(notifier.state.currentRide!.pickupLat, 9.93);
+    expect(find.text('Trip accepted'), findsOneWidget);
+
+    await drainModalTimers(tester);
+  });
+
+  testWidgets('a 200 whose ride is already cancelled closes as ended, never as '
+      'accepted', (tester) async {
+    await seedOffer(tester, 'r1');
+    stubAccept200();
+    stubPendingThenRead(() => acceptedRide(status: 'cancelled'));
+    await pumpSheet(tester);
+    await tester.pump();
+
+    await tapAccept(tester);
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 300));
+
+    expect(find.text('Trip accepted'), findsNothing);
+    expect(find.byType(OfferSheet), findsNothing);
+    expect(find.text('This trip has already ended.'), findsOneWidget);
+    expect(notifier.state.currentRide!.status, 'cancelled');
+    verify(() => mockRepo.acceptRideHttp('r1')).called(1);
+
+    await drainModalTimers(tester);
+  });
+
+  testWidgets(
+    'a 200 whose ride is completed adopts the terminal receipt and does not '
+    'claim a live trip',
+    (tester) async {
+      await seedOffer(tester, 'r1');
+      stubAccept200();
+      stubPendingThenRead(() => acceptedRide(status: 'completed'));
+      await pumpSheet(tester);
+      await tester.pump();
+
+      await tapAccept(tester);
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 300));
+
+      expect(find.text('Trip accepted'), findsNothing);
+      expect(find.byType(OfferSheet), findsNothing);
+      expect(notifier.state.currentRide!.status, 'completed');
+      expect(notifier.state.offeredRideId, isNull);
+      verify(() => mockRepo.acceptRideHttp('r1')).called(1);
+
+      await drainModalTimers(tester);
+    },
+  );
+
+  testWidgets(
+    'a 200 whose ride is no_driver_available clears the held ride and stays '
+    'on Home',
+      (tester) async {
+    await seedOffer(tester, 'r1');
+      stubAccept200();
+      stubPendingThenRead(() => acceptedRide(status: 'no_driver_available'));
+      await pumpSheet(tester);
+      await tester.pump();
+
+      await tapAccept(tester);
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 300));
+
+      expect(notifier.state.currentRide, isNull);
+      expect(notifier.state.offeredRideId, isNull);
+      expect(find.text('Trip accepted'), findsNothing);
+      expect(find.text('No active trip.'), findsOneWidget);
+      verify(() => mockRepo.acceptRideHttp('r1')).called(1);
+
+      await drainModalTimers(tester);
+    },
+  );
+
+  testWidgets('a server offer_closed reason cancelled pins the sheet with the '
+      'cancelled message', (tester) async {
+    await seedOffer(tester, 'r1');
+    stubRide();
+    await pumpSheet(tester);
+    await tester.pump();
+
+    events.add(
+      const WsEvent(
+        type: WsEventType.offerClosed,
+        data: {'ride_id': 'r1', 'reason': 'cancelled'},
+      ),
+    );
+    await tester.pump();
+
+    expect(notifier.state.offeredRideId, isNull);
+    expect(find.text('The rider cancelled this trip.'), findsOneWidget);
+    expect(find.byKey(const Key('offer-dismiss-button')), findsOneWidget);
+
+    await drainModalTimers(tester);
+  });
+
+  testWidgets('a server accept_failed clears the phantom and never claims '
+      'the trip', (tester) async {
+    // Seed the legacy optimistic placeholder shape (accepted, no coordinates)
+    // plus a fresh offer for the same ride.
+    notifier = RideStateNotifier(
+      mockWs,
+      apiClient: MockApiClient(),
+      offerTimeout: const Duration(minutes: 5),
+    );
+    events.add(
+      const WsEvent(
+        type: WsEventType.updated,
+        data: {'ride_id': 'r1', 'status': 'accepted'},
+      ),
+    );
+    await tester.pump();
+    events.add(WsEvent(type: WsEventType.offer, data: {'ride_id': 'r1'}));
+    await tester.pump();
+    stubRide();
+    await pumpSheet(tester);
+    await tester.pump();
+
+    events.add(
+      const WsEvent(
+        type: WsEventType.acceptFailed,
+        data: {
+          'ride_id': 'r1',
+          'code': 'NOT_OFFERED',
+          'message': 'no active offer for this ride',
+        },
+      ),
+    );
+    await tester.pump();
+
+    expect(notifier.state.currentRide, isNull);
+    expect(find.text('no active offer for this ride'), findsOneWidget);
+    expect(find.byKey(const Key('offer-dismiss-button')), findsOneWidget);
 
     await drainModalTimers(tester);
   });

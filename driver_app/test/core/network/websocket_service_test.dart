@@ -140,27 +140,31 @@ void main() {
     await server.close(force: true);
   });
 
-  test('driver sends the nested wire format for accept/decline/ping', () async {
+  test('driver sends the nested wire format for decline/ping', () async {
     final timers = _ManualTimers();
     final shim = startService(timers: timers);
     await shim.connect(token: 'driver-token');
     await waitFor(() => sockets.isNotEmpty);
 
-    shim.acceptOffer('r1');
-    await waitFor(() => received.any((m) => m['type'] == 'ride.accept'));
+    // The accept path is HTTP-primary now (`POST /driver/rides/:id/accept`);
+    // the facade no longer exposes a WS accept.
     shim.declineOffer('r2');
     await waitFor(() => received.any((m) => m['type'] == 'ride.decline'));
     shim.ping();
     await waitFor(() => received.any((m) => m['type'] == 'ping'));
 
-    final accept = received.firstWhere((m) => m['type'] == 'ride.accept');
     final decline = received.firstWhere((m) => m['type'] == 'ride.decline');
     final ping = received.firstWhere((m) => m['type'] == 'ping');
 
-    expect(accept, {'type': 'ride.accept', 'data': {'ride_id': 'r1'}});
-    expect(accept['ride_id'], isNull,
-        reason: 'flat ride_id payloads are broken - the hub reads data.ride_id');
-    expect(decline, {'type': 'ride.decline', 'data': {'ride_id': 'r2'}});
+    expect(decline, {
+      'type': 'ride.decline',
+      'data': {'ride_id': 'r2'},
+    });
+    expect(
+      decline['ride_id'],
+      isNull,
+      reason: 'flat ride_id payloads are broken - the hub reads data.ride_id',
+    );
     expect(ping, {'type': 'ping', 'data': <String, dynamic>{}});
   });
 
@@ -175,31 +179,58 @@ void main() {
     addTearDown(() => sub.cancel());
 
     final socket = sockets.first;
-    socket.add(jsonEncode({'type': 'ride.offer', 'data': {'ride_id': 'r1'}}));
-    socket.add(jsonEncode({
+    socket.add(
+      jsonEncode({
+        'type': 'ride.offer',
+        'data': {'ride_id': 'r1'},
+      }),
+    );
+    socket.add(
+      jsonEncode({
       'type': 'ride.updated',
       'data': {'id': 'r1', 'rider_id': 'u1', 'status': 'accepted'},
-    }));
-    socket.add(jsonEncode({
+      }),
+    );
+    socket.add(
+      jsonEncode({
+        'type': 'ride.offer_closed',
+        'data': {'ride_id': 'r1', 'reason': 'expired'},
+      }),
+    );
+    socket.add(
+      jsonEncode({
+        'type': 'ride.accept_failed',
+        'data': {
+          'ride_id': 'r1',
+          'code': 'OFFER_EXPIRED',
+          'message': 'Offer expired',
+        },
+      }),
+    );
+    socket.add(
+      jsonEncode({
       'type': 'driver.location',
       'data': {'lat': 9.93, 'lng': -84.08},
-    }));
+      }),
+    );
     socket.add(jsonEncode({'type': 'pong', 'data': {}}));
 
-    await waitFor(() => emitted.length >= 4);
+    await waitFor(() => emitted.length >= 6);
 
     expect(emitted[0].type, WsEventType.offer);
     expect(emitted[0].data, {'ride_id': 'r1'});
     expect(emitted[1].type, WsEventType.updated);
     expect(emitted[1].data['id'], 'r1');
     expect(emitted[1].data['status'], 'accepted');
-    expect(emitted[2].type, WsEventType.location);
-    expect(emitted[3].type, WsEventType.other);
+    expect(emitted[2].type, WsEventType.offerClosed);
+    expect(emitted[2].data, {'ride_id': 'r1', 'reason': 'expired'});
+    expect(emitted[3].type, WsEventType.acceptFailed);
+    expect(emitted[3].data['code'], 'OFFER_EXPIRED');
+    expect(emitted[4].type, WsEventType.location);
+    expect(emitted[5].type, WsEventType.other);
   });
 
-  test(
-    'reconnects with a fresh connection after the socket dies',
-    () async {
+  test('reconnects with a fresh connection after the socket dies', () async {
       final timers = _ManualTimers();
       final shim = startService(timers: timers);
       await shim.connect(token: 'driver-token');
@@ -215,11 +246,10 @@ void main() {
         timeout: const Duration(seconds: 10),
       );
       expect(sockets.length, 2);
-    },
-    timeout: const Timeout(Duration(seconds: 20)),
-  );
+  }, timeout: const Timeout(Duration(seconds: 20)));
 
-  test('heartbeat pings on an interval while the driver is connected',
+  test(
+    'heartbeat pings on an interval while the driver is connected',
       () async {
     final timers = _ManualTimers();
     final shim = startService(
@@ -242,9 +272,11 @@ void main() {
       greaterThanOrEqualTo(3),
       reason: 'an idle driver socket must keep itself alive with pings',
     );
-  });
+    },
+  );
 
-  test('heartbeat stops when the driver goes offline and re-arms when online',
+  test(
+    'heartbeat stops when the driver goes offline and re-arms when online',
       () async {
     final timers = _ManualTimers();
     final shim = startService(
@@ -259,8 +291,11 @@ void main() {
     await waitFor(() => pingCount() >= 1);
 
     shim.setOnline(false);
-    expect(timers.activePeriodicCount, 0,
-        reason: 'going offline must cancel the keep-alive loop');
+      expect(
+        timers.activePeriodicCount,
+        0,
+        reason: 'going offline must cancel the keep-alive loop',
+      );
     final offlineCount = pingCount();
     heartbeat.fire();
     await pumpEventQueue();
@@ -271,11 +306,15 @@ void main() {
     );
 
     shim.setOnline(true);
-    expect(timers.activePeriodicCount, 1,
-        reason: 'going online must re-arm the keep-alive loop');
+      expect(
+        timers.activePeriodicCount,
+        1,
+        reason: 'going online must re-arm the keep-alive loop',
+      );
     timers.activePeriodic!.fire();
     await waitFor(() => pingCount() > offlineCount);
-  });
+    },
+  );
 
   test('repeated setOnline does not stack heartbeat timers', () async {
     final timers = _ManualTimers();
@@ -291,8 +330,11 @@ void main() {
     for (var i = 0; i < 10; i++) {
       shim.setOnline(true);
     }
-    expect(timers.activePeriodicCount, 1,
-        reason: 'repeated setOnline must not multiply the interval timer');
+    expect(
+      timers.activePeriodicCount,
+      1,
+      reason: 'repeated setOnline must not multiply the interval timer',
+    );
 
     // Let the ten immediate pings from the setOnline burst reach the server so
     // the next measurement isolates the single heartbeat tick.
@@ -300,8 +342,11 @@ void main() {
     final before = pingCount();
     timers.activePeriodic!.fire();
     await waitFor(() => pingCount() > before);
-    expect(pingCount() - before, 1,
-        reason: 'exactly one live loop sends one ping per tick');
+    expect(
+      pingCount() - before,
+      1,
+      reason: 'exactly one live loop sends one ping per tick',
+    );
   });
 
   test('a reconnected driver re-publishes and pings again', () async {

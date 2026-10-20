@@ -67,11 +67,14 @@ void main() {
   /// Defaults to "rated nothing" — the only state in which the post-trip
   /// prompt may appear.
   void stubRatings(List<String> rideIds) {
-    when(() => mockDio.get(
+    when(
+      () => mockDio.get(
       ApiEndpoints.driverRatings,
       queryParameters: any(named: 'queryParameters'),
       cancelToken: any(named: 'cancelToken'),
-    )).thenAnswer((_) async => jsonResponse({
+      ),
+    ).thenAnswer(
+      (_) async => jsonResponse({
           'ratings': [
             for (final id in rideIds)
               {
@@ -87,17 +90,20 @@ void main() {
           'page': 1,
           'per_page': ratedRidesPageSize,
           'total_pages': 1,
-        }));
+      }),
+    );
   }
 
   /// Holds the rated list open, so the in-flight window is observable.
   Completer<Response> gateRatings() {
     final gate = Completer<Response>();
-    when(() => mockDio.get(
+    when(
+      () => mockDio.get(
       ApiEndpoints.driverRatings,
       queryParameters: any(named: 'queryParameters'),
       cancelToken: any(named: 'cancelToken'),
-    )).thenAnswer((_) => gate.future);
+      ),
+    ).thenAnswer((_) => gate.future);
     return gate;
   }
 
@@ -106,8 +112,7 @@ void main() {
     mockDio = MockDio();
     when(() => mockApiClient.dio).thenReturn(mockDio);
     final mockWs = MockDriverWebSocketService();
-    when(() => mockWs.events)
-        .thenAnswer((_) => const Stream<WsEvent>.empty());
+    when(() => mockWs.events).thenAnswer((_) => const Stream<WsEvent>.empty());
     rideState = RideStateNotifier(mockWs, apiClient: MockApiClient());
 
     container = ProviderContainer(
@@ -116,8 +121,9 @@ void main() {
         rideStateProvider.overrideWith((ref) => rideState),
         // No tiles: the map must not touch the network under flutter_test.
         mapTileLayerProvider.overrideWith((ref, config) => null),
-        lastPositionProvider
-            .overrideWith((ref) => const GeoPoint(pickupLat, pickupLng)),
+        lastPositionProvider.overrideWith(
+          (ref) => const GeoPoint(pickupLat, pickupLng),
+        ),
         locationServiceProvider.overrideWith(
           (ref) => fakeLocation = FakeLocationService(
             apiClient: mockApiClient,
@@ -130,7 +136,8 @@ void main() {
 
     // Force the lazy override to construct the fake even in cases that never
     // reach an accepted ride, so tests can assert on its counter.
-    fakeLocation = container.read(locationServiceProvider) as FakeLocationService;
+    fakeLocation =
+        container.read(locationServiceProvider) as FakeLocationService;
 
     // The rated list is server-gated: default it to "rated nothing", the only
     // state in which the post-trip prompt may appear. A case that cares about a
@@ -177,7 +184,8 @@ void main() {
     double? dropoffLng,
     String? dropoffAddress,
   }) {
-    rideState.onWsEvent(rideUpdated(
+    rideState.onWsEvent(
+      rideUpdated(
       rideId: rideId,
       status: status,
       fare: fare,
@@ -186,7 +194,8 @@ void main() {
       dropoffLat: dropoffLat,
       dropoffLng: dropoffLng,
       dropoffAddress: dropoffAddress,
-    ));
+      ),
+    );
   }
 
   void stubPut(String status, {double totalFare = 13.2}) {
@@ -217,10 +226,13 @@ void main() {
   }
 
   void stubRouteGet() {
-    when(() => mockDio.get(
+    when(
+      () => mockDio.get(
       ApiEndpoints.navigationRoute,
       queryParameters: any(named: 'queryParameters'),
-    )).thenAnswer((_) async => jsonResponse({
+      ),
+    ).thenAnswer(
+      (_) async => jsonResponse({
           'polyline': [
             {'lat': pickupLat, 'lng': pickupLng},
             {'lat': pickupLat + 0.01, 'lng': pickupLng + 0.01},
@@ -228,7 +240,8 @@ void main() {
           ],
           'total_distance_m': 4200,
           'total_duration_s': 380,
-        }));
+      }),
+    );
   }
 
   Future<void> pumpTrip(WidgetTester tester) async {
@@ -286,8 +299,9 @@ void main() {
       tester.widget<PolylineLayer>(find.byType(PolylineLayer)).polylines;
 
   group('arrival while already at the pickup', () {
-    testWidgets('mounting an accepted trip re-publishes the cached fix',
-        (tester) async {
+    testWidgets('mounting an accepted trip re-publishes the cached fix', (
+      tester,
+    ) async {
       // The driver accepted while stationary at the pickup: geolocator emits
       // no further fix (10 m distanceFilter), so the server geofence only
       // runs if the screen pushes the cached one.
@@ -298,8 +312,9 @@ void main() {
       expect(fakeLocation.publishCount, greaterThanOrEqualTo(1));
     });
 
-    testWidgets('a server-confirmed accept after mount publishes again',
-        (tester) async {
+    testWidgets('a server-confirmed accept after mount publishes again', (
+      tester,
+    ) async {
       // WS accept mounts the screen on a placeholder before the server commit;
       // the confirmation must trigger a post-commit fix.
       await pumpTrip(tester);
@@ -371,8 +386,9 @@ void main() {
   });
 
   group('stage buttons', () {
-    testWidgets('a ride held before the screen opens is picked up',
-        (tester) async {
+    testWidgets('a ride held before the screen opens is picked up', (
+      tester,
+    ) async {
       // The home screen pushes /trip *because* a ride is already held, and the
       // launch restore adopts one before the first frame.
       broadcast(status: 'in_progress');
@@ -402,10 +418,12 @@ void main() {
       expect(find.text('Arrived at the pickup'), findsOneWidget);
       expect(find.text('Start trip'), findsOneWidget);
       verifyNever(() => mockDio.put(any(), data: any(named: 'data')));
-    });
+      },
+    );
 
-    testWidgets('arrived starts the trip and then shows the complete button',
-        (tester) async {
+    testWidgets('arrived starts the trip and then shows the complete button', (
+      tester,
+    ) async {
       await pumpTrip(tester);
       broadcast(status: 'driver_arrived');
       await tester.pump();
@@ -417,8 +435,10 @@ void main() {
       await tester.pump();
 
       final captured = verify(
-        () => mockDio.put(ApiEndpoints.driverRideStatus('r1'),
-            data: captureAny(named: 'data')),
+        () => mockDio.put(
+          ApiEndpoints.driverRideStatus('r1'),
+          data: captureAny(named: 'data'),
+        ),
       ).captured;
       expect((captured.first as Map)['status'], 'in_progress');
       expect(find.text('Driving to the dropoff'), findsOneWidget);
@@ -428,8 +448,9 @@ void main() {
       expect(find.text('Rider can cancel from here'), findsOneWidget);
     });
 
-    testWidgets('driving asks for confirmation before completing',
-        (tester) async {
+    testWidgets('driving asks for confirmation before completing', (
+      tester,
+    ) async {
       await pumpTrip(tester);
       broadcast(status: 'in_progress');
       await tester.pump();
@@ -451,15 +472,18 @@ void main() {
       await tester.pump();
 
       final captured = verify(
-        () => mockDio.put(ApiEndpoints.driverRideStatus('r1'),
-            data: captureAny(named: 'data')),
+        () => mockDio.put(
+          ApiEndpoints.driverRideStatus('r1'),
+          data: captureAny(named: 'data'),
+        ),
       ).captured;
       expect((captured.first as Map)['status'], 'completed');
       expect(find.text('Trip completed'), findsOneWidget);
     });
 
-    testWidgets('a completed trip shows the fare and returns home',
-        (tester) async {
+    testWidgets('a completed trip shows the fare and returns home', (
+      tester,
+    ) async {
       await pumpTrip(tester);
       broadcast(
         status: 'completed',
@@ -483,7 +507,8 @@ void main() {
       expect(rideState.state.currentRide, isNull);
     });
 
-    testWidgets('shows the API currency, conditions multiplier and climb note',
+    testWidgets(
+      'shows the API currency, conditions multiplier and climb note',
         (tester) async {
       await pumpTrip(tester);
       broadcast(
@@ -505,10 +530,12 @@ void main() {
       expect(find.text('Conditions multiplier'), findsOneWidget);
       expect(find.text('×1.20'), findsOneWidget);
       expect(find.text('climb +5.0%'), findsOneWidget);
-    });
+      },
+    );
 
-    testWidgets('omits the currency, uplift and multiplier when absent',
-        (tester) async {
+    testWidgets('omits the currency, uplift and multiplier when absent', (
+      tester,
+    ) async {
       await pumpTrip(tester);
       broadcast(
         status: 'completed',
@@ -528,7 +555,8 @@ void main() {
   });
 
   group('final charge on completion', () {
-    testWidgets('the completion broadcast replaces the booked fare with the final',
+    testWidgets(
+      'the completion broadcast replaces the booked fare with the final',
         (tester) async {
       await pumpTrip(tester);
       // While the trip runs the held ride carries the booked quote, which the
@@ -554,9 +582,11 @@ void main() {
       expect(find.text('13.20'), findsOneWidget);
       expect(find.text('2.50'), findsOneWidget);
       expect(find.text('10.00'), findsNothing);
-    });
+      },
+    );
 
-    testWidgets('the REST completion response flows its final total to the screen',
+    testWidgets(
+      'the REST completion response flows its final total to the screen',
         (tester) async {
       await pumpTrip(tester);
       broadcast(status: 'in_progress', fare: {'total': 10.0});
@@ -572,10 +602,12 @@ void main() {
       expect(find.text('Trip completed'), findsOneWidget);
       expect(find.text('13.20'), findsOneWidget);
       expect(find.text('10.00'), findsNothing);
-    });
+      },
+    );
 
-    testWidgets('a completion with no fare keeps the placeholder',
-        (tester) async {
+    testWidgets('a completion with no fare keeps the placeholder', (
+      tester,
+    ) async {
       await pumpTrip(tester);
       broadcast(status: 'completed');
       await tester.pump();
@@ -589,10 +621,7 @@ void main() {
 
   group('rating after the trip', () {
     void completeTrip() {
-      broadcast(
-        status: 'completed',
-        fare: {'base_fare': 2.5, 'total': 11.8},
-      );
+      broadcast(status: 'completed', fare: {'base_fare': 2.5, 'total': 11.8});
     }
 
     testWidgets('the post screen offers to rate the rider', (tester) async {
@@ -607,8 +636,9 @@ void main() {
       expect(find.text('Rate the rider'), findsOneWidget);
     });
 
-    testWidgets('tapping it opens the sheet for the completed ride',
-        (tester) async {
+    testWidgets('tapping it opens the sheet for the completed ride', (
+      tester,
+    ) async {
       await pumpTrip(tester);
       completeTrip();
       await tester.pump();
@@ -647,13 +677,15 @@ void main() {
       expect(find.byKey(const Key('trip-rate-button')), findsNothing);
       expect(find.byKey(const Key('trip-ratings-retry')), findsNothing);
 
-      gate.complete(jsonResponse({
+      gate.complete(
+        jsonResponse({
         'ratings': const [],
         'total': 0,
         'page': 1,
         'per_page': ratedRidesPageSize,
         'total_pages': 1,
-      }));
+        }),
+      );
       await tester.pump();
       await tester.pump();
 
@@ -663,11 +695,13 @@ void main() {
     testWidgets('a failed rated list hides the prompt and offers a retry', (
       tester,
     ) async {
-      when(() => mockDio.get(
+      when(
+        () => mockDio.get(
         ApiEndpoints.driverRatings,
         queryParameters: any(named: 'queryParameters'),
         cancelToken: any(named: 'cancelToken'),
-      )).thenThrow(Exception('boom'));
+        ),
+      ).thenThrow(Exception('boom'));
       await pumpTrip(tester);
       completeTrip();
       await tester.pump();
@@ -708,8 +742,9 @@ void main() {
   });
 
   group('cancelling', () {
-    testWidgets('the cancel button confirms before calling the endpoint',
-        (tester) async {
+    testWidgets('the cancel button confirms before calling the endpoint', (
+      tester,
+    ) async {
       await pumpTrip(tester);
       broadcast();
       await tester.pump();
@@ -729,13 +764,18 @@ void main() {
       await tester.pump();
       await tester.pump();
 
-      verify(() => mockDio.post(ApiEndpoints.driverRideCancel('r1'),
-          data: any(named: 'data'))).called(1);
+      verify(
+        () => mockDio.post(
+          ApiEndpoints.driverRideCancel('r1'),
+          data: any(named: 'data'),
+        ),
+      ).called(1);
       expect(find.text('Trip cancelled'), findsOneWidget);
     });
 
-    testWidgets('a rider cancellation is reported and clears the trip',
-        (tester) async {
+    testWidgets('a rider cancellation is reported and clears the trip', (
+      tester,
+    ) async {
       await pumpTrip(tester);
       broadcast(status: 'cancelled', cancelledBy: 'rider');
       await tester.pump();
@@ -749,21 +789,127 @@ void main() {
       expect(find.text('home screen'), findsOneWidget);
       expect(rideState.state.currentRide, isNull);
     });
+
+    DioException httpError(int status) => DioException(
+      requestOptions: RequestOptions(path: '/stub'),
+      response: Response(
+        requestOptions: RequestOptions(path: '/stub'),
+        statusCode: status,
+      ),
+    );
+
+    Future<void> confirmCancel(WidgetTester tester) async {
+      await tester.tap(find.byKey(const Key('trip-cancel-button')));
+      await tester.pumpAndSettle();
+      await tester.tap(find.widgetWithText(FilledButton, 'Cancel trip'));
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 400));
+    }
+
+    testWidgets('a 404 cancel leaves the trip screen for home', (tester) async {
+      await pumpTrip(tester);
+      broadcast();
+      await tester.pump();
+      when(
+        () => mockDio.post(any(), data: any(named: 'data')),
+      ).thenThrow(httpError(404));
+
+      await confirmCancel(tester);
+      await tester.pumpAndSettle();
+
+      expect(find.text('home screen'), findsOneWidget);
+      expect(find.byType(TripScreen), findsNothing);
+      expect(rideState.state.currentRide, isNull);
+  });
+
+    testWidgets('a 500 cancel shows the error and stays on the trip', (
+      tester,
+    ) async {
+      await pumpTrip(tester);
+      broadcast();
+      await tester.pump();
+      when(
+        () => mockDio.post(any(), data: any(named: 'data')),
+      ).thenThrow(httpError(500));
+
+      await confirmCancel(tester);
+
+      expect(find.byType(TripScreen), findsOneWidget);
+      expect(
+        find.text('Could not cancel the trip. Please try again.'),
+        findsOneWidget,
+      );
+      expect(rideState.state.currentRide, isNotNull);
+    });
+
+    testWidgets(
+      'the cancel dialog does not claim the trip returns to dispatch',
+        (tester) async {
+        await pumpTrip(tester);
+        broadcast();
+        await tester.pump();
+
+        await tester.tap(find.byKey(const Key('trip-cancel-button')));
+        await tester.pumpAndSettle();
+
+        expect(find.textContaining('goes back to dispatch'), findsNothing);
+        expect(
+          find.textContaining('will not be offered to another driver'),
+          findsOneWidget,
+        );
+
+        await tester.tap(find.text('Keep driving'));
+        await tester.pumpAndSettle();
+      },
+    );
+
+    testWidgets(
+      'a no_driver_available cancel reconcile returns to home without a '
+      'cancelled view',
+      (tester) async {
+        await pumpTrip(tester);
+        broadcast();
+        await tester.pump();
+        when(
+          () => mockDio.post(any(), data: any(named: 'data')),
+        ).thenThrow(httpError(409));
+        when(() => mockDio.get(ApiEndpoints.driverRideById('r1'))).thenAnswer(
+          (_) async => jsonResponse({
+            'ride': {
+              'id': 'r1',
+              'status': 'no_driver_available',
+              'pickup_lat': pickupLat,
+            },
+            'stops': const <Map<String, dynamic>>[],
+          }),
+        );
+
+        await confirmCancel(tester);
+        await tester.pumpAndSettle();
+
+        expect(find.text('home screen'), findsOneWidget);
+        expect(find.text('Cancelled by the rider.'), findsNothing);
+        expect(rideState.state.currentRide, isNull);
+      },
+    );
   });
 
   group('route drawing', () {
-    testWidgets('requests the route and draws the road polyline',
-        (tester) async {
+    testWidgets('requests the route and draws the road polyline', (
+      tester,
+    ) async {
       stubRouteGet();
       await pumpTrip(tester);
       broadcast();
       await tester.pump();
       await tester.pump();
 
-      verify(() => mockDio.get(
+      verify(
+        () => mockDio.get(
             ApiEndpoints.navigationRoute,
             queryParameters: any(named: 'queryParameters'),
-          )).called(1);
+        ),
+      ).called(1);
 
       final lines = polylines(tester);
       // Straight-line underlay + the road-following route.
@@ -775,12 +921,15 @@ void main() {
       expect(find.byType(AppButton), findsWidgets);
     });
 
-    testWidgets('a failed route falls back to the dashed straight line',
-        (tester) async {
-      when(() => mockDio.get(
+    testWidgets('a failed route falls back to the dashed straight line', (
+      tester,
+    ) async {
+      when(
+        () => mockDio.get(
         ApiEndpoints.navigationRoute,
         queryParameters: any(named: 'queryParameters'),
-      )).thenThrow(DioException(requestOptions: RequestOptions(path: '/')));
+        ),
+      ).thenThrow(DioException(requestOptions: RequestOptions(path: '/')));
 
       await pumpTrip(tester);
       broadcast();
@@ -794,10 +943,13 @@ void main() {
     });
 
     testWidgets('an out-of-coverage estimate is dashed too', (tester) async {
-      when(() => mockDio.get(
+      when(
+        () => mockDio.get(
         ApiEndpoints.navigationRoute,
         queryParameters: any(named: 'queryParameters'),
-      )).thenAnswer((_) async => jsonResponse({
+        ),
+      ).thenAnswer(
+        (_) async => jsonResponse({
             'polyline': [
               {'lat': pickupLat, 'lng': pickupLng},
               {'lat': dropoffLat, 'lng': dropoffLng},
@@ -805,7 +957,8 @@ void main() {
             'total_distance_m': 2900,
             'total_duration_s': 260,
             'is_estimate': true,
-          }));
+        }),
+      );
 
       await pumpTrip(tester);
       broadcast();
@@ -820,23 +973,20 @@ void main() {
   });
 
   group('route error surfacing', () {
-    testWidgets('renders the backend error message when routeError is set',
-        (tester) async {
+    testWidgets('renders the backend error message when routeError is set', (
+      tester,
+    ) async {
       await pumpTrip(tester);
       broadcast();
       await tester.pump();
       await tester.pump();
 
-      container.read(tripNotifierProvider.notifier).state =
-          container.read(tripNotifierProvider).copyWith(
-                routeError: 'failed to calculate route',
-              );
+      container.read(tripNotifierProvider.notifier).state = container
+          .read(tripNotifierProvider)
+          .copyWith(routeError: 'failed to calculate route');
       await tester.pump();
 
-      expect(
-        find.textContaining('failed to calculate route'),
-        findsOneWidget,
-      );
+      expect(find.textContaining('failed to calculate route'), findsOneWidget);
       expect(find.byIcon(Icons.error_outline), findsOneWidget);
       expect(find.byType(AppErrorRow), findsOneWidget);
     });
@@ -849,8 +999,10 @@ void main() {
       stubRouteGet();
       await pumpTrip(tester);
       // Stand at the intermediate stop so the destination is the next target.
-      container.read(lastPositionProvider.notifier).state =
-          const GeoPoint(9.9400, -84.0900);
+        container.read(lastPositionProvider.notifier).state = const GeoPoint(
+          9.9400,
+          -84.0900,
+        );
       broadcast(status: 'in_progress');
       await tester.pump();
       await tester.pump();
@@ -867,17 +1019,21 @@ void main() {
       await tester.pump();
 
       // `verify` consumes matched invocations, so assert the whole set once.
-      final captured = verify(() => mockDio.get(
+        final captured = verify(
+          () => mockDio.get(
             ApiEndpoints.navigationRoute,
             queryParameters: captureAny(named: 'queryParameters'),
-          )).captured;
+          ),
+        ).captured;
       expect(captured, hasLength(2));
       expect((captured.last as Map)['to_lat'], 9.99);
       expect((captured.last as Map)['to_lng'], -84.2);
-    });
+      },
+    );
 
-    testWidgets('the drawer lists every waypoint and marks the next',
-        (tester) async {
+    testWidgets('the drawer lists every waypoint and marks the next', (
+      tester,
+    ) async {
       await pumpTrip(tester);
       broadcast(status: 'in_progress');
       await tester.pump();
@@ -890,8 +1046,9 @@ void main() {
       expect(find.text('Next'), findsOneWidget);
     });
 
-    testWidgets('the map marks only the next waypoint plus the driver',
-        (tester) async {
+    testWidgets('the map marks only the next waypoint plus the driver', (
+      tester,
+    ) async {
       await pumpTrip(tester);
       broadcast(status: 'in_progress');
       await tester.pump();
@@ -902,25 +1059,30 @@ void main() {
       expect(layer.markers, hasLength(2));
     });
 
-    testWidgets('moving to an intermediate stop advances the route target',
-        (tester) async {
+    testWidgets('moving to an intermediate stop advances the route target', (
+      tester,
+    ) async {
       stubRouteGet();
       await pumpTrip(tester);
       broadcast(status: 'in_progress');
       await tester.pump();
       await tester.pump();
 
-      container.read(lastPositionProvider.notifier).state =
-          const GeoPoint(9.9400, -84.0900);
+      container.read(lastPositionProvider.notifier).state = const GeoPoint(
+        9.9400,
+        -84.0900,
+      );
       await tester.pump();
       await tester.pump();
 
       // At the pickup the target was the intermediate stop; now the
       // destination is the next target, a new cache key.
-      final captured = verify(() => mockDio.get(
+      final captured = verify(
+        () => mockDio.get(
             ApiEndpoints.navigationRoute,
             queryParameters: captureAny(named: 'queryParameters'),
-          )).captured;
+        ),
+      ).captured;
       expect(captured, hasLength(2));
       expect((captured.last as Map)['to_lat'], dropoffLat);
       expect((captured.last as Map)['to_lng'], dropoffLng);

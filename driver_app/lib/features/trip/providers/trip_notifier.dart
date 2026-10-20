@@ -1,5 +1,6 @@
 import 'dart:async';
 import 'dart:math';
+import 'package:dio/dio.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:ride_hailing_shared/ride_hailing_shared.dart';
 import '../../../core/auth/auth_provider.dart';
@@ -18,14 +19,19 @@ import '../model/ride_stop.dart';
 enum TripStage {
   /// `pending` — the offer has not been accepted, so there is no trip to drive.
   pre,
+
   /// `accepted` — driving to the pickup.
   enrouteToPickup,
+
   /// `driver_arrived` — at the pickup, waiting for the rider.
   arrived,
+
   /// `in_progress` — driving to the dropoff.
   driving,
+
   /// `completed`.
   post,
+
   /// `cancelled`.
   cancelled,
 }
@@ -98,6 +104,16 @@ class TripState {
   final String? routeError;
   final RouteCache? route;
 
+  /// A user-facing cancel failure (409/422/5xx/network). Rendered once as a
+  /// SnackBar by the screen; cleared on a new ride and on a successful cancel.
+  final String? cancelError;
+
+  /// The notifier decided this ride is not the driver's trip (a 404 cancel, or
+  /// a `no_driver_available` read): the trip screen must leave for Home via
+  /// its `_finishTrip()`. The notifier deliberately does not clear the stores
+  /// itself — that is the screen's single exit path.
+  final bool exitRequested;
+
   /// The sibling `stops` itinerary from `GET /driver/rides/:id` (ordered by
   /// `sequence`, pickup excluded, destination last). Empty until loaded and for
   /// a pre-multi-stop ride.
@@ -109,6 +125,8 @@ class TripState {
     this.cancelledBy,
     this.routeError,
     this.route,
+    this.cancelError,
+    this.exitRequested = false,
     this.stops = const [],
   });
 
@@ -121,7 +139,8 @@ class TripState {
 
   /// The trip is over: nothing to drive, the screen is a receipt or a
   /// cancellation notice.
-  bool get isTerminal => stage == TripStage.post || stage == TripStage.cancelled;
+  bool get isTerminal =>
+      stage == TripStage.post || stage == TripStage.cancelled;
 
   TripState copyWith({
     TripStage? stage,
@@ -131,6 +150,9 @@ class TripState {
     bool clearRouteError = false,
     String? routeError,
     RouteCache? route,
+    String? cancelError,
+    bool clearCancelError = false,
+    bool? exitRequested,
     List<RideStop>? stops,
   }) {
     return TripState(
@@ -139,6 +161,8 @@ class TripState {
       cancelledBy: cancelledBy ?? this.cancelledBy,
       routeError: clearRouteError ? null : routeError ?? this.routeError,
       route: route ?? this.route,
+      cancelError: clearCancelError ? null : cancelError ?? this.cancelError,
+      exitRequested: exitRequested ?? this.exitRequested,
       stops: stops ?? this.stops,
     );
   }
@@ -204,16 +228,32 @@ class TripNotifier extends StateNotifier<TripState> {
       _routeCache.clear();
       _loadedStopsForRideId = null;
     }
+    // `no_driver_available` is not a TripStage: the server gave up dispatching
+    // (no assigned driver), so there is no active trip to render. Leave via the
+    // screen's `_finishTrip()` instead of falling through to a false `pre`
+    // stage with a live Cancel button.
+    if (ride.status == 'no_driver_available') {
+      _requestExit();
+      return;
+    }
     final stage = _stageFromStatus(ride.status);
     state = state.copyWith(
       stage: stage,
       currentRide: ride,
       cancelledBy: ride.cancelledBy,
+      clearCancelError: rideChanged,
       // Drop the previous trip's itinerary immediately; `_ensureStopsLoaded`
       // repopulates it for the new ride.
       stops: rideChanged ? const [] : null,
     );
     _ensureStopsLoaded(ride);
+  }
+
+  /// Signals the trip screen to leave for Home. The screen's `_finishTrip()` is
+  /// the single place that clears the stores (clearing here first would sync a
+  /// fresh `TripState` and drop the flag).
+  void _requestExit() {
+    state = state.copyWith(exitRequested: true);
   }
 
   /// Loads the sibling `stops` once per ride id. Non-fatal: a failure leaves
@@ -224,12 +264,26 @@ class TripNotifier extends StateNotifier<TripState> {
     if (_loadedStopsForRideId == ride.id || _stopsInFlight) return;
     _stopsInFlight = true;
     try {
-      final itinerary =
-          await _ref.read(ridesRepositoryProvider).fetchRideItinerary(ride.id);
+      final itinerary = await _ref
+          .read(ridesRepositoryProvider)
+          .fetchRideItinerary(ride.id);
       // The ride may have changed while the request was in flight.
       if (state.currentRide?.id != ride.id) return;
+      // Mark the id loaded *before* adopting, so the `_syncFromRideState`
+      // listener cannot re-enter and fetch the same itinerary again.
       _loadedStopsForRideId = ride.id;
       state = state.copyWith(stops: itinerary.stops);
+      final fresh = itinerary.ride;
+      if (fresh.status == 'no_driver_available') {
+        _requestExit();
+        return;
+      }
+      // The by-id read is server truth: a terminal status the broadcast missed
+      // self-corrects the trip without waiting for another frame. A failed read
+      // stays non-fatal as before.
+      if (fresh.status == 'cancelled' || fresh.status == 'completed') {
+        _ref.read(rideStateProvider.notifier).adoptRide(fresh);
+      }
     } catch (_) {
       // Non-fatal: the map still draws pickup/dropoff from the held ride.
       _loadedStopsForRideId = ride.id;
@@ -247,31 +301,37 @@ class TripNotifier extends StateNotifier<TripState> {
     final pickupLat = ride.pickupLat;
     final pickupLng = ride.pickupLng;
     if (pickupLat != null && pickupLng != null) {
-      points.add(TripWaypoint(
+      points.add(
+        TripWaypoint(
         lat: pickupLat,
         lng: pickupLng,
         address: ride.pickupAddress ?? 'Pickup',
         isPickup: true,
-      ));
+        ),
+      );
     }
     for (final stop in state.stops) {
       // The destination row is replaced by the live dropoff below.
       if (stop.isDestination) continue;
-      points.add(TripWaypoint(
+      points.add(
+        TripWaypoint(
         lat: stop.lat,
         lng: stop.lng,
         address: stop.address.isEmpty ? 'Stop' : stop.address,
-      ));
+        ),
+      );
     }
     final dropoffLat = ride.dropoffLat;
     final dropoffLng = ride.dropoffLng;
     if (dropoffLat != null && dropoffLng != null) {
-      points.add(TripWaypoint(
+      points.add(
+        TripWaypoint(
         lat: dropoffLat,
         lng: dropoffLng,
         address: ride.dropoffAddress ?? 'Destination',
         isDestination: true,
-      ));
+        ),
+      );
     }
     return points;
   }
@@ -296,8 +356,9 @@ class TripNotifier extends StateNotifier<TripState> {
           isPickup: true,
         );
       case TripStage.driving:
-        final points =
-            waypointsFor(ride).where((point) => !point.isPickup).toList();
+        final points = waypointsFor(
+          ride,
+        ).where((point) => !point.isPickup).toList();
         if (points.isEmpty) return null;
         final position = _ref.read(lastPositionProvider);
         if (position == null) return points.first;
@@ -336,7 +397,10 @@ class TripNotifier extends StateNotifier<TripState> {
     };
     if (nextStatus == null) return;
     try {
-      final response = await _ref.read(apiClientProvider).dio.put(
+      final response = await _ref
+          .read(apiClientProvider)
+          .dio
+          .put(
         ApiEndpoints.driverRideStatus(ride.id),
         data: {'status': nextStatus},
       );
@@ -358,13 +422,65 @@ class TripNotifier extends StateNotifier<TripState> {
     if (ride == null || ride.id.isEmpty) return;
     if (!state.canCancel) return;
     try {
-      final response = await _ref.read(apiClientProvider).dio.post(
+      final response = await _ref
+          .read(apiClientProvider)
+          .dio
+          .post(
         ApiEndpoints.driverRideCancel(ride.id),
         data: reason != null ? {'reason': reason} : null,
       );
+      state = state.copyWith(clearCancelError: true);
       _adoptServerRide(response.data);
+    } on DioException catch (e) {
+      switch (e.response?.statusCode) {
+        case 404:
+          // Not this driver's ride (e.g. only an offer was held): no generic
+          // error — leave the trip and let Home reset the latch.
+          _requestExit();
+        case 409:
+          // In progress/completed/no_driver_available: reconcile with the
+          // server's own ride so the screen shows the truthful stage.
+          state = state.copyWith(
+            cancelError: apiErrorMessage(
+              e,
+              'This trip can no longer be cancelled.',
+            ),
+          );
+          await _reconcileAfterCancelConflict(ride.id);
+        default:
+          state = state.copyWith(
+            cancelError: apiErrorMessage(
+              e,
+              'Could not cancel the trip. Please try again.',
+            ),
+          );
+      }
+    } catch (e) {
+      state = state.copyWith(
+        cancelError: apiErrorMessage(
+          e,
+          'Could not cancel the trip. Please try again.',
+        ),
+      );
+    }
+  }
+
+  /// Re-reads the ride after a 409 cancel and adopts the server's truth:
+  /// `in_progress` → driving, `completed` → receipt, `cancelled` → cancelled.
+  /// `no_driver_available` (and a 404 on the read) is not a trip for this
+  /// driver: request an exit instead of inventing a stage.
+  Future<void> _reconcileAfterCancelConflict(String rideId) async {
+    try {
+      final fresh = await _ref.read(ridesRepositoryProvider).fetchRide(rideId);
+      if (fresh.status == 'no_driver_available') {
+        _requestExit();
+        return;
+      }
+      _ref.read(rideStateProvider.notifier).adoptRide(fresh);
+    } on DioException catch (e) {
+      if (e.response?.statusCode == 404) _requestExit();
     } catch (_) {
-      // Server confirms or rejects via ride.updated.
+      // The surfaced cancelError stays; the driver can retry.
     }
   }
 
@@ -395,7 +511,10 @@ class TripNotifier extends StateNotifier<TripState> {
     if (_routeInFlight) return cached;
     _routeInFlight = true;
     try {
-      final response = await _ref.read(apiClientProvider).dio.get(
+      final response = await _ref
+          .read(apiClientProvider)
+          .dio
+          .get(
             ApiEndpoints.navigationRoute,
             queryParameters: {
               'from_lat': fromLat,
@@ -407,10 +526,7 @@ class TripNotifier extends StateNotifier<TripState> {
       final data = response.data as Map<String, dynamic>;
       final polyline = (data['polyline'] as List<dynamic>? ?? const [])
           .whereType<Map<String, dynamic>>()
-          .map((p) => {
-                'lat': _asDouble(p['lat']),
-                'lng': _asDouble(p['lng']),
-              })
+          .map((p) => {'lat': _asDouble(p['lat']), 'lng': _asDouble(p['lng'])})
           .toList();
       final route = RouteCache(
         polyline: polyline,
@@ -427,7 +543,9 @@ class TripNotifier extends StateNotifier<TripState> {
       state = state.copyWith(route: route, clearRouteError: true);
       return route;
     } catch (e) {
-      state = state.copyWith(routeError: apiErrorMessage(e, 'Route unavailable'));
+      state = state.copyWith(
+        routeError: apiErrorMessage(e, 'Route unavailable'),
+      );
       return null;
     } finally {
       _routeInFlight = false;
@@ -462,7 +580,8 @@ class TripNotifier extends StateNotifier<TripState> {
     const degToRad = 0.017453292519943295;
     final dLat = (lat2 - lat1) * degToRad;
     final dLng = (lng2 - lng1) * degToRad;
-    final a = sin(dLat / 2) * sin(dLat / 2) +
+    final a =
+        sin(dLat / 2) * sin(dLat / 2) +
         cos(lat1 * degToRad) *
             cos(lat2 * degToRad) *
             sin(dLng / 2) *
@@ -471,12 +590,15 @@ class TripNotifier extends StateNotifier<TripState> {
   }
 }
 
-final tripNotifierProvider = StateNotifierProvider<TripNotifier, TripState>((ref) {
+final tripNotifierProvider = StateNotifierProvider<TripNotifier, TripState>((
+  ref,
+) {
   return TripNotifier(ref);
 });
 
 /// Radius within which an intermediate stop is considered reached, so the
 /// "next waypoint" advances. Overridable in tests; the server has no per-stop
 /// completion signal yet (`driver_app_plans/[ontrip]_itinerary_next_stop.md`).
-final nextStopArrivalRadiusProvider =
-    Provider<double>((ref) => TripNotifier.defaultNextStopArrivalRadiusM);
+final nextStopArrivalRadiusProvider = Provider<double>(
+  (ref) => TripNotifier.defaultNextStopArrivalRadiusM,
+);

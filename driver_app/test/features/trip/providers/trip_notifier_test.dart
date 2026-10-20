@@ -42,8 +42,7 @@ void main() {
     mockDio = MockDio();
     when(() => mockApiClient.dio).thenReturn(mockDio);
     final mockWs = MockDriverWebSocketService();
-    when(() => mockWs.events)
-        .thenAnswer((_) => const Stream<WsEvent>.empty());
+    when(() => mockWs.events).thenAnswer((_) => const Stream<WsEvent>.empty());
     rideState = RideStateNotifier(mockWs, apiClient: MockApiClient());
 
     // The trip layer loads the sibling `stops` itinerary once per ride.
@@ -105,12 +104,14 @@ void main() {
     Map<String, dynamic>? fare,
     String? cancelledBy,
   }) {
-    rideState.onWsEvent(rideUpdated(
+    rideState.onWsEvent(
+      rideUpdated(
       rideId: rideId,
       status: status,
       fare: fare,
       cancelledBy: cancelledBy,
-    ));
+      ),
+    );
   }
 
   /// A full `accepted` broadcast, i.e. what the dispatch/accept path delivers.
@@ -142,21 +143,22 @@ void main() {
   }
 
   void stubRouteGet({bool estimate = false, int points = 3}) {
-    when(() => mockDio.get(
+    when(
+      () => mockDio.get(
       ApiEndpoints.navigationRoute,
       queryParameters: any(named: 'queryParameters'),
-    )).thenAnswer((_) async => jsonResponse({
+      ),
+    ).thenAnswer(
+      (_) async => jsonResponse({
           'polyline': List.generate(
             points,
-            (i) => {
-              'lat': pickupLat + i * 0.001,
-              'lng': pickupLng,
-            },
+          (i) => {'lat': pickupLat + i * 0.001, 'lng': pickupLng},
           ),
           'total_distance_m': 4200,
           'total_duration_s': 380,
           if (estimate) 'is_estimate': true,
-        }));
+      }),
+    );
   }
 
   group('stage mapping mirrors the server state machine', () {
@@ -191,7 +193,8 @@ void main() {
   });
 
   group('advance()', () {
-    test('enrouteToPickup never sends driver_arrived (server geofence owns it)',
+    test(
+      'enrouteToPickup never sends driver_arrived (server geofence owns it)',
         () async {
       seedAcceptedRide();
       stubStatusPut();
@@ -201,7 +204,8 @@ void main() {
       // Arrival is server-owned: the driver must never PUT `driver_arrived`.
       verifyNever(() => mockDio.put(any(), data: any(named: 'data')));
       expect(notifier.state.stage, TripStage.enrouteToPickup);
-    });
+      },
+    );
 
     test('arrived puts in_progress', () async {
       seedAcceptedRide();
@@ -211,14 +215,17 @@ void main() {
       await notifier.advance();
 
       final captured = verify(
-        () => mockDio.put(ApiEndpoints.driverRideStatus('r1'),
-            data: captureAny(named: 'data')),
+        () => mockDio.put(
+          ApiEndpoints.driverRideStatus('r1'),
+          data: captureAny(named: 'data'),
+        ),
       ).captured;
       expect((captured.first as Map)['status'], 'in_progress');
       expect(notifier.state.stage, TripStage.driving);
     });
 
-    test('driving puts completed and keeps the fare the server returned',
+    test(
+      'driving puts completed and keeps the fare the server returned',
         () async {
       seedAcceptedRide();
       broadcast(status: 'in_progress');
@@ -237,15 +244,19 @@ void main() {
       await notifier.advance();
 
       final captured = verify(
-        () => mockDio.put(ApiEndpoints.driverRideStatus('r1'),
-            data: captureAny(named: 'data')),
+          () => mockDio.put(
+            ApiEndpoints.driverRideStatus('r1'),
+            data: captureAny(named: 'data'),
+          ),
       ).captured;
       expect((captured.first as Map)['status'], 'completed');
       expect(notifier.state.stage, TripStage.post);
       expect(notifier.state.currentRide!.totalFare, 13.2);
-    });
+      },
+    );
 
-    test('completion adopts the final total over the held booked quote',
+    test(
+      'completion adopts the final total over the held booked quote',
         () async {
       seedAcceptedRide();
       // The booked quote the driver already holds.
@@ -260,7 +271,8 @@ void main() {
       await notifier.advance();
 
       expect(notifier.state.currentRide!.totalFare, 13.2);
-    });
+      },
+    );
 
     test('a completion broadcast replaces the booked total with the final', () {
       seedAcceptedRide();
@@ -307,8 +319,9 @@ void main() {
 
     test('a rejected transition leaves the stage untouched', () async {
       seedAcceptedRide();
-      when(() => mockDio.put(any(), data: any(named: 'data')))
-          .thenThrow(DioException(requestOptions: RequestOptions(path: '/')));
+      when(
+        () => mockDio.put(any(), data: any(named: 'data')),
+      ).thenThrow(DioException(requestOptions: RequestOptions(path: '/')));
 
       await notifier.advance();
 
@@ -332,10 +345,12 @@ void main() {
 
       await notifier.cancelTrip(reason: 'rider not showing up');
 
-      verify(() => mockDio.post(
+      verify(
+        () => mockDio.post(
             ApiEndpoints.driverRideCancel('r1'),
             data: {'reason': 'rider not showing up'},
-          )).called(1);
+        ),
+      ).called(1);
       expect(notifier.state.stage, TripStage.cancelled);
     });
 
@@ -363,6 +378,183 @@ void main() {
 
       verifyNever(() => mockDio.post(any(), data: any(named: 'data')));
     });
+
+    DioException httpError(int status) => DioException(
+      requestOptions: RequestOptions(path: '/stub'),
+      response: Response(
+        requestOptions: RequestOptions(path: '/stub'),
+        statusCode: status,
+      ),
+    );
+
+    void stubCancelError(int status) {
+      when(
+        () => mockDio.post(any(), data: any(named: 'data')),
+      ).thenThrow(httpError(status));
+    }
+
+    void stubRideRead(String status, {String? cancelledBy}) {
+      when(() => mockDio.get(ApiEndpoints.driverRideById('r1'))).thenAnswer(
+        (_) async => jsonResponse({
+          'ride': {
+            'id': 'r1',
+            'status': status,
+            'pickup_lat': pickupLat,
+            'pickup_lng': pickupLng,
+            'dropoff_lat': dropoffLat,
+            'dropoff_lng': dropoffLng,
+            'cancelled_by': ?cancelledBy,
+          },
+          'stops': const <Map<String, dynamic>>[],
+        }),
+      );
+    }
+
+    test('cancel 404 requests an exit instead of a generic error', () async {
+      seedAcceptedRide();
+      await settleStops();
+      stubCancelError(404);
+
+      await notifier.cancelTrip();
+
+      expect(notifier.state.exitRequested, isTrue);
+      expect(notifier.state.cancelError, isNull);
+    });
+
+    test(
+      'cancel 409 reconciles to the server\'s in-progress ride and stays',
+      () async {
+        seedAcceptedRide();
+        await settleStops();
+        stubCancelError(409);
+        stubRideRead('in_progress');
+
+        await notifier.cancelTrip();
+
+        expect(notifier.state.stage, TripStage.driving);
+        expect(notifier.state.canCancel, isFalse);
+        expect(
+          notifier.state.cancelError,
+          'This trip can no longer be cancelled.',
+        );
+        expect(notifier.state.exitRequested, isFalse);
+      },
+    );
+
+    test(
+      'cancel 409 on a completed ride adopts the terminal receipt',
+      () async {
+        seedAcceptedRide();
+        await settleStops();
+        stubCancelError(409);
+        stubRideRead('completed');
+
+        await notifier.cancelTrip();
+
+        expect(notifier.state.stage, TripStage.post);
+        expect(notifier.state.currentRide!.status, 'completed');
+      },
+    );
+
+    test('cancel 409 on a no_driver_available ride requests an exit, not a '
+        'cancelled view', () async {
+      seedAcceptedRide();
+      await settleStops();
+      stubCancelError(409);
+      stubRideRead('no_driver_available');
+
+      await notifier.cancelTrip();
+
+      expect(notifier.state.exitRequested, isTrue);
+      expect(notifier.state.stage, isNot(TripStage.pre));
+      expect(
+        notifier.state.stage,
+        isNot(TripStage.cancelled),
+        reason: 'no_driver_available is not a driver trip and has no receipt',
+      );
+    });
+
+    test(
+      'cancel 500 surfaces a retryable error and stays on the trip',
+      () async {
+        seedAcceptedRide();
+        await settleStops();
+        stubCancelError(500);
+
+        await notifier.cancelTrip();
+
+        expect(notifier.state.exitRequested, isFalse);
+        expect(
+          notifier.state.cancelError,
+          'Could not cancel the trip. Please try again.',
+        );
+        expect(notifier.state.stage, TripStage.enrouteToPickup);
+      },
+    );
+  });
+
+  group('server-truth reconciliation', () {
+    void stubItinerary(String status, {String? cancelledBy}) {
+      when(() => mockDio.get(ApiEndpoints.driverRideById('r1'))).thenAnswer(
+        (_) async => jsonResponse({
+          'ride': {
+            'id': 'r1',
+            'status': status,
+            'pickup_lat': pickupLat,
+            'pickup_lng': pickupLng,
+            'dropoff_lat': dropoffLat,
+            'dropoff_lng': dropoffLng,
+            'cancelled_by': ?cancelledBy,
+          },
+          'stops': [
+            {
+              'sequence': 1,
+              'kind': 'destination',
+              'lat': dropoffLat,
+              'lng': dropoffLng,
+              'address': 'Airport',
+            },
+          ],
+        }),
+      );
+    }
+
+    test('a no_driver_available ride.updated requests an exit, never a live '
+        'stage', () async {
+      seedAcceptedRide();
+      await settleStops();
+
+      broadcast(status: 'no_driver_available');
+
+      expect(notifier.state.exitRequested, isTrue);
+      expect(notifier.state.stage, isNot(TripStage.pre));
+    });
+
+    test(
+      'a cancelled by-id itinerary read self-corrects the trip to cancelled',
+      () async {
+        stubItinerary('cancelled', cancelledBy: 'rider');
+
+        seedAcceptedRide();
+        await settleStops();
+
+        expect(notifier.state.currentRide!.status, 'cancelled');
+        expect(notifier.state.currentRide!.cancelledBy, 'rider');
+        expect(notifier.state.stage, TripStage.cancelled);
+        expect(notifier.state.stops, isNotEmpty);
+      },
+    );
+
+    test('a no_driver_available itinerary read requests an exit and never '
+        'adopts a live ride', () async {
+      stubItinerary('no_driver_available');
+
+      seedAcceptedRide();
+      await settleStops();
+
+      expect(notifier.state.exitRequested, isTrue);
+      expect(notifier.state.stage, isNot(TripStage.pre));
+    });
   });
 
   group('itinerary and next waypoint', () {
@@ -380,7 +572,8 @@ void main() {
       expect(waypoints[2].address, 'Airport');
     });
 
-    test('next waypoint on driving is the first stop beyond the radius',
+    test(
+      'next waypoint on driving is the first stop beyond the radius',
         () async {
       seedAcceptedRide();
       await settleStops();
@@ -388,41 +581,50 @@ void main() {
       final ride = notifier.state.currentRide!;
 
       // At the pickup, the intermediate stop is the next waypoint.
-      container.read(lastPositionProvider.notifier).state =
-          const GeoPoint(pickupLat, pickupLng);
+        container.read(lastPositionProvider.notifier).state = const GeoPoint(
+          pickupLat,
+          pickupLng,
+        );
       expect(
         notifier.nextWaypoint(TripStage.driving, ride)!.address,
         'Midpoint Cafe',
       );
 
       // Standing at the intermediate stop, the destination is next.
-      container.read(lastPositionProvider.notifier).state =
-          const GeoPoint(midLat, midLng);
+        container.read(lastPositionProvider.notifier).state = const GeoPoint(
+          midLat,
+          midLng,
+        );
       expect(
         notifier.nextWaypoint(TripStage.driving, ride)!.isDestination,
         isTrue,
       );
-    });
+      },
+    );
 
-    test('a destination-only patch moves the destination row, stage unchanged',
+    test(
+      'a destination-only patch moves the destination row, stage unchanged',
         () {
       seedAcceptedRide();
       expect(notifier.state.stage, TripStage.enrouteToPickup);
       final before = notifier.state.currentRide!.dropoffLat;
 
-      rideState.onWsEvent(rideUpdated(
+        rideState.onWsEvent(
+          rideUpdated(
         status: 'accepted',
         includePlaces: true,
         dropoffLat: 9.99,
         dropoffLng: -84.2,
         dropoffAddress: 'New Place',
-      ));
+          ),
+        );
 
       expect(notifier.state.stage, TripStage.enrouteToPickup);
       expect(notifier.state.currentRide!.dropoffLat, isNot(before));
       expect(notifier.state.currentRide!.dropoffLat, 9.99);
       expect(notifier.state.currentRide!.dropoffAddress, 'New Place');
-    });
+      },
+    );
 
     test('a new ride drops the loaded stops', () async {
       seedAcceptedRide();
@@ -461,14 +663,20 @@ void main() {
 
     test('sends the four mandatory query params', () async {
       stubRouteGet();
-      when(() => mockDio.get(
+      when(
+        () => mockDio.get(
         ApiEndpoints.navigationRoute,
         queryParameters: any(named: 'queryParameters'),
-      )).thenAnswer((invocation) async {
+        ),
+      ).thenAnswer((invocation) async {
         final params =
             invocation.namedArguments[#queryParameters] as Map<String, dynamic>;
-        expect(params.keys.toSet(),
-            {'from_lat', 'from_lng', 'to_lat', 'to_lng'});
+        expect(params.keys.toSet(), {
+          'from_lat',
+          'from_lng',
+          'to_lat',
+          'to_lng',
+        });
         return jsonResponse({
           'polyline': [
             {'lat': 1.0, 'lng': 2.0},
@@ -510,10 +718,12 @@ void main() {
       );
 
       expect(second, same(first));
-      verify(() => mockDio.get(
+      verify(
+        () => mockDio.get(
             ApiEndpoints.navigationRoute,
             queryParameters: any(named: 'queryParameters'),
-          )).called(1);
+        ),
+      ).called(1);
     });
 
     test('refetches once the driver has moved more than 200 m', () async {
@@ -537,10 +747,12 @@ void main() {
         currentLng: pickupLng,
       );
 
-      verify(() => mockDio.get(
+      verify(
+        () => mockDio.get(
             ApiEndpoints.navigationRoute,
             queryParameters: any(named: 'queryParameters'),
-          )).called(2);
+        ),
+      ).called(2);
     });
 
     test('refetches when the destination changes', () async {
@@ -563,10 +775,12 @@ void main() {
         currentLng: pickupLng,
       );
 
-      verify(() => mockDio.get(
+      verify(
+        () => mockDio.get(
             ApiEndpoints.navigationRoute,
             queryParameters: any(named: 'queryParameters'),
-          )).called(2);
+        ),
+      ).called(2);
     });
 
     test('collapses concurrent calls onto one request', () async {
@@ -591,10 +805,12 @@ void main() {
         ),
       ]);
 
-      verify(() => mockDio.get(
+      verify(
+        () => mockDio.get(
             ApiEndpoints.navigationRoute,
             queryParameters: any(named: 'queryParameters'),
-          )).called(1);
+        ),
+      ).called(1);
     });
 
     test('flags an out-of-coverage estimate', () async {
@@ -612,12 +828,13 @@ void main() {
       expect(route!.isEstimate, isTrue);
     });
 
-    test('returns null on failure so the screen draws the fallback',
-        () async {
-      when(() => mockDio.get(
+    test('returns null on failure so the screen draws the fallback', () async {
+      when(
+        () => mockDio.get(
         ApiEndpoints.navigationRoute,
         queryParameters: any(named: 'queryParameters'),
-      )).thenThrow(DioException(requestOptions: RequestOptions(path: '/')));
+        ),
+      ).thenThrow(DioException(requestOptions: RequestOptions(path: '/')));
 
       final route = await notifier.fetchRoute(
         fromLat: pickupLat,
@@ -635,10 +852,12 @@ void main() {
     });
 
     test('success clears a previous route error', () async {
-      when(() => mockDio.get(
+      when(
+        () => mockDio.get(
         ApiEndpoints.navigationRoute,
         queryParameters: any(named: 'queryParameters'),
-      )).thenThrow(DioException(requestOptions: RequestOptions(path: '/')));
+        ),
+      ).thenThrow(DioException(requestOptions: RequestOptions(path: '/')));
       await notifier.fetchRoute(
         fromLat: pickupLat,
         fromLng: pickupLng,
@@ -663,16 +882,20 @@ void main() {
     });
 
     test('tolerates integer coordinates in the polyline', () async {
-      when(() => mockDio.get(
+      when(
+        () => mockDio.get(
         ApiEndpoints.navigationRoute,
         queryParameters: any(named: 'queryParameters'),
-      )).thenAnswer((_) async => jsonResponse({
+        ),
+      ).thenAnswer(
+        (_) async => jsonResponse({
             'polyline': [
               {'lat': 9, 'lng': -84},
             ],
             'total_distance_m': 10,
             'total_duration_s': 5,
-          }));
+        }),
+      );
 
       final route = await notifier.fetchRoute(
         fromLat: pickupLat,
@@ -716,10 +939,12 @@ void main() {
         currentLat: pickupLat,
         currentLng: pickupLng,
       );
-      verify(() => mockDio.get(
+      verify(
+        () => mockDio.get(
             ApiEndpoints.navigationRoute,
             queryParameters: any(named: 'queryParameters'),
-          )).called(2);
+        ),
+      ).called(2);
     });
 
     test('a new ride drops the previous route cache', () async {
@@ -744,10 +969,12 @@ void main() {
         currentLng: pickupLng,
       );
 
-      verify(() => mockDio.get(
+      verify(
+        () => mockDio.get(
             ApiEndpoints.navigationRoute,
             queryParameters: any(named: 'queryParameters'),
-          )).called(1);
+        ),
+      ).called(1);
     });
   });
 }
