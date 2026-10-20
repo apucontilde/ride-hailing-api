@@ -407,6 +407,9 @@ Funnel algorithm:
    (`accepted` / `accept_failed` / `withdrawn`) from the received `offerAnswer` and stops (or
    continues on a decline/timeout exactly as today). `HandleAccept` is the **only** caller of the
    unexported `acceptRide`; no loop branch calls it.
+   **Timeout-boundary rule (details in §4.1.1):** when the 30 s timer and this answer are both
+   ready, the timeout branch must observe the claimed generation and adopt this answer's outcome —
+   a committed accept must never be reported as `expired`.
 7. Return `err` to the caller. On a non-pending failure, re-read and send the accepting driver a
    terminal `ride.updated` for the current status (covers the cancel race in §3.3).
 
@@ -434,6 +437,57 @@ for the same ride overwrites the entry and the defer deletes unconditionally (`:
 must make deletion/claim conditional on the entry still being the one the caller owns. The channel
 stays buffered (currently `make(chan bool, 1)`, `internal/service/dispatch.go:327`); a late answer
 after the loop timed out must not block the HTTP handler or the WS goroutine.
+
+#### 4.1.1 The `expired` frame is generation-claim-gated (timeout vs accept)
+
+`time.After(offerTimeout)` and the buffered `offer.ch` can be ready at the same instant, and Go
+chooses among ready `select` cases pseudo-randomly. The current timeout branch
+(`internal/service/dispatch.go:430-434`, working tree) records `skipOfferTimeout` and calls
+`sendOfferClosed(driverID, rideID, "expired")` unconditionally, so an accept that already committed
+can still produce a false `ride.offer_closed` `reason:"expired"` afterwards. The timeout branch must
+distinguish **no answer** from **the answer arrived but `select` chose the timer**:
+
+1. **Let an already-arrived answer win.** Non-blocking `select` on `offer.ch` first; if it yields an
+   `offerAnswer`, process it through the same outcome switch as the answer branch (`offerAccepted`,
+   `offerAcceptFailed`, `offerDeclined`, `offerWithdrawn`) and return it without recording a timeout
+   skip or sending a frame.
+2. **Otherwise try to claim this generation under `offerChannelsMu`.** Delete the entry only when
+   `offerChannels[rideID].token == token` — the identical conditional claim `HandleAccept` step 4 and
+   `WithdrawOffer` (§3.2) use. Claim success means the offer is genuinely still actionable and
+   unanswered: record `skipOfferTimeout`, send `ride.offer_closed` `reason:"expired"`, return
+   `offerTimedOut`.
+3. **If the claim fails (entry absent), the generation was already claimed — block for that
+   claimer's answer.** Do **not** record `skipOfferTimeout` and do **not** send any
+   `ride.offer_closed` from the timeout branch. The entry can be gone **before** the answer exists:
+   `HandleAccept` deletes the offer under the mutex **before** calling `acceptRide` (which includes
+   the ETA route lookup) and sends `offerAnswer` only **after** `acceptRide` returns, so at this
+   instant a non-blocking receive can legitimately find nothing. Perform a **BLOCKING receive** on
+   `offer.ch` (no timeout) and return that `offerAnswer` outcome. This is safe because every claimer
+   is required to send exactly one answer — `HandleAccept` step 6 after the authoritative write, or
+   `WithdrawOffer` with `ErrOfferWithdrawn` — so the receive cannot wait forever; the channel being
+   buffered 1 only guarantees the sender never blocks, it does **not** mean the answer is already in
+   the buffer. Consequently the loop may wait for the claimant's accept/ETA work to finish, which is
+   correct: returning `offerTimedOut` or sending `expired` while an accept is committing is exactly
+   the bug being fixed. Do **not** re-check with a non-blocking receive after step 1 already yielded
+   nothing; block for the guaranteed claimant answer. If the entry is present under a **different**
+   token, a replacement generation owns it (not a claimer): return `offerTimedOut` without a frame
+   and leave that generation untouched.
+
+**Canonical mechanism: (a) the parked-generation claim, not (b) a status re-read.** The parked
+`activeOffer` token is the server's linearizable answer to "may this generation still be closed?".
+`HandleAccept` claims (deletes) under the same lock **before** `acceptRide` commits, and every claim
+is followed by exactly one answer. Therefore either the timeout claims first — and no accept can
+commit afterwards (`HandleAccept` then finds no offer and answers `OFFER_EXPIRED`) — or the accept
+claims first, and the timeout observes that claim and must adopt the accept outcome. A status re-read
+is **not linearizable** with `AssignDriver`: it can read `pending` just before the assignment commits
+and still emit `expired` after the commit, so it would not close this race; it also puts a database
+round-trip in a frame-timing decision. The claim is the same mechanism §3.2 already uses, so there is
+one ownership rule for delete/replace/close, not two.
+
+**Interaction with step 6:** the accept answer wins for the same generation. If the timer fires
+before the answer is sent, the timeout must lose the claim, **block** on `offer.ch` until
+`HandleAccept` sends the outcome, and return `offerAccepted`, so `sendRequestsSequentially` records
+`accepted` and closes the trace instead of a timeout skip.
 
 ### 4.2 HTTP `POST /api/v1/driver/rides/:id/accept` (canonical)
 
@@ -494,7 +548,7 @@ Emission points:
 
 | Reason | When |
 | --- | --- |
-| `expired` | `offerRideToDriver` hits `offerTimeout` (`internal/service/dispatch.go:351`). |
+| `expired` | `offerRideToDriver` **wins the parked-generation claim** after `offerTimeout` (`internal/service/dispatch.go:430-434`, working tree): no answer was buffered and the entry is still present under this token. If `HandleAccept`/`WithdrawOffer` already claimed (deleted) the generation, this frame is **suppressed** and the timeout performs a **blocking receive** on the claimant's guaranteed answer and returns that outcome (§4.1.1). |
 | `declined` | `DeclineOffer` processes this driver's decline (`internal/service/dispatch.go:389`). |
 | `cancelled` | `RideService.CancelRide` withdraws via `WithdrawOffer` (§3). |
 | `accepted_elsewhere` | a parked offer is withdrawn because the ride was assigned elsewhere. |
@@ -533,6 +587,11 @@ driver-app bug; the driver-app plan adopts it verbatim.
 - [ ] A cancelled/taken ride gets 409/`RIDE_NOT_PENDING`, never a false `200`.
 - [ ] The HTTP accept closes the parked offer, so the dispatch loop does not keep offering and
       does not record `offer_timeout` for an assigned ride.
+- [ ] **A committed accept never produces `ride.offer_closed` `reason:"expired"` for that driver,
+      even when the accept answer races the 30 s timeout.** The timeout either claims the parked
+      generation first (so no accept can commit) or observes the claim and **blocks** for the
+      claimant's guaranteed answer, returning the accept outcome, with no `skipOfferTimeout`
+      recorded (§4.1.1).
 - [ ] The exact frame names/shapes above are pinned by tests and are not renamed.
 
 ---
@@ -574,6 +633,19 @@ driver-app bug; the driver-app plan adopts it verbatim.
   them) and the parked offer is untouched** (still accept-able by the real offered driver), closing
   the force-assign hole.
 - `TestHandleAcceptExpiredOfferReturnsError` — after a simulated timeout, no false success.
+- `TestNoExpiredOfferClosedAfterCommittedAccept` — **deterministic boundary test for §4.1.1**: a
+  fake repo's `AssignDriver` commits the assignment, signals `committed`, then blocks on a release
+  channel; the test waits past the shrunken `offerTimeout` so the timer fires while the assignment
+  is committed and the accept answer has **not** been sent yet, then releases the accept. The test
+  pins the receive semantics: after losing the claim, the timeout branch must **block** on
+  `offer.ch` — never re-check non-blocking, return `offerTimedOut`, or emit `expired` — until the
+  released `HandleAccept` sends its answer; the accept goroutine must not be blocked by the timeout
+  branch. Assert: `HandleAccept` returns `nil` and `AssignDriver` was called **exactly once** for
+  the offered driver; `offerRideToDriver`/the loop returns the success outcome (the trace ends
+  `accepted`, never `candidates_skipped`); the test hub recorded **no** `ride.offer_closed` with
+  `reason:"expired"`; and **no** `skipOfferTimeout`/`offer_timeout` skip was recorded for the
+  assigned ride. The existing timeout-only test must still emit exactly one `expired` when no accept
+  claims the offer.
 - `TestHandleAcceptWrappedConflictMaps` — a fake `AssignDriver` returns a *wrapped*
   `repository.ErrConflict`; classification is `409`/`RIDE_NOT_PENDING`, never `400`
   (`errors.Is`, §4.2).
@@ -603,7 +675,9 @@ driver-app bug; the driver-app plan adopts it verbatim.
 - `TestWSAcceptFailedFrameNotOffered` → `NOT_OFFERED`.
 - `TestWSAcceptFailedFrameRideNotPending` → `RIDE_NOT_PENDING`.
 - `TestWSOfferClosedOnRiderCancel` → `ride.offer_closed` `reason:"cancelled"`.
-- `TestWSOfferClosedOnTimeout` → `reason:"expired"`.
+- `TestWSOfferClosedOnTimeout` → `reason:"expired"`. The complement — **no** `expired` frame after
+  a committed accept, even when the timer and the accept answer race — is the deterministic
+  `TestNoExpiredOfferClosedAfterCommittedAccept` in §5.1.
 - `TestWSRiderCancelReachesOfferedDriver` → the offered driver receives both `ride.offer_closed`
   and `ride.updated {status:"cancelled",cancelled_by:"rider"}` even with `driver_id` NULL.
 
@@ -675,7 +749,7 @@ production counterpart can (`parent/AGENTS.md` / STATUS Invariants).
 
 ---
 
-## Evidence map (verified in the working tree, commit `0a11b95`)
+## Evidence map (commit `0a11b95`; rows marked working tree = uncommitted implementation of this plan)
 
 | Claim | Evidence |
 | --- | --- |
@@ -688,6 +762,7 @@ production counterpart can (`parent/AGENTS.md` / STATUS Invariants).
 | `finishWithoutDriver` unconditional terminal write | `internal/service/dispatch.go:167-180` (write `:172`) |
 | Post-offer pending re-read then write | `internal/service/dispatch.go:275-289` (`:280`) |
 | Offer registration/defer/`ride.offer`/timeout | `internal/service/dispatch.go:317-355`; timeout `internal/service/dispatch_observability.go:216` |
+| Timeout vs accept race: unconditional `expired` frame; accept claim/answer ordering | **working tree (uncommitted implementation):** `internal/service/dispatch.go:430-434` (`recordSkip(skipOfferTimeout)` + `sendOfferClosed(..., "expired")`); `HandleAccept` claim/delete `:482-498`, authoritative `acceptRide` `:500`, non-blocking answer `:504-507`; parked `chan offerAnswer` buffered 1 `:383,388`; `WithdrawOffer` delete/answer `:532-549` |
 | `HandleAccept` ignores `driverID`, no result | `internal/service/dispatch.go:364-372` |
 | `DeclineOffer` driver match precedent | `internal/service/dispatch.go:389-396` |
 | HTTP accept bypasses the funnel + raw `DispatchConflictError` type assertion | `internal/service/dispatch.go:400-481`; `internal/handler/ride.go:681-694` (assertion `:686`) |
@@ -705,6 +780,11 @@ production counterpart can (`parent/AGENTS.md` / STATUS Invariants).
 
 **Drift to report (not fixed by this plan):**
 
+- **Working tree (uncommitted implementation of this plan)** moved the offer/timeout block:
+  `offerRideToDriver` is now `internal/service/dispatch.go:373-436` (timeout `:430-434`),
+  `WithdrawOffer` is `:532-549`, and `HandleAccept` is `:481-526`. The evidence-map row that cites
+  `:317-355` is the pre-implementation snapshot (`0a11b95`); the timeout row below cites the current
+  tree.
 - `api_plans/STATUS.md:201-204` cites the zero-candidate `finishWithoutDriver` call at
   `dispatch.go:112` and the helper at `:127-138`/`:135`/`:137`; the current tree has the call at
   `:150`, the helper at `:167-180`, the early return at `:176`, and the push at `:178`.

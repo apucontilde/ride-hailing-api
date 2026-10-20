@@ -120,6 +120,33 @@ and `ride.offer_closed reason:"cancelled"` is sent on rider cancel. `message` in
 - The "back to dispatch" copy is real and false: the canonical server cancels the ride and never
   re-dispatches it (`api_plans/[rides]_cancel_accept_race.md` decision `e`).
 
+### 2.1 Manual-review regression: false `Offer expired` after a committed accept (2026-10-19)
+
+`manual_review.md:27` — "offer expired is shown when offer was just accepted on android". This is
+**not** a genuine expiry/withdrawal. The accept itself clears the offer, and the sheet's own
+cleared-offer listener paints that self-inflicted clear as an expiry:
+
+- Both current accept entries clear `offeredRideId` themselves: the WS branch
+  (`offer_sheet.dart:138-142`) calls `RideStateNotifier.acceptOffer()` and the HTTP branch
+  (`:146-149`) calls `claimOfferViaHttp()`; both reach `_claimOffer`
+  (`ride_state_notifier.dart:147-153`), whose `copyWith(clearOffer: true)` (`:149-152`) nulls
+  `offeredRideId`.
+- The sheet listens to `offeredRideId` (`offer_sheet.dart:213-227`) and treats **any** `next == null`
+  as expiry (`:223-225` → `_expireNow()` `:167-174`, which sets `_expired`). The build then renders
+  the literal `Offer expired` (`:291-298`). `_closeAsAccepted()` (`:176-182`) has already called
+  `Navigator.pop()`, but the route stays mounted through the ~300 ms bottom-sheet exit animation, so
+  the listener repaints the sheet as expired before it is gone.
+- Independently, `_countdownTimer` (`offer_sheet.dart:34,112-127`) is cancelled only in
+  `_expireNow` (`:169`), `dispose` (`:59`) and on reaching 0 (`:123`) — never when an accept starts
+  or returns `200`. An accept near the 30 s boundary can flip `_expired` during the accept
+  round-trip or the pop animation (`:118-124`).
+- The regression is unpinned: the WS accept test (`test/.../offer_sheet_test.dart:283-301`) and the
+  HTTP accept test (`:303-321`) assert `Trip accepted` but never that `Offer expired` is absent, and
+  `:214-237` deliberately pins expiry on any clear.
+- A genuine server/withdrawal clear (no accept committed or in flight) must keep the landed
+  explicit-Dismiss contract (`driver_app_plans/STATUS.md` `[offer]`, bug #20). The fix below
+  distinguishes the two cases with an accept-claim guard; it does **not** weaken #20.
+
 ---
 
 ## 3. Accept becomes server-confirmed (scope 1 + 2)
@@ -142,7 +169,9 @@ share one user-facing copy (§7c); the API `message` is preserved on the excepti
 
 **Rule:** `acceptRideHttp` must never normalise a non-2xx into success. Today a `404` escapes as a
 generic `NotFoundException`, so a dead-socket driver sees "Could not accept" instead of the
-truthful "Trip no longer available".
+truthful "Trip no longer available". A `200` is the **only** accept claim and can never be
+downgraded afterwards: the repository does not expire the sheet itself, and no later WS frame may
+turn a committed `200` into the expired state (§2.1, §3.3).
 
 ### 3.2 `_accept()` — HTTP-primary, adopt before close (`offer_sheet.dart:129-155`)
 
@@ -155,9 +184,13 @@ Future<void> _accept() async {
   // A committed accept is never POSTed twice; only the read is retried.
   if (rideId == null || _expired || _accepting || _acceptConfirmed) return;
   setState(() => _accepting = true);
+  // Freeze the countdown before the round-trip: a 30 s boundary landing inside
+  // the accept/pop must not paint `Offer expired` over a committed accept.
+  _cancelCountdown();
   try {
     await ref.read(ridesRepositoryProvider).acceptRideHttp(rideId); // 200 after commit
     _acceptConfirmed = true;                                         // POST is done, no re-POST
+    _cancelCountdown();                                              // idempotent
     await _loadAcceptedRide(rideId);                                 // real ride, never a placeholder
   } on OfferExpiredException {
     ref.read(rideStateProvider.notifier).expireOffer(reason: 'expired');
@@ -169,6 +202,11 @@ Future<void> _accept() async {
   }
 }
 
+void _cancelCountdown() {
+  _countdownTimer?.cancel();
+  _countdownTimer = null;
+}
+
 Future<void> _loadAcceptedRide(String rideId) async {
   try {
     final ride = await ref.read(ridesRepositoryProvider).fetchRide(rideId);
@@ -176,6 +214,7 @@ Future<void> _loadAcceptedRide(String rideId) async {
     switch (ride.status) {
       case 'accepted':
       case 'driver_arrived':
+        _cancelCountdown();
         _postAcceptClose = true; // this closure owns the pop, not the offer listener
         ref.read(rideStateProvider.notifier).adoptRide(ride);
         _closeAsAccepted(); // the only path that may say "Trip accepted"
@@ -184,12 +223,14 @@ Future<void> _loadAcceptedRide(String rideId) async {
         // The accept committed, but the ride ended before this read returned.
         // Adopt the real terminal ride so the held state is truthful; never
         // claim a live trip and never re-POST accept.
+        _cancelCountdown();
         _postAcceptClose = true;
         ref.read(rideStateProvider.notifier).adoptRide(ride);
         _closeAsEnded('This trip has already ended.');
       case 'no_driver_available':
         // Not an assigned trip for this driver: reset, stay on Home, never
         // adopt it as a live ride (it is not a TripStage; see §5.1/§7f).
+        _cancelCountdown();
         _postAcceptClose = true;
         ref.read(rideStateProvider.notifier).clearRide();
         _closeAsEnded('No active trip.');
@@ -224,11 +265,24 @@ Requirements this encodes:
   receive the `GET /driver/rides/:id` response, never a hand-built `Ride`. The server's fresh
   `status: accepted` also clears the offer in the same update
   (`ride_state_notifier.dart:106-112`).
-- **Success ordering:** `adoptRide(realRide)` → `_closeAsAccepted()` (pop + "Trip accepted").
-  Because `adoptRide` clears `offeredRideId`, the sheet's own listener
-  (`offer_sheet.dart:213-227`) would otherwise pin it to expired; set `_postAcceptClose = true`
-  before the adopt so the listener returns early when it observes the cleared offer. The same flag
-  is set on the terminal paths so their pop also wins.
+- **Success ordering (manual-review fix, §2.1):** guard + timer cancel **before** the state change
+  that clears `offeredRideId` → `adoptRide(realRide)` → `_closeAsAccepted()` (pop + "Trip
+  accepted"). `_acceptConfirmed = true` immediately after the `200`; `_cancelCountdown()` at accept
+  initiation and again after the `200`; `_postAcceptClose = true` immediately before each
+  pop-owning `adoptRide`/`clearRide`. `adoptRide` clears `offeredRideId`, so the sheet's listener
+  (`offer_sheet.dart:213-227`) must stand down (see §3.3) or it pins the sheet to expired during
+  the exit animation. The same flag is set on the terminal paths so their pop also wins. This is
+  the invariant order, not a suggestion.
+- **A late `ride.offer_closed {reason:"expired"}` cannot undo a `200`.** After the `200`,
+  `_acceptConfirmed` is already true, so the listener returns early and no `expired` reason reaches
+  `_expireNow` while the post-200 `GET /driver/rides/:id` (or its Retry, §3.2) is still pending; the
+  read completes and the sheet closes as accepted/ended per the branches above. This is the narrow
+  accept-vs-timeout race in which the server may still emit the timeout frame; the app must be
+  robust either way, while `api_plans/[rides]_cancel_accept_race.md` owns suppressing that frame
+  server-side (no client workaround, no re-POST).
+- **A genuine clear is still an expiry.** With no accept committed or in flight
+  (`!_acceptConfirmed && !_postAcceptClose`), a cleared `offeredRideId` still pins the sheet to the
+  explicit Dismiss (bug #20). Only the self-initiated accept clear is suppressed.
 - **Post-commit load failure is not a failed accept.** If `fetchRide` fails after a `200`, the
   ride is already assigned. Set `_acceptConfirmed = true` immediately after the `200` (before the
   read), and render an explicit **Retry loading** button in place of Accept/Pass whenever
@@ -257,11 +311,18 @@ Requirements this encodes:
   unchanged.
 - The offered-id listener (`:213-227`) keeps both arms (replaced offer pops; cleared offer pins
   to expired) but:
-  - if `_postAcceptClose` is true, it does nothing (the post-200 close path owns the pop);
-  - when `next == null`, it reads `RideState.offerClosedReason`/`offerClosedMessage` and passes
-    the message to `_expireNow` (so a server close shows the truthful reason); the nullable
-    fields are cleared by the next `ride.offer` (§4.2).
-- `_expireNow` stays idempotent (`if (_expired) return;`).
+  - **first line:** `if (_acceptConfirmed || _postAcceptClose) return;` — a committed accept and
+    the post-200 close path own the pop, so neither a self-initiated clear nor a late
+    `ride.offer_closed {reason:"expired"}` may call `_expireNow` or repaint `Offer expired` during
+    the post-200 read/Retry window or the exit animation (§2.1, §3.2). This guard is what closes
+    the manual-review regression;
+  - when `next == null` and no accept is confirmed, it reads
+    `RideState.offerClosedReason`/`offerClosedMessage` and passes the message to `_expireNow`
+    (so a genuine server close shows the truthful reason and still pins the explicit Dismiss,
+    bug #20); the nullable fields are cleared by the next `ride.offer` (§4.2).
+- `_expireNow()` stays idempotent (`if (_expired) return;`) and also early-returns while
+  `_acceptConfirmed || _postAcceptClose` (defence in depth; `_cancelCountdown()` has already
+  stopped the local timer).
 
 ### 3.4 Home's navigation contract (unchanged code, new guarantee)
 
@@ -278,6 +339,23 @@ the guarantee true by construction and by **nulling the phantom on every failure
   null the phantom — merely leaving a stale placeholder would keep `_tripPushed` true forever.
 
 No placeholder is created anywhere in the accept path.
+
+### 3.5 Acceptance criteria (manual-review item, §2.1)
+
+1. **A committed accept never renders `Offer expired`** — not at any point, including during the
+   bottom-sheet pop animation and when the 30 s boundary falls inside the accept round-trip/pop.
+   This holds for both entry contexts (a live socket and a dead socket; after decision `a` both use
+   the server-confirmed `acceptRideHttp`), and `Trip accepted` is the only success copy.
+2. **A genuine clear still expires.** A server/withdrawal clear with **no accept committed or in
+   flight** still pins the sheet to the explicit Dismiss with the truthful message — the landed
+   `[offer]` contract, bug #20. The fix must not turn all clears into silent pops.
+3. **A `200` cannot be undone by a late frame.** After the accept POST answers `200`, a
+   `ride.offer_closed {reason:"expired"}` delivered while the post-200 `GET /driver/rides/:id` (or
+   its Retry) is still pending must not expire or overwrite the sheet; the read/Retry still
+   completes and closes as accepted/ended per §3.2. Server-side suppression of the timeout frame in
+   the narrow accept-vs-timeout race belongs to `api_plans/[rides]_cancel_accept_race.md`.
+4. **No duplicate POST.** A retry after a `200` re-reads only; `acceptRideHttp` is called exactly
+   once per committed accept.
 
 ---
 
@@ -503,8 +581,44 @@ diff and is safe to edit.
 
 Replace the WS-first accept test (`:283-301`) and adapt the 409 test (`:323-340`):
 
+- `a live-socket accept never paints 'Offer expired' during the pop (manual review 2026-10-19)` —
+  connected socket; stub `acceptRideHttp('r1')` to resolve `200` and the second `fetchRide` as a
+  coords-bearing `status:'accepted'` ride; tap Accept, immediately `pump()`, then
+  `pump(const Duration(milliseconds: 150))` inside the 300 ms exit animation; assert
+  `verify(() => mockRepo.acceptRideHttp('r1')).called(1)`,
+  `verifyNever(() => mockWs.declineOffer(any()))`, `find.text('Offer expired')` **findsNothing**,
+  `find.text('Trip accepted')` `findsOneWidget`, and `currentRide` is the fetched ride (pickup
+  coords), never a placeholder. (Replaces the old happy-path assertion at `:283-301`, which never
+  checked for the false expiry.)
+- `the dead-socket HTTP 200 path never paints 'Offer expired' during the pop` — same assertions
+  with `isConnected = false`, `acceptRideHttp('r1')` answering `200` and the post-accept
+  `fetchRide` returning `accepted`; assert `verify(() => mockRepo.acceptRideHttp('r1')).called(1)`,
+  `verifyNever(() => mockWs.declineOffer(any()))`, `currentRide` is the fetched ride (no
+  placeholder), `Offer expired` findsNothing and `Trip accepted` findsOneWidget while pumping
+  immediately after the tap and again mid-animation (adapts `:303-321`; drop the old
+  facade-accept verification — decision `e` deletes the method).
+- `a late offer_closed expired during the post-200 ride read does not expire the sheet` — hold the
+  second `fetchRide` behind a `Completer`; once `acceptRideHttp` resolves `200`, feed
+  `WsEvent(type: offerClosed, data: {'ride_id':'r1','reason':'expired'})`; `pump()`; assert
+  `Offer expired` findsNothing, no `offer-dismiss-button`, sheet still mounted; complete the read
+  with `status:'accepted'` + coords; assert the adopt + pop + `Trip accepted` and
+  `acceptRideHttp` called exactly once.
+- `a late offer_closed expired while the post-200 Retry is pending does not expire and Retry still
+  pops` — accept `200`, the first post-accept read throws, feed the late expired frame, assert the
+  Retry button (not Dismiss/`Offer expired`) is shown, then Retry's read succeeds and the sheet
+  pops as accepted without a second POST.
+- `a genuine clear with no accept in flight still pins the explicit Dismiss expiry` — keep and
+  adapt `the held offer clearing pins the sheet to its expired Dismiss` (`:214-237`): drive the
+  clear through the withdrawal path (`notifier.declineOffer()`, or `notifier.expireOffer(...)` for
+  a server-driven reason), assert no HTTP accept was sent
+  (`verifyNever(() => mockRepo.acceptRideHttp(any()))`), then `Offer expired` +
+  `offer-dismiss-button` render and Dismiss pops. Do **not** call the deleted facade accept
+  method; this is the guard against over-suppressing bug #20.
 - `an accept over a live websocket still uses the HTTP endpoint` — assert
-  `mockRepo.acceptRideHttp('r1')`, `verifyNever(mockWs.acceptOffer)`, and no placeholder.
+  `verify(() => mockRepo.acceptRideHttp('r1')).called(1)`,
+  `verifyNever(() => mockWs.declineOffer(any()))`, and no placeholder (`currentRide` is only ever
+  the fetched ride, never a hand-built `Ride`). The deleted facade accept method must not be
+  referenced — its absence is analyzer-enforced by decision `e`.
 - `200 closes only after the real ride is adopted` — stub `fetchRide` to return, on its **second**
   call (the post-accept read; the first is the sheet's initial load), a full `status:'accepted'`
   ride with pickup coords; assert `currentRide!.pickupLat` is non-null, the offer cleared, the
@@ -530,7 +644,8 @@ Replace the WS-first accept test (`:283-301`) and adapt the 409 test (`:323-340`
   frame through `events`, assert the offered id cleared and the reason copy rendered.
 - `a server accept_failed clears the phantom and never claims the trip` — seed the placeholder
   shape, feed the frame, assert `currentRide == null` and the public message shown.
-- Keep the existing estimate/fare/dismissal/back-gesture tests unchanged.
+- Keep the existing estimate/fare/dismissal/back-gesture tests unchanged; the clearing test is
+  adapted by the bullet above, not deleted.
 
 ### 6.2 `driver_app/test/core/ride/ride_state_notifier_test.dart`
 
