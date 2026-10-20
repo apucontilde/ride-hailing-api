@@ -139,15 +139,29 @@ func (r *fakeRideRepo) SetRideActuals(string, *int, *float64) error { return nil
 func (r *fakeRideRepo) FinalizeRideFare(string, float64, float64, float64, float64, *float64) (bool, error) {
 	return false, nil
 }
-func (r *fakeRideRepo) UpdateRideStatus(rideID, status string, _ *time.Time) error {
+func (r *fakeRideRepo) UpdateRideStatusFrom(rideID string, expectedFrom []string, status string, _ *time.Time) (bool, error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	if r.updateErr != nil {
-		return r.updateErr
+		return false, r.updateErr
+	}
+	current := r.status
+	if current == "" {
+		current = "pending"
+	}
+	matched := false
+	for _, from := range expectedFrom {
+		if current == from {
+			matched = true
+			break
+		}
+	}
+	if !matched {
+		return false, nil
 	}
 	r.statusUpdates = append(r.statusUpdates, status)
 	r.status = status
-	return nil
+	return true, nil
 }
 func (r *fakeRideRepo) AssignDriver(rideID, driverID string) error {
 	r.mu.Lock()
@@ -155,8 +169,18 @@ func (r *fakeRideRepo) AssignDriver(rideID, driverID string) error {
 	if r.assignErr != nil {
 		return r.assignErr
 	}
+	// Mirror the real repository's WHERE status='pending' guard.
+	if r.status != "" && r.status != "pending" {
+		return fmt.Errorf("accept ride: %w", repository.ErrConflict)
+	}
 	r.assignments = append(r.assignments, driverID)
+	r.status = "accepted"
 	return nil
+}
+func (r *fakeRideRepo) setStatus(status string) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.status = status
 }
 func (r *fakeRideRepo) FindByID(id string) (*model.Ride, error) {
 	r.mu.Lock()
@@ -280,6 +304,23 @@ func (h *fakeHub) rideUpdatesTo(userID string) []string {
 	return out
 }
 
+// offerClosedReasons returns the reason of every ride.offer_closed frame sent,
+// in order.
+func (h *fakeHub) offerClosedReasons() []string {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	var out []string
+	for _, om := range h.sent {
+		if om.Type != "ride.offer_closed" {
+			continue
+		}
+		if data, ok := om.Data.(websocket.RideOfferClosedData); ok {
+			out = append(out, data.Reason)
+		}
+	}
+	return out
+}
+
 // logCapture redirects the standard logger — the one the PRODUCTION terminal
 // observer writes to — into a buffer, so a test can assert on the real emitted
 // lines instead of replacing the observer and inspecting the trace object.
@@ -350,9 +391,10 @@ func newTestDispatch(geo *fakeGeoRepo, ride *fakeRideRepo, hub DriverHub) *Dispa
 	return NewDispatchService(ride, geo, fakeUserRepo{}, hub, NewNavigationService(stubNavRepo{}))
 }
 
-// awaitOfferAndAccept reproduces what the WebSocket handler does on an accept:
-// it finds the parked offer channel and signals it. It polls because the
-// offer is registered a moment after Dispatch returns.
+// awaitOfferAndAccept reproduces what the WebSocket/HTTP path does on an
+// accept: it calls the one accept funnel (which performs the assignment and
+// answers the parked loop). It polls because the offer is registered a moment
+// after Dispatch returns.
 func awaitOfferAndAccept(t *testing.T, svc *DispatchService, rideID, driverID string) {
 	t.Helper()
 	deadline := time.Now().Add(5 * time.Second)
@@ -360,8 +402,31 @@ func awaitOfferAndAccept(t *testing.T, svc *DispatchService, rideID, driverID st
 		svc.offerChannelsMu.Lock()
 		offer, ok := svc.offerChannels[rideID]
 		svc.offerChannelsMu.Unlock()
-		if ok {
-			offer.ch <- true
+		if ok && offer.driverID == driverID {
+			if err := svc.HandleAccept(driverID, rideID); err != nil {
+				t.Errorf("HandleAccept(%s, %s): %v", driverID, rideID, err)
+			}
+			return
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	t.Errorf("no offer was registered for ride %s to driver %s", rideID, driverID)
+}
+
+// awaitOfferAndAcceptAllowFailure is awaitOfferAndAccept for tests that model a
+// LOST accept race: the funnel's assignment write is expected to fail, and the
+// loop's failure handling is what is under test.
+func awaitOfferAndAcceptAllowFailure(t *testing.T, svc *DispatchService, rideID, driverID string) {
+	t.Helper()
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		svc.offerChannelsMu.Lock()
+		offer, ok := svc.offerChannels[rideID]
+		svc.offerChannelsMu.Unlock()
+		if ok && offer.driverID == driverID {
+			if err := svc.HandleAccept(driverID, rideID); err != nil {
+				log.Printf("expected accept failure in this test: %v", err)
+			}
 			return
 		}
 		time.Sleep(5 * time.Millisecond)
@@ -400,11 +465,11 @@ func awaitNoOpenTraces(t *testing.T, svc *DispatchService) {
 	t.Errorf("open traces = %d after 5s, want 0", svc.traceRecorder().pending())
 }
 
-// awaitOfferChannel polls for the live offer channel of rideID and returns it
-// together with a predicate that must hold before acting on it, so a test that
-// answers two offers in a row never re-uses the first offer's stale channel
-// (the loop deletes and re-registers it per candidate).
-func awaitOfferChannel(t *testing.T, svc *DispatchService, rideID string, isNewerThan chan bool) chan bool {
+// awaitOfferChannel polls for the live offer of rideID and returns it. The
+// previous channel (isNewerThan) lets a test that answers two offers in a row
+// never re-use the first offer's stale entry (the loop deletes and re-registers
+// it per candidate).
+func awaitOfferChannel(t *testing.T, svc *DispatchService, rideID string, isNewerThan chan offerAnswer) activeOffer {
 	t.Helper()
 	deadline := time.Now().Add(5 * time.Second)
 	for time.Now().Before(deadline) {
@@ -412,22 +477,26 @@ func awaitOfferChannel(t *testing.T, svc *DispatchService, rideID string, isNewe
 		offer, ok := svc.offerChannels[rideID]
 		svc.offerChannelsMu.Unlock()
 		if ok && (isNewerThan == nil || offer.ch != isNewerThan) {
-			return offer.ch
+			return offer
 		}
 		time.Sleep(5 * time.Millisecond)
 	}
 	t.Fatalf("no offer was registered for ride %s", rideID)
-	return nil
+	return activeOffer{}
 }
 
-// declineThenAccept answers the first offer with a decline and the second with an
-// accept, reproducing "the first candidate said no, the next one took it".
+// declineThenAccept answers the first offer with a decline and the second with
+// an accept, reproducing "the first candidate said no, the next one took it".
 func declineThenAccept(t *testing.T, svc *DispatchService, rideID string) {
 	t.Helper()
 	first := awaitOfferChannel(t, svc, rideID, nil)
-	first <- false
-	second := awaitOfferChannel(t, svc, rideID, first)
-	second <- true
+	if err := svc.DeclineOffer(first.driverID, rideID); err != nil {
+		t.Fatalf("DeclineOffer(%s): %v", first.driverID, err)
+	}
+	second := awaitOfferChannel(t, svc, rideID, first.ch)
+	if err := svc.HandleAccept(second.driverID, rideID); err != nil {
+		t.Fatalf("HandleAccept(%s): %v", second.driverID, err)
+	}
 }
 
 func pendingRide(id string) *model.Ride {
@@ -715,7 +784,7 @@ func TestDispatchStatusReadFailureIsNotReportedAsNotPending(t *testing.T) {
 			offer, ok := svc.offerChannels["ride-readfail"]
 			svc.offerChannelsMu.Unlock()
 			if ok {
-				offer.ch <- false
+				offer.ch <- offerAnswer{accepted: false}
 				return
 			}
 			time.Sleep(5 * time.Millisecond)
@@ -809,7 +878,7 @@ func TestDispatchFailedTerminalWriteDoesNotPushTheRider(t *testing.T) {
 	if err := svc.Dispatch(pendingRide("ride-seqwritefail")); err != nil {
 		t.Fatalf("Dispatch: %v", err)
 	}
-	go awaitOfferAndAccept(t, svc, "ride-seqwritefail", "driver-a")
+	go awaitOfferAndAcceptAllowFailure(t, svc, "ride-seqwritefail", "driver-a")
 
 	// The trace is published from a defer AFTER the write settles, so once it
 	// arrives the push decision has already been made.
@@ -850,7 +919,7 @@ func TestDispatchAcceptConflictKeepsSearching(t *testing.T) {
 	// The driver ACCEPTS — the offer must be answered, or it would sit until the
 	// 30s timeout and record the wrong reason. The failure comes from the
 	// assignment write, which is the race being modelled.
-	go awaitOfferAndAccept(t, svc, "ride-conflict", "driver-a")
+	go awaitOfferAndAcceptAllowFailure(t, svc, "ride-conflict", "driver-a")
 
 	tr := awaitTrace(t, traces)
 
@@ -1098,7 +1167,7 @@ func TestDispatchAcceptPublishesExactlyOneAcceptedTerminalLine(t *testing.T) {
 	}
 	// The first candidate declines; the second accepts, so the trace must end
 	// with one skip AND the accepted outcome.
-	go declineThenAccept(t, svc, "ride-accept-once")
+	declineThenAccept(t, svc, "ride-accept-once")
 
 	awaitAssignments(t, ride, 1)
 	awaitNoOpenTraces(t, svc)

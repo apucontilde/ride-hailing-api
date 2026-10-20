@@ -124,7 +124,7 @@ func TestProviderErrorDoesNotFailCancellation(t *testing.T) {
 	))
 	svc.SetPushNotifier(notifier)
 
-	got, err := svc.CancelRide("ride-2", "rider")
+	got, err := svc.CancelRide("ride-2", "rider", "rider-1")
 	if err != nil {
 		t.Fatalf("CancelRide returned %v; a push failure must never fail the cancellation", err)
 	}

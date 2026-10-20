@@ -38,85 +38,52 @@ func TestDriverRideQueue(t *testing.T) {
 	resp.AssertJSONHas(t, "queue")
 }
 
-func TestDriverAcceptAlreadyTaken(t *testing.T) {
-	riderReg := ts.PostJSON("/api/v1/auth/register", map[string]string{
-		"email":    "rider.taken@test.com",
-		"phone":    "+2929292929",
-		"password": "SecurePass1",
-	})
-	riderReg.AssertStatus(t, http.StatusCreated)
-
-	riderLogin := ts.PostJSON("/api/v1/auth/login", map[string]string{
-		"email":    "rider.taken@test.com",
-		"password": "SecurePass1",
-	})
-	var riderLoginResult struct {
-		AccessToken string `json:"access_token"`
+// TestDriverAcceptWithoutLiveOfferIs404 pins the canonical accept funnel: a
+// driver who holds no live offer (expired, taken by another driver, or never
+// offered) answers 404, never a false 200. The 409 branch (an offer still
+// parked while the ride left pending) is covered by the service/handler suites.
+func TestDriverAcceptWithoutLiveOfferIs404(t *testing.T) {
+	srv := testutil.NewStrictTestServer(t)
+	if srv == nil {
+		return
 	}
-	testutil.ParseJSON(t, riderLogin.Body, &riderLoginResult)
+	defer srv.Close()
 
-	ts.PostJSON("/api/v1/auth/register", map[string]string{
-		"email":    "driver.taken1@test.com",
-		"phone":    "+3030303030",
-		"password": "SecurePass1",
-	})
-	driver1Login := ts.PostJSON("/api/v1/auth/login", map[string]string{
-		"email":    "driver.taken1@test.com",
-		"password": "SecurePass1",
-	})
-	var driver1LoginResult struct {
-		AccessToken string `json:"access_token"`
-	}
-	testutil.ParseJSON(t, driver1Login.Body, &driver1LoginResult)
-	driver1Token := driver1LoginResult.AccessToken
-	ts.DoRequest("POST", "/api/v1/driver/register", driver1Token, nil)
+	const seed = 960
+	riderToken := strictRider(t, srv, seed)
+	driverToken := strictDriver(t, srv, seed)
 
-	// Re-login after driver registration to get a JWT with role="driver"
-	driver1Login = ts.PostJSON("/api/v1/auth/login", map[string]string{
-		"email":    "driver.taken1@test.com",
-		"password": "SecurePass1",
-	})
-	testutil.ParseJSON(t, driver1Login.Body, &driver1LoginResult)
-	driver1Token = driver1LoginResult.AccessToken
+	pickupLat, pickupLng, dropoffLat, dropoffLng, driverLat, driverLng := offerCoords(seed)
+	srv.DoRequest("PUT", "/api/v1/driver/me/status", driverToken,
+		map[string]string{"status": "online"}).AssertStatus(t, http.StatusOK)
+	srv.DoRequest("PUT", "/api/v1/geo/driver/location", driverToken, map[string]float64{
+		"lat": driverLat, "lng": driverLng, "heading": 0, "speed": 0,
+	}).AssertStatus(t, http.StatusNoContent)
 
-	ts.PostJSON("/api/v1/auth/register", map[string]string{
-		"email":    "driver.taken2@test.com",
-		"phone":    "+3131313131",
-		"password": "SecurePass1",
-	})
-	driver2Login := ts.PostJSON("/api/v1/auth/login", map[string]string{
-		"email":    "driver.taken2@test.com",
-		"password": "SecurePass1",
-	})
-	var driver2LoginResult struct {
-		AccessToken string `json:"access_token"`
-	}
-	testutil.ParseJSON(t, driver2Login.Body, &driver2LoginResult)
-	driver2Token := driver2LoginResult.AccessToken
-	ts.DoRequest("POST", "/api/v1/driver/register", driver2Token, nil)
+	driverConn := srv.DialWS(t, driverToken)
+	defer func() { _ = driverConn.Close() }()
 
-	// Re-login after driver registration to get a JWT with role="driver"
-	driver2Login = ts.PostJSON("/api/v1/auth/login", map[string]string{
-		"email":    "driver.taken2@test.com",
-		"password": "SecurePass1",
+	createResp := srv.DoRequest("POST", "/api/v1/rides", riderToken, map[string]float64{
+		"pickup_lat": pickupLat, "pickup_lng": pickupLng,
+		"dropoff_lat": dropoffLat, "dropoff_lng": dropoffLng,
 	})
-	testutil.ParseJSON(t, driver2Login.Body, &driver2LoginResult)
-	driver2Token = driver2LoginResult.AccessToken
-
-	createResp := ts.DoRequest("POST", "/api/v1/rides", riderLoginResult.AccessToken, map[string]float64{
-		"pickup_lat":  40.7128,
-		"pickup_lng":  -74.0060,
-		"dropoff_lat": 40.7580,
-		"dropoff_lng": -73.9855,
-	})
-	var createResult struct {
+	createResp.AssertStatus(t, http.StatusCreated)
+	var created struct {
 		Ride struct{ ID string } `json:"ride"`
 	}
-	testutil.ParseJSON(t, createResp.Body, &createResult)
-	rideID := createResult.Ride.ID
+	testutil.ParseJSON(t, createResp.Body, &created)
+	rideID := created.Ride.ID
 
-	ts.DoRequest("POST", "/api/v1/driver/rides/"+rideID+"/accept", driver1Token, nil).AssertStatus(t, http.StatusOK)
+	// Consume the live offer so the ride is accepted; a second accept has no
+	// offer for this (or any other) driver and must be a 404.
+	offer := testutil.ReadWSMessage(t, driverConn)
+	if offer["type"] != "ride.offer" {
+		t.Fatalf("expected ride.offer, got %v", offer["type"])
+	}
+	srv.DoRequest("POST", "/api/v1/driver/rides/"+rideID+"/accept", driverToken, nil).
+		AssertStatus(t, http.StatusOK)
 
-	secondAccept := ts.DoRequest("POST", "/api/v1/driver/rides/"+rideID+"/accept", driver2Token, nil)
-	secondAccept.AssertStatus(t, http.StatusConflict)
+	again := srv.DoRequest("POST", "/api/v1/driver/rides/"+rideID+"/accept", driverToken, nil)
+	again.AssertStatus(t, http.StatusNotFound)
+	again.AssertJSONHas(t, "error.code", "NOT_FOUND")
 }

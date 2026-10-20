@@ -48,57 +48,35 @@ func TestWSRiderReceivesRideCreated(t *testing.T) {
 }
 
 func TestWSRiderReceivesDriverAccept(t *testing.T) {
-	ts.PostJSON("/api/v1/auth/register", map[string]string{
-		"email":    "ws.driveraccept.rider@test.com",
-		"phone":    "+9292929292",
-		"password": "SecurePass1",
-	})
-	riderLogin := ts.PostJSON("/api/v1/auth/login", map[string]string{
-		"email":    "ws.driveraccept.rider@test.com",
-		"password": "SecurePass1",
-	})
-	var riderLoginResult struct {
-		AccessToken string `json:"access_token"`
+	srv := testutil.NewStrictTestServer(t)
+	if srv == nil {
+		return
 	}
-	testutil.ParseJSON(t, riderLogin.Body, &riderLoginResult)
-	riderToken := riderLoginResult.AccessToken
+	defer srv.Close()
 
-	ts.PostJSON("/api/v1/auth/register", map[string]string{
-		"email":    "ws.driveraccept.driver@test.com",
-		"phone":    "+9393939393",
-		"password": "SecurePass1",
-	})
-	driverLogin := ts.PostJSON("/api/v1/auth/login", map[string]string{
-		"email":    "ws.driveraccept.driver@test.com",
-		"password": "SecurePass1",
-	})
-	var driverLoginResult struct {
-		AccessToken string `json:"access_token"`
-	}
-	testutil.ParseJSON(t, driverLogin.Body, &driverLoginResult)
-	driverToken := driverLoginResult.AccessToken
+	const seed = 961
+	riderToken := strictRider(t, srv, seed)
+	driverToken := strictDriver(t, srv, seed)
 
-	ts.DoRequest("POST", "/api/v1/driver/register", driverToken, nil)
+	pickupLat, pickupLng, dropoffLat, dropoffLng, driverLat, driverLng := offerCoords(seed)
+	srv.DoRequest("PUT", "/api/v1/driver/me/status", driverToken,
+		map[string]string{"status": "online"}).AssertStatus(t, http.StatusOK)
+	srv.DoRequest("PUT", "/api/v1/geo/driver/location", driverToken, map[string]float64{
+		"lat": driverLat, "lng": driverLng, "heading": 0, "speed": 0,
+	}).AssertStatus(t, http.StatusNoContent)
 
-	driverLogin = ts.PostJSON("/api/v1/auth/login", map[string]string{
-		"email":    "ws.driveraccept.driver@test.com",
-		"password": "SecurePass1",
-	})
-	testutil.ParseJSON(t, driverLogin.Body, &driverLoginResult)
-	driverToken = driverLoginResult.AccessToken
+	riderConn := srv.DialWS(t, riderToken)
+	defer func() { _ = riderConn.Close() }()
+	driverConn := srv.DialWS(t, driverToken)
+	defer func() { _ = driverConn.Close() }()
 
-	conn := ts.DialWS(t, riderToken)
-	defer func() { _ = conn.Close() }()
-
-	createResp := ts.DoRequest("POST", "/api/v1/rides", riderToken, map[string]float64{
-		"pickup_lat":  40.7128,
-		"pickup_lng":  -74.0060,
-		"dropoff_lat": 40.7580,
-		"dropoff_lng": -73.9855,
+	createResp := srv.DoRequest("POST", "/api/v1/rides", riderToken, map[string]float64{
+		"pickup_lat": pickupLat, "pickup_lng": pickupLng,
+		"dropoff_lat": dropoffLat, "dropoff_lng": dropoffLng,
 	})
 	createResp.AssertStatus(t, http.StatusCreated)
 
-	msg := testutil.ReadWSMessage(t, conn)
+	msg := testutil.ReadWSMessage(t, riderConn)
 	if msg["type"] != "ride.updated" {
 		t.Errorf("expected type 'ride.updated', got %v", msg["type"])
 	}
@@ -111,11 +89,17 @@ func TestWSRiderReceivesDriverAccept(t *testing.T) {
 		Ride struct{ ID string } `json:"ride"`
 	}
 	testutil.ParseJSON(t, createResp.Body, &createResult)
+	rideID := createResult.Ride.ID
 
-	acceptResp := ts.DoRequest("POST", "/api/v1/driver/rides/"+createResult.Ride.ID+"/accept", driverToken, nil)
+	// The driver holds a live offer; HTTP accept is the primary path.
+	offer := testutil.ReadWSMessage(t, driverConn)
+	if offer["type"] != "ride.offer" {
+		t.Fatalf("expected ride.offer, got %v", offer["type"])
+	}
+	acceptResp := srv.DoRequest("POST", "/api/v1/driver/rides/"+rideID+"/accept", driverToken, nil)
 	acceptResp.AssertStatus(t, http.StatusOK)
 
-	msg = testutil.ReadWSMessage(t, conn)
+	msg = testutil.ReadWSMessage(t, riderConn)
 	if msg["type"] != "ride.updated" {
 		t.Errorf("expected type 'ride.updated', got %v", msg["type"])
 	}
@@ -123,8 +107,8 @@ func TestWSRiderReceivesDriverAccept(t *testing.T) {
 	if data["status"] != "accepted" {
 		t.Errorf("expected status 'accepted', got %v", data["status"])
 	}
-	if data["ride_id"] != createResult.Ride.ID {
-		t.Errorf("expected ride_id %s, got %v", createResult.Ride.ID, data["ride_id"])
+	if data["ride_id"] != rideID {
+		t.Errorf("expected ride_id %s, got %v", rideID, data["ride_id"])
 	}
 }
 

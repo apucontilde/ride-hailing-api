@@ -7,6 +7,32 @@ type OutgoingMessage struct {
 	Data interface{} `json:"data"`
 }
 
+// Accept-failure codes (api_plans/[rides]_cancel_accept_race.md §4.3). These
+// three values are the canonical wire contract shared with the driver app; do
+// not rename them.
+const (
+	AcceptFailureOfferExpired   = "OFFER_EXPIRED"
+	AcceptFailureRideNotPending = "RIDE_NOT_PENDING"
+	AcceptFailureNotOffered     = "NOT_OFFERED"
+)
+
+// RideAcceptFailedData is the ride.accept_failed payload sent to the accepting
+// driver on any accept failure. Message is a fixed public sentence, never
+// err.Error().
+type RideAcceptFailedData struct {
+	RideID  string `json:"ride_id"`
+	Code    string `json:"code"`
+	Message string `json:"message"`
+}
+
+// RideOfferClosedData is the ride.offer_closed payload sent to the offered
+// driver whenever the server-side offer stops being actionable.
+// reason: expired|declined|cancelled|accepted_elsewhere|withdrawn.
+type RideOfferClosedData struct {
+	RideID string `json:"ride_id"`
+	Reason string `json:"reason"`
+}
+
 type RideUpdateData struct {
 	RideID      string      `json:"ride_id"`
 	Status      string      `json:"status"`

@@ -543,20 +543,47 @@ func (h *RideHandler) GetRatings(c *gin.Context) {
 // CancelRide godoc
 //
 //	@Summary	Cancel a ride
+//	@Description	Cancels a pending, accepted or driver_arrived ride. Only the
+//	@Description	ride's own rider (or, for the driver route, its assigned driver)
+//	@Description	may do this. Cancelling an already-cancelled ride is idempotent.
 //	@Tags		rides
 //	@Produce	json
 //	@Security	BearerAuth
 //	@Param		id	path		string	true	"Ride ID"
 //	@Success	200	{object}	RideResponse
-//	@Failure	400	{object}	ErrorResponse	"Ride cannot be cancelled"
+//	@Failure	404	{object}	ErrorResponse	"Ride not found (or not yours)"
+//	@Failure	409	{object}	ErrorResponse	"Ride can no longer be cancelled"
+//	@Failure	422	{object}	ErrorResponse	"Invalid ride id"
+//	@Failure	500	{object}	ErrorResponse	"Failed to cancel ride"
 //	@Router		/api/v1/rides/{id}/cancel [post]
+//	@Router		/api/v1/driver/rides/{id}/cancel [post]
 func (h *RideHandler) CancelRide(c *gin.Context) {
 	id := c.Param("id")
-	actor, _ := c.Get("role")
+	if !uuidRE.MatchString(id) {
+		fail(c, http.StatusUnprocessableEntity, "VALIDATION_ERROR",
+			"invalid ride id", fmt.Errorf("[rides] cancel: invalid ride_id value=%q", id))
+		return
+	}
 
-	ride, err := h.rideService.CancelRide(id, actor.(string))
+	actor, _ := c.Get("role")
+	userID, _ := c.Get("user_id")
+	actorStr, _ := actor.(string)
+	callerID, _ := userID.(string)
+
+	ride, err := h.rideService.CancelRide(id, actorStr, callerID)
 	if err != nil {
-		fail(c, http.StatusBadRequest, "BAD_REQUEST", "ride cannot be cancelled", err)
+		switch {
+		case errors.Is(err, service.ErrNotRideRider),
+			errors.Is(err, service.ErrNotRideDriver),
+			errors.Is(err, repository.ErrNotFound):
+			// Never 403: the same body as a missing ride, so ownership cannot
+			// be probed.
+			fail(c, http.StatusNotFound, "NOT_FOUND", "ride not found", err)
+		case errors.Is(err, service.ErrCannotCancel):
+			fail(c, http.StatusConflict, "CONFLICT", "ride can no longer be cancelled", err)
+		default:
+			fail(c, http.StatusInternalServerError, "INTERNAL", "failed to cancel ride", err)
+		}
 		return
 	}
 
@@ -607,6 +634,11 @@ func (h *RideHandler) AdvanceStatus(c *gin.Context) {
 		// (api_plans/[payout]: a failed money write never answers success).
 		if errors.Is(err, service.ErrInvalidTransition) {
 			fail(c, http.StatusBadRequest, "BAD_REQUEST", "invalid status transition", err)
+			return
+		}
+		if errors.Is(err, service.ErrTransitionConflict) {
+			// A lost CAS race is a state conflict, never an outage.
+			fail(c, http.StatusConflict, "CONFLICT", "ride state changed, please retry", err)
 			return
 		}
 		respondRepo(c, err, "ride not found", "ride state changed, please retry", "failed to update ride status")
@@ -670,24 +702,42 @@ func (h *RideHandler) RateRide(c *gin.Context) {
 // AcceptRide godoc
 //
 //	@Summary	Accept a dispatched ride offer
+//	@Description	Accepts the live offer for this driver. 200 is returned only
+//	@Description	after the assignment committed; a missing/expired/foreign offer
+//	@Description	is 404 and a ride that is no longer pending is 409.
 //	@Tags		rides
 //	@Produce	json
 //	@Security	BearerAuth
 //	@Param		id	path		string	true	"Ride ID"
 //	@Success	200	{object}	MessageResponse
-//	@Failure	400	{object}	ErrorResponse	"Cannot accept ride"
-//	@Failure	409	{object}	ErrorResponse	"Ride already taken"
-//	@Router		/api/v1/rides/{id}/accept [post]
+//	@Failure	404	{object}	ErrorResponse	"No active offer for this ride"
+//	@Failure	409	{object}	ErrorResponse	"Ride is no longer available"
+//	@Failure	422	{object}	ErrorResponse	"Invalid ride id"
+//	@Failure	500	{object}	ErrorResponse	"Failed to accept ride"
+//	@Router		/api/v1/driver/rides/{id}/accept [post]
 func (h *RideHandler) AcceptRide(c *gin.Context) {
 	id := c.Param("id")
+	if !uuidRE.MatchString(id) {
+		fail(c, http.StatusUnprocessableEntity, "VALIDATION_ERROR",
+			"invalid ride id", fmt.Errorf("[rides] accept: invalid ride_id value=%q", id))
+		return
+	}
 	driverID, _ := c.Get("user_id")
 
-	if err := h.dispatchService.AcceptRide(id, driverID.(string)); err != nil {
-		if _, ok := err.(*service.DispatchConflictError); ok {
-			fail(c, http.StatusConflict, "CONFLICT", "ride already accepted", err)
-			return
+	// HandleAccept is the single accept funnel (WS and HTTP). Classify its
+	// wrapped sentinels with errors.Is/errors.As — never a raw type assertion,
+	// and never a 400: an outage must be 5xx, a lost race 409, a missing offer
+	// 404.
+	if err := h.dispatchService.HandleAccept(driverID.(string), id); err != nil {
+		var conflict *service.DispatchConflictError
+		switch {
+		case errors.Is(err, service.ErrNoActiveOffer), errors.Is(err, service.ErrNotOffered):
+			fail(c, http.StatusNotFound, "NOT_FOUND", "no active offer for this ride", err)
+		case errors.Is(err, repository.ErrConflict), errors.As(err, &conflict):
+			fail(c, http.StatusConflict, "CONFLICT", "ride is no longer available", err)
+		default:
+			fail(c, http.StatusInternalServerError, "INTERNAL", "failed to accept ride", err)
 		}
-		fail(c, http.StatusBadRequest, "BAD_REQUEST", "cannot accept ride", err)
 		return
 	}
 

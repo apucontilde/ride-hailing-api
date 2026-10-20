@@ -41,7 +41,34 @@ func (s *stubRideRepo) FindRidesByRider(string, int, int) ([]model.Ride, int, er
 func (s *stubRideRepo) FindRidesByDriver(string, int, int) ([]model.Ride, int, error) {
 	return nil, 0, nil
 }
-func (s *stubRideRepo) UpdateRideStatus(string, string, *time.Time) error { return nil }
+func (s *stubRideRepo) UpdateRideStatusFrom(rideID string, expectedFrom []string, status string, timestamp *time.Time) (bool, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.ride == nil || s.ride.ID != rideID {
+		return false, repository.ErrNotFound
+	}
+	matched := false
+	for _, from := range expectedFrom {
+		if s.ride.Status == from {
+			matched = true
+			break
+		}
+	}
+	if !matched {
+		return false, nil
+	}
+	s.ride.Status = status
+	s.ride.UpdatedAt = time.Now()
+	ts := timestamp
+	if ts == nil {
+		t := time.Now()
+		ts = &t
+	}
+	if status == "cancelled" {
+		s.ride.CancelledAt = ts
+	}
+	return true, nil
+}
 func (s *stubRideRepo) InsertRideTrackPoint(string, float64, float64, time.Time) error {
 	return nil
 }

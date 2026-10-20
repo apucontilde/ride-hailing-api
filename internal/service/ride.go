@@ -46,6 +46,27 @@ type RideService struct {
 	arrivalClampOnce sync.Once
 	nearMu           sync.Mutex
 	nearStates       map[string]*nearState
+
+	// offerWithdrawer closes a parked dispatch offer when a ride is cancelled
+	// (api_plans/[rides]_cancel_accept_race.md §3). It is a separate seam from
+	// the constructor because the dispatch service is built after this one; a
+	// nil withdrawer is the documented no-op for legacy/db-less harnesses.
+	offerWithdrawer OfferWithdrawer
+}
+
+// OfferWithdrawer closes the parked offer for a ride, if any. Implemented by
+// *DispatchService (same package, so no import cycle).
+type OfferWithdrawer interface {
+	// WithdrawOffer closes the parked offer for rideID, sends the offered
+	// driver a ride.offer_closed frame, wakes the dispatch loop, and returns
+	// that driver's ID ("" when no offer was parked).
+	WithdrawOffer(rideID, reason string) (offeredDriverID string)
+}
+
+// SetOfferWithdrawer installs the dispatch offer withdrawal seam. It must be
+// called after the DispatchService is constructed (router.SetupWithRepos).
+func (s *RideService) SetOfferWithdrawer(w OfferWithdrawer) {
+	s.offerWithdrawer = w
 }
 
 func NewRideService(rideRepo repository.RideRepository, userRepo repository.UserRepository, hub *websocket.Hub, fareSvc *FareService) *RideService {
@@ -145,6 +166,21 @@ var ErrInvalidTransition = errors.New("invalid ride status transition")
 // repository.ErrNotFound's "no row the caller is allowed to see" rule, so a
 // caller cannot probe for the existence of other people's rides.
 var ErrNotRideRider = errors.New("ride belongs to another rider")
+
+// ErrNotRideDriver: the ride exists but is not assigned to the calling driver
+// (a pending ride has no driver at all). Like ErrNotRideRider it maps to 404
+// with the same body as a missing ride, so a caller cannot probe ownership.
+var ErrNotRideDriver = errors.New("ride does not belong to this driver")
+
+// ErrCannotCancel: the ride is in a terminal state that can no longer be
+// cancelled. It is a state conflict (409), not the blanket 400 the incident
+// surfaced, and never an outage.
+var ErrCannotCancel = errors.New("ride can no longer be cancelled")
+
+// ErrTransitionConflict: a conditional status write lost a race because the
+// ride's status changed after it was read. The handler maps it to 409 (never
+// 5xx: it is not an outage). The [arrival] geofence logs and swallows it.
+var ErrTransitionConflict = errors.New("ride status changed concurrently")
 
 // destinationChangeable lists the statuses in which the itinerary is still
 // open. It is deliberately NOT validTransitions: a destination change is a
@@ -380,54 +416,172 @@ func (s *RideService) RequestRide(riderID string, pickupLat, pickupLng, dropoffL
 	return ride, nil
 }
 
-func (s *RideService) CancelRide(rideID, actor string) (*model.Ride, error) {
+// cancellableStatuses is the one set both roles may cancel from. It is a set
+// (not validTransitions) on purpose: a cancel that loses to a concurrent
+// AssignDriver still finds the ride "accepted" and therefore still wins, which
+// is the product decision for a customer who must never be trapped.
+var cancellableStatuses = []string{"pending", "accepted", "driver_arrived"}
+
+func authorizeCancel(ride *model.Ride, actor, callerID string) error {
+	switch actor {
+	case "rider":
+		if ride.RiderID != callerID {
+			return ErrNotRideRider
+		}
+	case "driver":
+		if ride.DriverID == nil || *ride.DriverID != callerID {
+			return ErrNotRideDriver
+		}
+	default:
+		// Same 404 shape as a missing ride: never reveal another actor's ride.
+		return fmt.Errorf("%w: actor=%q", ErrNotRideRider, actor)
+	}
+	return nil
+}
+
+// CancelRide is the single cancellation funnel for both roles
+// (api_plans/[rides]_cancel_accept_race.md §2).
+//
+// One conditional write authorizes nothing by itself: the caller's ownership is
+// checked first (and every mismatch is ErrNotRideRider/ErrNotRideDriver -> 404
+// with a missing ride's body). A repeat cancel of an already-cancelled ride is
+// idempotent (200, no second event/broadcast/push); a terminal ride is
+// ErrCannotCancel (409). The response is re-read AFTER the write, so
+// cancelled_at/updated_at are the committed values, never the pre-write struct.
+func (s *RideService) CancelRide(rideID, actor, callerID string) (*model.Ride, error) {
 	ride, err := s.rideRepo.FindByID(rideID)
 	if err != nil {
 		return nil, err
 	}
-
-	allowed := validTransitions[ride.Status]
-	if !contains(allowed, "cancelled") {
-		return nil, errors.New("ride cannot be cancelled in current status")
+	if aerr := authorizeCancel(ride, actor, callerID); aerr != nil {
+		return nil, aerr
 	}
 
-	now := time.Now()
-	if err := s.rideRepo.UpdateRideStatus(rideID, "cancelled", &now); err != nil {
+	// Already cancelled: authorized repeat, no second event and no duplicate
+	// participant notification. The defensive withdrawal still runs so a
+	// phantom parked offer (if any) is closed and its driver, a NEW recipient,
+	// learns the ride is terminally cancelled.
+	if ride.Status == "cancelled" {
+		return s.finishCancelled(ride, actor), nil
+	}
+	if !contains(cancellableStatuses, ride.Status) {
+		return nil, fmt.Errorf("%w: status=%s", ErrCannotCancel, ride.Status)
+	}
+
+	updated, err := s.rideRepo.UpdateRideStatusFrom(rideID, cancellableStatuses, "cancelled", nil)
+	if err != nil {
 		return nil, err
 	}
+	if !updated {
+		// A lost race is not an error: re-read once and let the current state
+		// decide between idempotent success and a terminal conflict.
+		fresh, ferr := s.rideRepo.FindByID(rideID)
+		if ferr != nil {
+			return nil, ferr
+		}
+		if fresh.Status == "cancelled" {
+			return s.finishCancelled(fresh, actor), nil
+		}
+		return nil, fmt.Errorf("%w: status=%s", ErrCannotCancel, fresh.Status)
+	}
 
-	if err := s.rideRepo.CreateEvent(&model.RideEvent{
+	if eerr := s.rideRepo.CreateEvent(&model.RideEvent{
 		RideID:     rideID,
 		FromStatus: ride.Status,
 		ToStatus:   "cancelled",
 		Actor:      actor,
-	}); err != nil {
-		log.Printf("ride %s: failed to record cancelled event: %v", rideID, err)
+	}); eerr != nil {
+		// The cancel row is committed; a missing audit row must not fail it.
+		log.Printf("ride %s: failed to record cancelled event: %v", rideID, eerr)
 	}
 
-	ride.Status = "cancelled"
+	// Stop the parked dispatch offer promptly and learn the offered driver so
+	// the cancel fan-out can reach them as a distinct recipient.
+	offeredDriverID := ""
+	if s.offerWithdrawer != nil {
+		offeredDriverID = s.offerWithdrawer.WithdrawOffer(rideID, "cancelled")
+	}
 
+	fresh, err := s.rideRepo.FindByID(rideID)
+	if err != nil {
+		// The write is committed; retrying the cancel is idempotent and will
+		// complete the fan-out. Never return a stale pre-write struct.
+		return nil, fmt.Errorf("ride cancelled but could not be reloaded: %w", err)
+	}
+
+	return s.fanOutCancelled(fresh, actor, offeredDriverID, true), nil
+}
+
+// finishCancelled is the idempotent branch: the ride is already cancelled, so
+// only a genuinely new offered driver is notified (a phantom offer), and the
+// rider/assigned driver are not re-notified.
+func (s *RideService) finishCancelled(ride *model.Ride, actor string) *model.Ride {
+	offeredDriverID := ""
+	if s.offerWithdrawer != nil {
+		offeredDriverID = s.offerWithdrawer.WithdrawOffer(ride.ID, "cancelled")
+	}
+	return s.fanOutCancelled(ride, actor, offeredDriverID, false)
+}
+
+// fanOutCancelled sends the terminal ride.updated to distinct recipients. On a
+// first cancel that is the rider, the assigned driver (from the POST-write
+// re-read, so an accept that committed between the read and the write is still
+// notified) and the offered driver. Deduplication is by user id so one person
+// holding two roles gets one frame and one push.
+func (s *RideService) fanOutCancelled(ride *model.Ride, actor, offeredDriverID string, notifyParticipants bool) *model.Ride {
+	var recipients []string
+	seen := make(map[string]bool, 3)
+	add := func(id string) {
+		if id == "" || seen[id] {
+			return
+		}
+		seen[id] = true
+		recipients = append(recipients, id)
+	}
+
+	if notifyParticipants {
+		add(ride.RiderID)
+		if ride.DriverID != nil {
+			add(*ride.DriverID)
+		}
+	} else {
+		// On an idempotent repeat the participant set was already notified, so
+		// mark it as seen WITHOUT notifying: a phantom offer held by one of
+		// them is not a new recipient.
+		if ride.RiderID != "" {
+			seen[ride.RiderID] = true
+		}
+		if ride.DriverID != nil {
+			seen[*ride.DriverID] = true
+		}
+	}
+	// The offered driver is new to this cancellation (they only held an offer),
+	// including on an idempotent repeat where a phantom offer still existed.
+	add(offeredDriverID)
+
+	if len(recipients) == 0 {
+		return ride
+	}
+
+	timestamp := time.Now()
+	if !ride.UpdatedAt.IsZero() {
+		timestamp = ride.UpdatedAt
+	}
 	msg := websocket.OutgoingMessage{
 		Type: "ride.updated",
 		Data: websocket.RideUpdateData{
-			RideID:      rideID,
+			RideID:      ride.ID,
 			Status:      "cancelled",
-			Timestamp:   time.Now(),
+			Timestamp:   timestamp,
 			CancelledBy: actor,
 		},
 	}
-	s.hub.SendToUser(ride.RiderID, msg)
-	if ride.DriverID != nil {
-		s.hub.SendToUser(*ride.DriverID, msg)
+	for _, id := range recipients {
+		s.hub.SendToUser(id, msg)
+		// A backgrounded participant still needs to know their ride is off.
+		s.notifyOffline(id, pushMessageForStatus("cancelled", ride.ID))
 	}
-
-	// A backgrounded rider (or driver) still needs to know their ride is off.
-	s.notifyOffline(ride.RiderID, pushMessageForStatus("cancelled", rideID))
-	if ride.DriverID != nil {
-		s.notifyOffline(*ride.DriverID, pushMessageForStatus("cancelled", rideID))
-	}
-
-	return ride, nil
+	return ride
 }
 
 func (s *RideService) AdvanceStatus(rideID, newStatus, actor string) (*model.Ride, error) {
@@ -442,8 +596,15 @@ func (s *RideService) AdvanceStatus(rideID, newStatus, actor string) (*model.Rid
 	}
 
 	now := time.Now()
-	if err := s.rideRepo.UpdateRideStatus(rideID, newStatus, &now); err != nil {
+	updated, err := s.rideRepo.UpdateRideStatusFrom(rideID, []string{ride.Status}, newStatus, &now)
+	if err != nil {
 		return nil, err
+	}
+	if !updated {
+		// Another transition committed between the read and the write. Return
+		// BEFORE any event, completion fare/actuals/earnings, broadcast, or
+		// push: a lost race must leave no side effect on the ride row.
+		return nil, fmt.Errorf("%w: observed %s -> %s", ErrTransitionConflict, ride.Status, newStatus)
 	}
 
 	if err := s.rideRepo.CreateEvent(&model.RideEvent{

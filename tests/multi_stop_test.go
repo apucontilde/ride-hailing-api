@@ -315,7 +315,7 @@ func TestUpdateDestinationAuthorizationAndStatus(t *testing.T) {
 
 	t.Run("a completed ride answers 409", func(t *testing.T) {
 		booked := requestMultiStopRide(t, ownerToken, nil)
-		if err := ts.RideRepo.UpdateRideStatus(booked.Ride.ID, "completed", nil); err != nil {
+		if _, err := ts.RideRepo.UpdateRideStatusFrom(booked.Ride.ID, []string{"pending"}, "completed", nil); err != nil {
 			t.Fatalf("seeding the completed status: %v", err)
 		}
 

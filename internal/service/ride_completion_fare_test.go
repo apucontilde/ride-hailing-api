@@ -27,8 +27,10 @@ func (r *captureFinalizeRepo) FindByID(string) (*model.Ride, error) {
 	cp := *r.ride
 	return &cp, nil
 }
-func (r *captureFinalizeRepo) UpdateRideStatus(string, string, *time.Time) error { return nil }
-func (r *captureFinalizeRepo) CreateEvent(*model.RideEvent) error                { return nil }
+func (r *captureFinalizeRepo) UpdateRideStatusFrom(string, []string, string, *time.Time) (bool, error) {
+	return true, nil
+}
+func (r *captureFinalizeRepo) CreateEvent(*model.RideEvent) error { return nil }
 func (r *captureFinalizeRepo) FindRideTrackPoints(string) ([]model.RideTrackPoint, error) {
 	return r.points, nil
 }

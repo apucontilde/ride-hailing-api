@@ -3,6 +3,7 @@ package repository
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"fmt"
 	"time"
 
@@ -22,7 +23,11 @@ type RideRepository interface {
 	FindCurrentRideByDriver(driverID string) (*model.Ride, error)
 	FindRidesByRider(riderID string, limit, offset int) ([]model.Ride, int, error)
 	FindRidesByDriver(driverID string, limit, offset int) ([]model.Ride, int, error)
-	UpdateRideStatus(rideID, status string, timestamp *time.Time) error
+	// UpdateRideStatusFrom performs ONE conditional status transition. It
+	// returns updated=false with a nil error when no row matched expectedFrom (a
+	// lost race, or the ride is already in a different state). A non-nil error
+	// is a real repository failure and must become a 5xx.
+	UpdateRideStatusFrom(rideID string, expectedFrom []string, status string, timestamp *time.Time) (updated bool, err error)
 	// Actuals (migration 021, api_plans/[tracking]_actual_trip_distance.md).
 	InsertRideTrackPoint(rideID string, lat, lng float64, at time.Time) error
 	FindRideTrackPoints(rideID string) ([]model.RideTrackPoint, error)
@@ -338,7 +343,20 @@ func updateRideStatusQuery(status string) (query string, withTimestamp bool) {
 	), true
 }
 
-func (r *RideRepo) UpdateRideStatus(rideID, status string, timestamp *time.Time) error {
+// UpdateRideStatusFrom performs one conditional status transition: the UPDATE
+// only applies while the row's current status is one of expectedFrom. A zero
+// row count is the legitimate "lost race" outcome (false, nil), never an error,
+// so callers can distinguish it from a real outage (which must be a 5xx).
+//
+// expectedFrom is never empty: an empty slice is a programming error and
+// returns a non-nil error rather than accidentally becoming an unconditional
+// update. The SQL stays parameterised; the status only reaches Postgres as $1,
+// and the expected set as pq.Array.
+func (r *RideRepo) UpdateRideStatusFrom(rideID string, expectedFrom []string, status string, timestamp *time.Time) (bool, error) {
+	if len(expectedFrom) == 0 {
+		return false, errors.New("update ride status from: expectedFrom must not be empty")
+	}
+
 	now := timestamp
 	if now == nil {
 		t := time.Now()
@@ -346,13 +364,29 @@ func (r *RideRepo) UpdateRideStatus(rideID, status string, timestamp *time.Time)
 	}
 
 	query, withTimestamp := updateRideStatusQuery(status)
-	var err error
+	// Preserve the landed [dispatch] no-timestamp form and append the guard.
+	idArg := 2
 	if withTimestamp {
-		_, err = r.db.Exec(query, status, *now, rideID)
-	} else {
-		_, err = r.db.Exec(query, status, rideID)
+		idArg = 3
 	}
-	return wrapDB("update ride status", err)
+	statusArg := idArg + 1
+	query += fmt.Sprintf(" AND status = ANY($%d)", statusArg)
+
+	args := []any{status}
+	if withTimestamp {
+		args = append(args, *now)
+	}
+	args = append(args, rideID, pq.Array(expectedFrom))
+
+	res, err := r.db.Exec(query, args...)
+	if err != nil {
+		return false, wrapDB("update ride status", err)
+	}
+	rows, err := res.RowsAffected()
+	if err != nil {
+		return false, wrapDB("update ride status", err)
+	}
+	return rows == 1, nil
 }
 
 // InsertRideTrackPoint appends one accepted driver fix to the ride's trace

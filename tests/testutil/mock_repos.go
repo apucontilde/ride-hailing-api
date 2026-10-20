@@ -377,7 +377,7 @@ func (m *MockRideRepo) CreateRide(ride *model.Ride) error {
 	}
 	// Store a private copy rather than aliasing the caller's pointer. The
 	// handler marshals its created ride while the dispatch goroutine can write
-	// status through UpdateRideStatus, so sharing one struct is a data race
+	// status through UpdateRideStatusFrom, so sharing one struct is a data race
 	// (go test -race ./tests/).
 	stored := *ride
 	stored.Stops = append([]model.RideStop(nil), ride.Stops...)
@@ -624,13 +624,35 @@ func (m *MockRideRepo) FindRatingsByRater(raterID, raterRole, rideID string, lim
 	return matched[offset:end], total, nil
 }
 
-func (m *MockRideRepo) UpdateRideStatus(rideID, status string, timestamp *time.Time) error {
+// UpdateRideStatusFrom mirrors the real conditional write: a status not in
+// expectedFrom is a lost race (false, nil) and leaves the stored row untouched;
+// a real failure (injected through FailNext) propagates. It mutates the STORED
+// struct — never the caller's copy — so a service that forgets to re-read after
+// the write cannot pass a freshness assertion (FindByID returns a copy).
+func (m *MockRideRepo) UpdateRideStatusFrom(rideID string, expectedFrom []string, status string, timestamp *time.Time) (bool, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	if len(expectedFrom) == 0 {
+		return false, fmt.Errorf("update ride status from: expectedFrom must not be empty")
+	}
+	if err := failNext(&m.FailNext); err != nil {
+		return false, err
+	}
 	r, ok := m.rides[rideID]
 	if !ok {
-		return fmt.Errorf("load ride: %w", repository.ErrNotFound)
+		return false, fmt.Errorf("load ride: %w", repository.ErrNotFound)
 	}
+	matched := false
+	for _, from := range expectedFrom {
+		if r.Status == from {
+			matched = true
+			break
+		}
+	}
+	if !matched {
+		return false, nil
+	}
+
 	r.Status = status
 	r.UpdatedAt = time.Now()
 	ts := timestamp
@@ -650,7 +672,7 @@ func (m *MockRideRepo) UpdateRideStatus(rideID, status string, timestamp *time.T
 	case "cancelled":
 		r.CancelledAt = ts
 	}
-	return nil
+	return true, nil
 }
 
 // InsertRideTrackPoint appends a fix to the ride's in-memory trace.
@@ -730,6 +752,12 @@ func (m *MockRideRepo) FinalizeRideFare(rideID string, baseFare, distanceFare, t
 func (m *MockRideRepo) AssignDriver(rideID, driverID string) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	// A real assignment write can fail (outage) or lose the race. FailNext lets
+	// the accept-failure branches be exercised; the status guard below models
+	// the WHERE status='pending' race.
+	if err := failNext(&m.FailNext); err != nil {
+		return err
+	}
 	r, ok := m.rides[rideID]
 	if !ok {
 		return fmt.Errorf("load ride: %w", repository.ErrNotFound)

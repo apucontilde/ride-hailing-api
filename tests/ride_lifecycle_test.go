@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"net/http"
 	"testing"
+	"time"
 
 	"github.com/gorilla/websocket"
 
@@ -412,6 +413,24 @@ func TestRideCancelBeforeAccept(t *testing.T) {
 	resp := ts.DoRequest("POST", "/api/v1/rides/"+createResult.Ride.ID+"/cancel", token, nil)
 	resp.AssertStatus(t, http.StatusOK)
 	resp.AssertJSONHas(t, "ride.status", "cancelled")
+
+	// The incident's stale-response symptom: the 200 body must carry the
+	// COMMITTED timestamps, not the pre-write struct.
+	var cancelled struct {
+		Ride struct {
+			CancelledAt *time.Time `json:"cancelled_at"`
+			CreatedAt   time.Time  `json:"created_at"`
+			UpdatedAt   time.Time  `json:"updated_at"`
+		} `json:"ride"`
+	}
+	testutil.ParseJSON(t, resp.Body, &cancelled)
+	if cancelled.Ride.CancelledAt == nil {
+		t.Error("cancelled_at is null in the cancel response")
+	}
+	if !cancelled.Ride.UpdatedAt.After(cancelled.Ride.CreatedAt) {
+		t.Errorf("updated_at = %s, want it moved past created_at %s",
+			cancelled.Ride.UpdatedAt, cancelled.Ride.CreatedAt)
+	}
 }
 
 func TestRideCurrentReturnsNullWhenIdle(t *testing.T) {

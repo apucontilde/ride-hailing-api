@@ -2,6 +2,7 @@ package websocket
 
 import (
 	"encoding/json"
+	"errors"
 	"log"
 	"net/http"
 	"sync"
@@ -36,6 +37,14 @@ const controlWriteTimeout = 5 * time.Second
 type DispatchHandler interface {
 	HandleAccept(driverID, rideID string) error
 	HandleDecline(driverID, rideID string)
+}
+
+// acceptFailureCoder is implemented by the service's accept failure type. It
+// lets the hub read the canonical wire code/message without importing
+// internal/service (which imports this package, so a direct import would
+// cycle).
+type acceptFailureCoder interface {
+	AcceptFailureCode() (code, message string)
 }
 
 var upgrader = websocket.Upgrader{
@@ -186,9 +195,25 @@ func (h *Hub) HandleWS(c *gin.Context) {
 				RideID string `json:"ride_id"`
 			}
 			if json.Unmarshal(incoming.Data, &data) == nil && h.dispatchHandler != nil {
-				if err := h.dispatchHandler.HandleAccept(client.UserID, data.RideID); err != nil {
-					log.Printf("failed to handle ride accept: %v", err)
-				}
+				// HandleAccept performs the authoritative assignment write and
+				// an ETA route lookup, so it must not block the read loop.
+				// Client.SendJSON is mutex-guarded, making the reply safe.
+				go func(driverID, rideID string) {
+					if err := h.dispatchHandler.HandleAccept(driverID, rideID); err != nil {
+						log.Printf("failed to handle ride accept: %v", err)
+						code, message := AcceptFailureRideNotPending, "this ride is no longer available"
+						var coder acceptFailureCoder
+						if errors.As(err, &coder) {
+							code, message = coder.AcceptFailureCode()
+						}
+						if serr := client.SendJSON(OutgoingMessage{
+							Type: "ride.accept_failed",
+							Data: RideAcceptFailedData{RideID: rideID, Code: code, Message: message},
+						}); serr != nil {
+							log.Printf("failed to send ride.accept_failed to %s: %v", driverID, serr)
+						}
+					}
+				}(client.UserID, data.RideID)
 			}
 		case "ride.decline":
 			var data struct {

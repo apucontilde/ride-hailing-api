@@ -171,6 +171,10 @@ func SetupWithRepos(cfg *config.Config, userRepo repository.UserRepository, ride
 	rideService.SetEarnings(earningsRepo, cfg.Payout.CommissionRate)
 	dispatchService := service.NewDispatchService(rideRepo, geoRepo, userRepo, wsHub, navService)
 	wsHub.SetDispatchHandler(dispatchService)
+	// Cancel must stop a parked dispatch offer and notify its driver
+	// (api_plans/[rides]_cancel_accept_race.md §3). The dispatch service is
+	// built after the ride service, hence the setter.
+	rideService.SetOfferWithdrawer(dispatchService)
 
 	// Handlers
 	healthHandler := handler.NewHealthHandler(db)
@@ -273,7 +277,7 @@ func SetupWithRepos(cfg *config.Config, userRepo repository.UserRepository, ride
 	rides.GET("/history", rideHandler.GetRideHistory)
 	rides.GET("/:id", rideHandler.GetRideByID)
 	rides.GET("/:id/receipt", rideHandler.GetRideReceipt)
-	rides.POST("/:id/cancel", rideHandler.CancelRide)
+	rides.POST("/:id/cancel", middleware.RequireRole("rider"), rideHandler.CancelRide)
 	rides.POST("/:id/rate", rideHandler.RateRide)
 	rides.POST("/:id/tip", rideHandler.TipDriver)
 	rides.PUT("/:id/destination", middleware.RequireRole("rider"), rideHandler.UpdateDestination)

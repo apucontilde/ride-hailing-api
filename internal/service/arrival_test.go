@@ -46,9 +46,13 @@ func testGeofenceConfig() config.ArrivalGeofence {
 // the service persisted.
 type arrivalRideRepo struct {
 	repository.RideRepository
-	mu            sync.Mutex
-	ride          *model.Ride
-	updateErr     error
+	mu             sync.Mutex
+	ride           *model.Ride
+	updateErr      error
+	updateAttempts int
+	// raceTo, when set, is applied to the stored ride immediately before the
+	// CAS check, simulating a concurrent transition (e.g. a cancel) that wins.
+	raceTo        string
 	statusUpdates []string
 	events        []*model.RideEvent
 }
@@ -63,15 +67,30 @@ func (r *arrivalRideRepo) FindByID(id string) (*model.Ride, error) {
 	return &cp, nil
 }
 
-func (r *arrivalRideRepo) UpdateRideStatus(rideID, status string, _ *time.Time) error {
+func (r *arrivalRideRepo) UpdateRideStatusFrom(rideID string, expectedFrom []string, status string, _ *time.Time) (bool, error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
+	r.updateAttempts++
 	if r.updateErr != nil {
-		return r.updateErr
+		return false, r.updateErr
+	}
+	if r.raceTo != "" {
+		r.ride.Status = r.raceTo
+		r.raceTo = ""
+	}
+	matched := false
+	for _, from := range expectedFrom {
+		if r.ride.Status == from {
+			matched = true
+			break
+		}
+	}
+	if !matched {
+		return false, nil
 	}
 	r.statusUpdates = append(r.statusUpdates, status)
 	r.ride.Status = status
-	return nil
+	return true, nil
 }
 
 func (r *arrivalRideRepo) CreateEvent(event *model.RideEvent) error {
