@@ -582,6 +582,156 @@ void main() {
     },
   );
 
+  testWidgets(
+    'a lost 200 after the server committed closes as accepted over the '
+    'WS-confirmed ride, never as expired',
+    (tester) async {
+      await seedOffer(tester, 'r1');
+      final accept = Completer<void>();
+      when(
+        () => mockRepo.acceptRideHttp('r1'),
+      ).thenAnswer((_) => accept.future);
+      stubRide();
+      await pumpSheet(tester);
+      await tester.pump();
+
+      await tapAccept(tester);
+      await tester.pump();
+
+      // The server committed, broadcast `accepted` to this driver and cleared
+      // the offer — but the POST's `200` is lost. The clear was deferred while
+      // `_accepting`; the held ride is the server's own accepted ride.
+      events.add(
+        WsEvent(
+          type: WsEventType.updated,
+          data: {
+            'ride_id': 'r1',
+            'status': 'accepted',
+            'pickup': {'lat': 9.93, 'lng': -84.08, 'address': 'Central Park'},
+            'dropoff': {'lat': 9.95, 'lng': -84.10, 'address': 'Airport'},
+          },
+        ),
+      );
+      await tester.pump();
+
+      expect(notifier.state.currentRide!.status, 'accepted');
+      expect(notifier.state.offeredRideId, isNull);
+
+      accept.completeError(Exception('receive timeout'));
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 300));
+
+      // One truthful outcome: the committed accept. No expiry, no failure
+      // copy, no duplicate POST.
+      expect(find.text('Offer expired'), findsNothing);
+      expect(find.text('Could not accept. Please try again.'), findsNothing);
+      expect(find.byKey(const Key('offer-dismiss-button')), findsNothing);
+      expect(find.byType(OfferSheet), findsNothing);
+      expect(find.text('Trip accepted'), findsOneWidget);
+      expect(notifier.state.currentRide!.id, 'r1');
+      expect(notifier.state.currentRide!.status, 'accepted');
+      expect(notifier.state.currentRide!.pickupLat, 9.93);
+      verify(() => mockRepo.acceptRideHttp('r1')).called(1);
+
+      await drainModalTimers(tester);
+    },
+  );
+
+  testWidgets(
+    'a WS accepted arriving after a retryable POST failure still closes as '
+    'accepted, never as expired',
+    (tester) async {
+      await seedOffer(tester, 'r1');
+      when(
+        () => mockRepo.acceptRideHttp('r1'),
+      ).thenThrow(Exception('receive timeout'));
+      stubRide();
+      await pumpSheet(tester);
+      await tester.pump();
+
+      await tapAccept(tester);
+      await tester.pump();
+
+      // The POST failed before any clear arrived: the sheet is still usable.
+      expect(find.text('Accept'), findsOneWidget);
+      expect(find.text('Offer expired'), findsNothing);
+
+      // The server's late `ride.updated accepted` proves the assignment did
+      // commit after all. This is the listener's direct (not-deferred) path.
+      events.add(
+        WsEvent(
+          type: WsEventType.updated,
+          data: {
+            'ride_id': 'r1',
+            'status': 'accepted',
+            'pickup': {'lat': 9.93, 'lng': -84.08, 'address': 'Central Park'},
+            'dropoff': {'lat': 9.95, 'lng': -84.10, 'address': 'Airport'},
+          },
+        ),
+      );
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 300));
+
+      expect(find.text('Offer expired'), findsNothing);
+      expect(find.text('Could not accept. Please try again.'), findsNothing);
+      expect(find.byKey(const Key('offer-dismiss-button')), findsNothing);
+      expect(find.byType(OfferSheet), findsNothing);
+      expect(find.text('Trip accepted'), findsOneWidget);
+      expect(notifier.state.currentRide!.status, 'accepted');
+      verify(() => mockRepo.acceptRideHttp('r1')).called(1);
+
+      await drainModalTimers(tester);
+    },
+  );
+
+  testWidgets(
+    'a pre-200 close deferred by an in-flight accept applies once when the '
+    'POST fails without committing',
+    (tester) async {
+      await seedOffer(tester, 'r1');
+      final accept = Completer<void>();
+      when(
+        () => mockRepo.acceptRideHttp('r1'),
+      ).thenAnswer((_) => accept.future);
+      stubRide();
+      await pumpSheet(tester);
+      await tester.pump();
+
+      await tapAccept(tester);
+      await tester.pump();
+
+      // The rider cancels between the tap and the (never-committed) POST.
+      events.add(
+        const WsEvent(
+          type: WsEventType.offerClosed,
+          data: {'ride_id': 'r1', 'reason': 'cancelled'},
+        ),
+      );
+      await tester.pump();
+
+      // Deferred while the POST is in flight: no expired state yet.
+      expect(notifier.state.offeredRideId, isNull);
+      expect(find.text('The rider cancelled this trip.'), findsNothing);
+      expect(find.byKey(const Key('offer-dismiss-button')), findsNothing);
+
+      accept.completeError(Exception('server exploded'));
+      await tester.pump();
+      await tester.pump();
+
+      // The deferred clear is applied exactly once: one reason copy, one
+      // Dismiss, and the sheet is not popped (no double close).
+      expect(find.text('Could not accept. Please try again.'), findsOneWidget);
+      expect(find.text('The rider cancelled this trip.'), findsOneWidget);
+      expect(find.byKey(const Key('offer-dismiss-button')), findsOneWidget);
+      expect(find.text('Offer expired'), findsNothing);
+      expect(find.byType(OfferSheet), findsOneWidget);
+      expect(notifier.state.currentRide, isNull);
+      verify(() => mockRepo.acceptRideHttp('r1')).called(1);
+
+      await drainModalTimers(tester);
+    },
+  );
+
   testWidgets('a genuine clear with no accept in flight still pins the explicit '
       'Dismiss expiry', (tester) async {
     await seedOffer(tester, 'r1');

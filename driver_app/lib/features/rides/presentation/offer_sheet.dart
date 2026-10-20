@@ -37,8 +37,9 @@ class _OfferSheetState extends ConsumerState<OfferSheet> {
   /// Blocks a double tap while the accept POST is in flight.
   bool _accepting = false;
 
-  /// The accept POST answered 200: the assignment committed. A committed
-  /// accept is never POSTed again; only the post-accept read is retried.
+  /// The assignment is known to be committed: the accept POST answered 200, or
+  /// the server's `ride.updated {status:accepted}` proved it after the 200 was
+  /// lost. A committed accept is never POSTed again; only a read is retried.
   bool _acceptConfirmed = false;
 
   /// The post-accept read keeps failing, so the sheet offers Retry loading
@@ -189,6 +190,13 @@ class _OfferSheetState extends ConsumerState<OfferSheet> {
           .read(rideStateProvider.notifier)
           .expireOffer(reason: 'expired', message: e.message);
     } on Exception {
+      // A retryable POST failure can still follow a committed assignment: the
+      // server may have pushed `ride.updated accepted` (which cleared the
+      // offer) before the `200` was lost. The held server-confirmed accepted
+      // ride is the one truthful outcome; never show a failure or expire over
+      // it. This also covers a clear that arrived while `_accepting` only
+      // deferred (no commit) unless the WS has since confirmed the accept.
+      if (_closeAsAcceptedFromServerUpdate()) return;
       _showMessage('Could not accept. Please try again.');
       // The offer may have closed while the POST was in flight (rider cancel,
       // withdrawal). The listener deferred that clear; no accept committed, so
@@ -281,6 +289,40 @@ class _OfferSheetState extends ConsumerState<OfferSheet> {
     if (mounted) Navigator.of(context).pop();
   }
 
+  /// A cleared offer whose presented ride is already server-confirmed accepted
+  /// is the committed accept, not an expiry: the server can push
+  /// `ride.updated {status:accepted}` before the HTTP `200` reaches the sheet,
+  /// and a lost/timed-out response must not repaint that held trip as
+  /// `Offer expired`. Close once, as accepted, and never re-POST.
+  ///
+  /// Returns true when this helper owns the close. A genuine clear with no
+  /// accepted held ride still falls through to the explicit Dismiss (bug #20),
+  /// and the direct 404/409 path never reaches this helper.
+  bool _closeAsAcceptedFromServerUpdate() {
+    final ride = ref.read(rideStateProvider).currentRide;
+    // A server-confirmed accepted ride always carries the pickup coordinates;
+    // the legacy optimistic placeholder (`accepted`, no coords) is not a
+    // committed assignment and must still expire (bug #20 / accept_failed).
+    final isPresentedAccepted =
+        ride != null &&
+        ride.id == _presentedRideId &&
+        ride.pickupLat != null &&
+        ride.pickupLng != null &&
+        (ride.status == 'accepted' || ride.status == 'driver_arrived');
+    if (!isPresentedAccepted || _postAcceptClose || !mounted) return false;
+    _acceptConfirmed = true;
+    _clearWhileAccepting = false;
+    _clearWhileAcceptingMessage = null;
+    _cancelCountdown();
+    _postAcceptClose = true; // this closure owns the pop
+    // A retryable failure may already have queued its own SnackBar; the
+    // committed accept is the only truthful outcome, so do not leave the
+    // failure copy in front of "Trip accepted".
+    ScaffoldMessenger.of(context).removeCurrentSnackBar();
+    _closeAsAccepted();
+    return true;
+  }
+
   /// Pins the sheet into its expired state (single explicit Dismiss). Used by
   /// the local countdown, the held offer being cleared, and the 404/409 accept
   /// outcomes, so the sheet never silently disappears.
@@ -366,6 +408,10 @@ class _OfferSheetState extends ConsumerState<OfferSheet> {
             _clearWhileAcceptingMessage = state.offerClosedMessage;
             return;
           }
+          // The server may have committed and cleared the offer after the
+          // accept POST failed retryably (or before its `200` arrived). A held
+          // accepted ride for this sheet is the one truthful outcome.
+          if (_closeAsAcceptedFromServerUpdate()) return;
           _expireNow(message: state.offerClosedMessage);
         }
       },
