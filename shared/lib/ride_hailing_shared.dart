@@ -28,6 +28,8 @@ export 'src/utils/money.dart';
 export 'src/map/map_tile_config.dart';
 export 'src/map/map_tile_layer.dart';
 export 'src/map/map_tile_attribution.dart';
+export 'src/map/map_camera_fit.dart';
+export 'src/map/app_map_locate_button.dart';
 export 'src/models/auth_user.dart';
 export 'src/models/ride.dart';
 export 'src/navigation/app_back_button.dart';

@@ -25,6 +25,7 @@ import 'package:rider_app/features/home/presentation/location_search_screen.dart
 class FakeLocationService implements LocationService {
   LocationAvailability availability = LocationAvailability.granted;
   Position? position;
+  int getCurrentPositionCalls = 0;
   int openAppSettingsCalls = 0;
   int openLocationSettingsCalls = 0;
 
@@ -32,7 +33,10 @@ class FakeLocationService implements LocationService {
   Future<LocationAvailability> requestAvailability() async => availability;
 
   @override
-  Future<Position?> getCurrentPosition() async => position;
+  Future<Position?> getCurrentPosition() async {
+    getCurrentPositionCalls++;
+    return position;
+  }
 
   @override
   Future<bool> openAppSettings() async {
@@ -152,6 +156,7 @@ void main() {
     Place? destinationResult,
     PickupMemory? pickupMemory,
     List<Map<String, dynamic>>? searchPushes,
+    bool withScaffold = false,
   }) {
     final router = GoRouter(
       initialLocation: '/home',
@@ -159,14 +164,17 @@ void main() {
         GoRoute(
           path: '/home',
           // `Material` (not `Scaffold`): production's shell owns the only
-          // Scaffold, so the mount assertion below still holds.
-          builder: (_, _) => Material(
-            child: HomeScreen(
+          // Scaffold, so the mount assertion below still holds. The snackbar
+          // cases opt into a Scaffold because Home degrades to the persistent
+          // notice when none is mounted.
+          builder: (_, _) {
+            final home = HomeScreen(
               initialPickup: pickup,
               initialDestination: destination,
               pickupMemory: pickupMemory,
-            ),
-          ),
+            );
+            return withScaffold ? Scaffold(body: home) : Material(child: home);
+          },
         ),
         // The destination / add-stop / pickup-search round trip. Production
         // routes this to the real search screen, so the **real**
@@ -240,6 +248,7 @@ void main() {
     Place? destinationResult,
     PickupMemory? pickupMemory,
     List<Map<String, dynamic>>? searchPushes,
+    bool withScaffold = false,
     Size surface = const Size(800, 1600),
   }) async {
     tester.view.physicalSize = surface;
@@ -256,6 +265,7 @@ void main() {
         destinationResult: destinationResult,
         pickupMemory: pickupMemory,
         searchPushes: searchPushes,
+        withScaffold: withScaffold,
       ),
     );
     await pumpRoute(tester);
@@ -279,6 +289,13 @@ void main() {
     final layer = tester.widget<PolylineLayer>(found);
     return layer.polylines.isEmpty ? null : layer.polylines.first;
   }
+
+  /// The live camera of the mounted `FlutterMap`.
+  MapCamera mapCamera(WidgetTester tester) =>
+      tester.widget<FlutterMap>(find.byType(FlutterMap)).mapController!.camera;
+
+  /// The shared locate button.
+  Finder locateButton() => find.byKey(const Key('map-locate-button'));
 
   testWidgets('booking flow: shows destination field and request trip button', (
     WidgetTester tester,
@@ -1271,7 +1288,7 @@ void main() {
 
       // The my-location control rides above the collapsed panel: its bottom edge
       // never dips below the panel's top.
-      final fab = tester.getRect(find.byType(FloatingActionButton));
+      final fab = tester.getRect(find.byKey(const Key('map-locate-button')));
       final panel = tester.getRect(find.byType(AppBottomSheet));
       expect(fab.bottom, lessThanOrEqualTo(panel.top));
     },
@@ -1428,7 +1445,7 @@ void main() {
 
       // The my-location control rides above the collapsed panel: its bottom edge
       // never dips below the panel's top.
-      final fab = tester.getRect(find.byType(FloatingActionButton));
+      final fab = tester.getRect(find.byKey(const Key('map-locate-button')));
       final panel = tester.getRect(find.byType(AppBottomSheet));
       expect(fab.bottom, lessThanOrEqualTo(panel.top));
       debugDefaultTargetPlatformOverride = null;
@@ -1660,5 +1677,163 @@ void main() {
     await tester.pumpAndSettle();
     expect(sheetSize(tester), closeTo(sheetWidget(tester).maxChildSize, 0.01));
     debugDefaultTargetPlatformOverride = null;
+  });
+
+  // [map] shared locate/fit button: auto-fit + full cycle.
+  // ---------------------------------------------------------------------------
+
+  testWidgets(
+    'route load auto-fits and the button cycles locate → fit → locate',
+    (WidgetTester tester) async {
+      fakeLocation
+        ..availability = LocationAvailability.granted
+        ..position = testPosition(9.92, -84.08);
+      dioAdapter.onGet(
+        ApiEndpoints.navigationRoute,
+        (server) => server.replyCallback(200, legRouteBody),
+      );
+
+      await pumpHome(
+        tester,
+        pickup: pickupPlace,
+        destination: destinationPlace,
+      );
+      await tester.pump();
+
+      // The shared widget auto-fitted the material route; the next press
+      // locates.
+      expect(find.byTooltip('Current location'), findsOneWidget);
+      final fitted = mapCamera(tester).visibleBounds;
+      expect(fitted.contains(LatLng(pickupPlace.lat, pickupPlace.lng)), isTrue);
+      expect(
+        fitted.contains(LatLng(destinationPlace.lat, destinationPlace.lng)),
+        isTrue,
+      );
+
+      // A fresh fix (distinct from the startup one) wins on a locate press.
+      fakeLocation.position = testPosition(9.90, -84.06);
+      await tester.tap(locateButton());
+      await tester.pump();
+      await tester.pump();
+
+      var camera = mapCamera(tester);
+      expect(camera.center.latitude, closeTo(9.90, 0.0001));
+      expect(camera.center.longitude, closeTo(-84.06, 0.0001));
+      expect(camera.zoom, 16);
+      expect(find.byTooltip('Fit route'), findsOneWidget);
+
+      // The next press fits the route again.
+      await tester.tap(locateButton());
+      await tester.pump();
+      camera = mapCamera(tester);
+      expect(
+        camera.visibleBounds.contains(LatLng(pickupPlace.lat, pickupPlace.lng)),
+        isTrue,
+      );
+      expect(
+        camera.visibleBounds.contains(
+          LatLng(destinationPlace.lat, destinationPlace.lng),
+        ),
+        isTrue,
+      );
+      expect(find.byTooltip('Current location'), findsOneWidget);
+
+      // And the cycle advances to locate again.
+      await tester.tap(locateButton());
+      await tester.pump();
+      await tester.pump();
+      camera = mapCamera(tester);
+      expect(camera.center.latitude, closeTo(9.90, 0.0001));
+      expect(camera.center.longitude, closeTo(-84.06, 0.0001));
+    },
+  );
+
+  testWidgets(
+    'a stop added re-fits the material route and the next tap locates',
+    (WidgetTester tester) async {
+      fakeLocation
+        ..availability = LocationAvailability.granted
+        ..position = testPosition(9.92, -84.08);
+      dioAdapter.onGet(
+        ApiEndpoints.navigationRoute,
+        (server) => server.replyCallback(200, legRouteBody),
+      );
+
+      await pumpHome(
+        tester,
+        pickup: pickupPlace,
+        destination: destinationPlace,
+        addStopResult: stopPlace,
+      );
+      await tester.pump();
+
+      // Consume the locate half so the cycle is on fit before the change.
+      await tester.tap(locateButton());
+      await tester.pump();
+      await tester.pump();
+      expect(find.byTooltip('Fit route'), findsOneWidget);
+
+      await tester.tap(find.byKey(const ValueKey<String>('add-stop-button')));
+      await tester.pump();
+      await tester.pump();
+      await tester.pump();
+      await pumpRoute(tester);
+      await tester.pump();
+
+      // The added stop changed the material key, so the shared widget re-fit
+      // without any screen-side scheduling.
+      final camera = mapCamera(tester);
+      expect(
+        camera.visibleBounds.contains(LatLng(stopPlace.lat, stopPlace.lng)),
+        isTrue,
+      );
+      expect(find.byTooltip('Current location'), findsOneWidget);
+
+      await tester.tap(locateButton());
+      await tester.pump();
+      await tester.pump();
+      final located = mapCamera(tester);
+      expect(located.center.latitude, closeTo(9.92, 0.0001));
+      expect(located.center.longitude, closeTo(-84.08, 0.0001));
+    },
+  );
+
+  testWidgets('a locate with no fix tells the truth and moves nothing', (
+    WidgetTester tester,
+  ) async {
+    fakeLocation
+      ..availability = LocationAvailability.granted
+      ..position = null;
+    dioAdapter.onGet(
+      ApiEndpoints.navigationRoute,
+      (server) => server.replyCallback(200, legRouteBody),
+    );
+
+    await pumpHome(
+      tester,
+      pickup: pickupPlace,
+      destination: destinationPlace,
+      withScaffold: true,
+    );
+    await tester.pump();
+    final before = mapCamera(tester).center;
+    final startupFetches = fakeLocation.getCurrentPositionCalls;
+
+    await tester.tap(locateButton());
+    await tester.pump();
+    await tester.pump();
+
+    expect(
+      fakeLocation.getCurrentPositionCalls,
+      startupFetches + 1,
+      reason: 'the press re-fetched a fresh fix',
+    );
+    expect(find.text('Unable to get current location'), findsOneWidget);
+    // The failed action stays on locate; the camera did not move and no
+    // fabricated rider marker appeared.
+    expect(find.byTooltip('Current location'), findsOneWidget);
+    expect(mapCamera(tester).center.latitude, closeTo(before.latitude, 1e-9));
+    expect(mapCamera(tester).center.longitude, closeTo(before.longitude, 1e-9));
+    expect(hasMarkerIcon(tester, Icons.my_location), isFalse);
   });
 }

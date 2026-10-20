@@ -158,43 +158,48 @@ class _HomeScreenState extends ConsumerState<HomeScreen>
 
   /// Fits the camera to the whole itinerary (pickup → stops → destination), so
   /// adding or moving a stop keeps every pin in frame. Falls back to centering
-  /// when only one point exists.
-  void _fitItinerary() {
-    final points = <LatLng>[
-      if (_pickupLocation != null)
-        LatLng(_pickupLocation!.lat, _pickupLocation!.lng)
-      else
-        ?_currentPosition,
-      for (final stop in _stops) LatLng(stop.lat, stop.lng),
-      if (_destination != null) LatLng(_destination!.lat, _destination!.lng),
-    ];
-    if (points.isEmpty) return;
-    try {
-      if (points.length == 1) {
-        _mapController.move(points.first, 15.0);
-        return;
-      }
-      _mapController.fitCamera(
-        CameraFit.bounds(
-          bounds: LatLngBounds.fromPoints(points),
-          // Keep every pin inside the shrinking visible map: the panel covers
-          // the bottom `panelPixels`, so the fit's bottom padding grows with it.
-          padding: EdgeInsets.fromLTRB(
-            60,
-            60,
-            60,
-            _availableHeight <= 0
-                ? 60
-                : (_panelPixels(_availableHeight) + 60)
-                    .clamp(60.0, _availableHeight * 0.7),
-          ),
-          maxZoom: 16.0,
-        ),
-      );
-    } catch (_) {
-      // The map camera is not attached yet (e.g. the first location fix lands
-      // before the first frame); a later frame frames the itinerary.
+  /// when only one point exists. Returns whether the camera moved.
+  bool _fitItinerary() {
+    final points = _itineraryPoints();
+    if (points.isEmpty) return false;
+    if (points.length == 1) {
+      return centerMapCamera(_mapController, points.first, zoom: 15);
     }
+    return fitMapCamera(
+      _mapController,
+      points,
+      padding: _fitPadding(),
+      maxZoom: 16,
+    );
+  }
+
+  /// The itinerary pins in order: pickup (or the device fix), stops,
+  /// destination. The device fix is a fallback origin only — it is never
+  /// written into `_pickupLocation`.
+  List<LatLng> _itineraryPoints() => <LatLng>[
+    if (_pickupLocation != null)
+      LatLng(_pickupLocation!.lat, _pickupLocation!.lng)
+    else
+      ?_currentPosition,
+    for (final stop in _stops) LatLng(stop.lat, stop.lng),
+    if (_destination != null) LatLng(_destination!.lat, _destination!.lng),
+  ];
+
+  /// Keep every pin inside the shrinking visible map: the panel covers the
+  /// bottom `panelPixels`, so the fit's bottom padding grows with it.
+  EdgeInsets _fitPadding() {
+    final availableHeight = _availableHeight;
+    return EdgeInsets.fromLTRB(
+      60,
+      60,
+      60,
+      availableHeight <= 0
+          ? 60
+          : (_panelPixels(availableHeight) + 60).clamp(
+              60.0,
+              availableHeight * 0.7,
+            ),
+    );
   }
 
   /// The route-preview plan for the current pickup/stops/destination, or null
@@ -276,6 +281,74 @@ class _HomeScreenState extends ConsumerState<HomeScreen>
       'Location permission is required to request rides',
       duration: const Duration(seconds: 5),
     );
+  }
+
+  /// Fits the drawable route: the API preview polyline when it has ≥ 2 points,
+  /// else the itinerary pins. Returns whether the camera moved, so the shared
+  /// locate button can advance its cycle.
+  bool _fitRoute(HomeRoutePreview preview) {
+    if (preview.polyline.length >= 2) {
+      return fitMapCamera(
+        _mapController,
+        preview.polyline,
+        padding: _fitPadding(),
+        maxZoom: 16,
+      );
+    }
+    return _fitItinerary();
+  }
+
+  /// Whether there is a route or an itinerary worth fitting. Moving markers
+  /// alone (a GPS refresh) are not a route.
+  bool _canFitRoute(HomeRoutePreview preview) =>
+      preview.polyline.length >= 2 || _itineraryPoints().length >= 2;
+
+  /// Material-route key: preview status + pickup/stops/destination coordinates
+  /// ONLY. A device-fix refresh, a silent preview refresh or a same-endpoint
+  /// reroute must not auto-fit or reset the button cycle.
+  String _homeRouteKey(HomeRoutePreview preview) {
+    String point(double lat, double lng) => '$lat,$lng';
+    return <String>[
+      preview.status.name,
+      if (_pickupLocation != null)
+        'p:${point(_pickupLocation!.lat, _pickupLocation!.lng)}',
+      for (final stop in _stops) 's:${point(stop.lat, stop.lng)}',
+      if (_destination != null)
+        'd:${point(_destination!.lat, _destination!.lng)}',
+    ].join('|');
+  }
+
+  /// The locate press: re-resolve availability (keeping the persistent notice
+  /// truthful), fetch a fresh fix, fall back to the cached one, then center.
+  /// Never fabricates a point. [`_initLocation`] stays the startup path.
+  Future<bool> _locateCurrentPosition() async {
+    final service = ref.read(locationServiceProvider);
+    final availability = await service.requestAvailability();
+    if (!mounted) return false;
+    setState(() => _locationStatus = availability);
+
+    if (availability != LocationAvailability.granted) {
+      _showSnackBar(
+        'Location permission is required to request rides',
+        duration: const Duration(seconds: 5),
+      );
+      return false;
+    }
+
+    final position = await service.getCurrentPosition();
+    if (!mounted) return false;
+    final fresh = position == null
+        ? null
+        : LatLng(position.latitude, position.longitude);
+    final target = fresh ?? _currentPosition;
+    if (target == null) {
+      _showSnackBar('Unable to get current location');
+      return false;
+    }
+    if (fresh != null) {
+      setState(() => _currentPosition = fresh);
+    }
+    return centerMapCamera(_mapController, target);
   }
 
   /// `showSnackBar` requires a registered `Scaffold`; production's shell owns
@@ -591,10 +664,11 @@ class _HomeScreenState extends ConsumerState<HomeScreen>
                   offset: Offset(0, -_panelPixels(_availableHeight)),
                   child: child,
                 ),
-                child: FloatingActionButton(
-                  onPressed: _initLocation,
-                  backgroundColor: AppColors.surface,
-                  child: const Icon(Icons.my_location, color: AppColors.info),
+                child: AppMapLocateButton(
+                  routeKey: _homeRouteKey(preview),
+                  hasRoute: _canFitRoute(preview),
+                  onFitRoute: () => _fitRoute(preview),
+                  onCurrentLocation: _locateCurrentPosition,
                 ),
               ),
             ),

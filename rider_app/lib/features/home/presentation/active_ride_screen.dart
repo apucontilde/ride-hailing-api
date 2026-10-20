@@ -23,6 +23,17 @@ import '../data/trip_return.dart';
 import '../data/trip_route_provider.dart';
 import 'rating_prompt_dialog.dart';
 
+/// One-shot device fix for the locate button's non-driving-status fallback.
+/// Widget tests override it so they never touch the geolocator platform
+/// channel.
+final riderCurrentPositionProvider =
+    Provider<Future<LatLng?> Function()>((ref) => () async {
+  final position = await LocationHelper.getCurrentPosition();
+  return position == null
+      ? null
+      : LatLng(position.latitude, position.longitude);
+});
+
 class ActiveRideScreen extends ConsumerStatefulWidget {
   const ActiveRideScreen({super.key});
 
@@ -38,6 +49,10 @@ class _ActiveRideScreenState extends ConsumerState<ActiveRideScreen>
   static const LatLng _defaultMapCenter = LatLng(9.9281, -84.0907);
 
   final MapController _mapController = MapController();
+
+  /// Measures the driver-info sheet so a route fit can keep the polyline above
+  /// it. It is set on the sheet returned by [_buildDriverInfoSheet].
+  final GlobalKey _sheetKey = GlobalKey();
   LatLng? _riderPosition;
   StreamSubscription<dynamic>? _positionSubscription;
   LocationPingService? _pingService;
@@ -478,6 +493,111 @@ class _ActiveRideScreenState extends ConsumerState<ActiveRideScreen>
     }
   }
 
+  /// The statuses whose locate target is the driver's last fix.
+  bool _locatesDriver(RideStatus status) =>
+      status == RideStatus.matching ||
+      status == RideStatus.driverApproaching ||
+      status == RideStatus.driverArrived ||
+      status == RideStatus.onTrip;
+
+  /// The ordered itinerary pins (pickup, intermediate stops, dropoff), used
+  /// only when the API did not supply route geometry.
+  List<LatLng> _itineraryPins(TripRouteState route) => <LatLng>[
+    if (route.pickup != null) route.pickup!,
+    ...route.stopPoints,
+    if (route.dropoff != null) route.dropoff!,
+  ];
+
+  /// The points to fit: the trip polyline when it has ≥ 2 points, else the
+  /// itinerary pins plus the non-null rider/driver markers.
+  List<LatLng> _routeFitPoints(
+    TripRouteState route,
+    LatLng? rider,
+    LatLng? driver,
+  ) {
+    if (route.polyline.length >= 2) return route.polyline;
+    return <LatLng>[
+      ..._itineraryPins(route),
+      ?rider,
+      ?driver,
+    ];
+  }
+
+  /// Whether there is a route or an itinerary worth fitting. Moving markers
+  /// alone are not a route.
+  bool _canFitRoute(TripRouteState route) =>
+      route.polyline.length >= 2 || _itineraryPins(route).length >= 2;
+
+  /// Material trip-route key: status + pickup/stopPoints/dropoff coordinates
+  /// ONLY. A silent 30 s refresh, a 200 m driver refetch and moving rider/driver
+  /// fixes must not auto-fit or reset the locate-button cycle.
+  String _tripRouteKey(TripRouteState route) {
+    String point(LatLng p) => '${p.latitude},${p.longitude}';
+    return <String>[
+      route.status.name,
+      if (route.pickup != null) 'p:${point(route.pickup!)}',
+      for (final stop in route.stopPoints) 's:${point(stop)}',
+      if (route.dropoff != null) 'd:${point(route.dropoff!)}',
+    ].join('|');
+  }
+
+  /// The sheet's measured height plus breathing room; ~220 before first layout.
+  double _sheetBottomInset() {
+    final box = _sheetKey.currentContext?.findRenderObject() as RenderBox?;
+    if (box == null || !box.hasSize) return 220;
+    return box.size.height + 24;
+  }
+
+  /// Fits the trip route (polyline, else pins) over the sheet. `false` before
+  /// the map is attached so the button keeps the fit step pending.
+  bool _fitTripRoute(
+    TripRouteState route,
+    LatLng? rider,
+    LatLng? driver,
+  ) {
+    if (!_mapReady) return false;
+    return fitMapCamera(
+      _mapController,
+      _routeFitPoints(route, rider, driver),
+      padding: EdgeInsets.fromLTRB(60, 60, 60, _sheetBottomInset()),
+      maxZoom: 16,
+    );
+  }
+
+  /// The status-aware locate target. Driving phases center on the driver's last
+  /// fix; terminal/other statuses center on the rider's fix. A missing target
+  /// returns `false` without moving the camera.
+  Future<bool> _locateActiveTarget(RideStatus status) async {
+    if (_locatesDriver(status)) {
+      final fix = ref.read(rideStatusProvider).driverLocation;
+      if (fix == null) return false;
+      return centerMapCamera(_mapController, LatLng(fix.lat, fix.lng));
+    }
+
+    var fix = _riderPosition;
+    if (fix == null) {
+      try {
+        fix = await ref.read(riderCurrentPositionProvider)();
+      } catch (_) {
+        fix = null;
+      }
+      if (!mounted) return false;
+      if (fix != null) setState(() => _riderPosition = fix);
+    }
+    if (fix == null) return false;
+    return centerMapCamera(_mapController, fix);
+  }
+
+  /// The truthful failure line: driving phases wait for the driver, the rest
+  /// wait for the rider. Never implies a location exists.
+  void _showLocationUnavailable(RideStatus status) {
+    final message = _locatesDriver(status)
+        ? 'Waiting for driver location…'
+        : 'Waiting for your location…';
+    ScaffoldMessenger.of(context)
+        .showSnackBar(SnackBar(content: Text(message)));
+  }
+
   /// LC-3 item 3/4 — the completion flow: real receipt, then the rating prompt.
   /// Runs at most once per trip (the WS `completed` and the `GET /rides/current`
   /// poll can both report it).
@@ -809,7 +929,39 @@ class _ActiveRideScreenState extends ConsumerState<ActiveRideScreen>
               child: AppBackButton(onPressed: _handleBack),
             ),
           ),
-          _buildDriverInfoSheet(rideState, driverPosition),
+          // The control sits immediately above the driver sheet, right-aligned,
+          // so it is part of the bottom stack and never covers the sheet.
+          Positioned(
+            bottom: 0,
+            left: 0,
+            right: 0,
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.stretch,
+              children: [
+                Padding(
+                  padding: const EdgeInsets.only(right: 16, bottom: 12),
+                  child: Align(
+                    alignment: Alignment.centerRight,
+                    child: AppMapLocateButton(
+                      routeKey: _tripRouteKey(tripRoute),
+                      hasRoute: _canFitRoute(tripRoute),
+                      onFitRoute: () => _fitTripRoute(
+                        tripRoute,
+                        _riderPosition,
+                        driverPosition,
+                      ),
+                      onCurrentLocation: () =>
+                          _locateActiveTarget(rideState.status),
+                      onLocationUnavailable: () =>
+                          _showLocationUnavailable(rideState.status),
+                    ),
+                  ),
+                ),
+                _buildDriverInfoSheet(rideState, driverPosition),
+              ],
+            ),
+          ),
         ],
       ),
     );
@@ -890,15 +1042,12 @@ class _ActiveRideScreenState extends ConsumerState<ActiveRideScreen>
         : (driver.rating <= 0 ? 'New driver' : driver.rating.toStringAsFixed(1));
     final statusText = _getStatusText(rideState.status);
 
-    return Positioned(
-      bottom: 0,
-      left: 0,
-      right: 0,
-      child: AppBottomSheet(
-        padding: const EdgeInsets.all(20),
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
+    return AppBottomSheet(
+      key: _sheetKey,
+      padding: const EdgeInsets.all(20),
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
+        children: [
             const AppSheetHandle(),
             const SizedBox(height: 20),
             Row(
@@ -967,8 +1116,7 @@ class _ActiveRideScreenState extends ConsumerState<ActiveRideScreen>
               expand: true,
               onPressed: _cancelInFlight ? null : _cancelRide,
             ),
-          ],
-        ),
+        ],
       ),
     );
   }

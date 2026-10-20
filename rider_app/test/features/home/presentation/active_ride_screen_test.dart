@@ -15,6 +15,7 @@ import 'package:rider_app/features/home/data/location_ping_service.dart';
 import 'package:rider_app/features/home/data/pickup_memory_provider.dart';
 import 'package:rider_app/features/home/data/ride_status_provider.dart';
 import 'package:rider_app/features/home/data/trip_route_provider.dart';
+import 'package:rider_app/features/home/model/driver.dart';
 import 'package:rider_app/features/home/model/place.dart';
 import 'package:rider_app/features/home/presentation/active_ride_screen.dart';
 import 'package:rider_app/features/home/presentation/location_search_screen.dart';
@@ -305,6 +306,7 @@ void main() {
     Duration routeRefreshInterval = const Duration(seconds: 30),
     Place? changeDestinationResult,
     List<Map<String, dynamic>>? searchExtras,
+    Future<LatLng?> Function()? riderFix,
   }) {
     final router = GoRouter(
       initialLocation: '/active-ride',
@@ -381,6 +383,8 @@ void main() {
           );
         }),
         if (ping != null) locationPingServiceProvider.overrideWithValue(ping),
+        if (riderFix != null)
+          riderCurrentPositionProvider.overrideWithValue(riderFix),
       ],
     );
     addTearDown(container.dispose);
@@ -396,6 +400,19 @@ void main() {
     final layer = tester.widget<PolylineLayer>(find.byType(PolylineLayer));
     return layer.polylines.isEmpty ? null : layer.polylines.first;
   }
+
+  /// The live camera of the mounted `FlutterMap`.
+  MapCamera mapCamera(WidgetTester tester) =>
+      tester.widget<FlutterMap>(find.byType(FlutterMap)).mapController!.camera;
+
+  /// The shared locate button.
+  Finder locateButton() => find.byKey(const Key('map-locate-button'));
+
+  /// A `ride.updated` status transition (the WS event shape).
+  Map<String, dynamic> statusEvent(String backendStatus) => {
+    'type': 'ride.updated',
+    'data': {'ride_id': 'ride-1', 'status': backendStatus},
+  };
 
   /// Let the trip route's `GET /rides/:id` → `GET /navigation/route` chain
   /// resolve. Small positive pumps fire Dio's zero-duration response timer but
@@ -2161,6 +2178,257 @@ void main() {
       findsNothing,
     );
     expect(find.byKey(const ValueKey<String>('trip-arrived')), findsOneWidget);
+
+    await settleAndDispose(tester);
+  });
+
+  // [map] shared locate/fit button.
+  // ---------------------------------------------------------------------------
+
+  testWidgets('the locate button sits above the driver sheet, right-aligned', (
+    WidgetTester tester,
+  ) async {
+    fixture();
+    emit(acceptedEvent());
+
+    await tester.pumpWidget(buildRouter());
+    await pumpRoute(tester);
+
+    final button = tester.getRect(locateButton());
+    final sheet = tester.getRect(find.byType(AppBottomSheet));
+    expect(button.right, closeTo(800 - 16, 0.1));
+    expect(button.bottom, lessThanOrEqualTo(sheet.top));
+
+    await settleAndDispose(tester);
+  });
+
+  testWidgets('route load auto-fits and the first tap locates the driver', (
+    WidgetTester tester,
+  ) async {
+    fixture();
+    emit(acceptedEvent());
+    emit(driverLocationEvent(9.93, -84.09));
+
+    await tester.pumpWidget(buildRouter());
+    await pumpRoute(tester);
+    await tester.pump();
+
+    expect(find.byTooltip('Current location'), findsOneWidget);
+    final fitted = mapCamera(tester).visibleBounds;
+    expect(fitted.contains(const LatLng(9.9281, -84.0907)), isTrue);
+    expect(fitted.contains(const LatLng(9.94, -84.10)), isTrue);
+
+    await tester.tap(locateButton());
+    await tester.pump();
+    await tester.pump();
+
+    final camera = mapCamera(tester);
+    expect(camera.center.latitude, closeTo(9.93, 0.0001));
+    expect(camera.center.longitude, closeTo(-84.09, 0.0001));
+    expect(camera.zoom, 16);
+    expect(find.byTooltip('Fit route'), findsOneWidget);
+
+    await settleAndDispose(tester);
+  });
+
+  for (final status in const [
+    'matching',
+    'driverApproaching',
+    'driverArrived',
+    'onTrip',
+  ]) {
+    testWidgets('$status locates the driver fix', (WidgetTester tester) async {
+      fixture();
+      final backendStatus = switch (status) {
+        'matching' => 'pending',
+        'driverArrived' => 'driver_arrived',
+        'onTrip' => 'in_progress',
+        _ => 'accepted',
+      };
+      rideResponse = {
+        'ride': rideJson(status: backendStatus),
+        'stops': <dynamic>[],
+      };
+      emit(acceptedEvent());
+      // `pending` resets the whole state, so the fix must land after it.
+      if (status == 'matching') emit(statusEvent('pending'));
+      emit(driverLocationEvent(9.93, -84.09));
+      if (status == 'driverArrived' || status == 'onTrip') {
+        emit(statusEvent(backendStatus));
+      }
+
+      await tester.pumpWidget(buildRouter());
+      await pumpRoute(tester);
+      await tester.pump();
+
+      expect(find.byTooltip('Current location'), findsOneWidget);
+      await tester.tap(locateButton());
+      await tester.pump();
+      await tester.pump();
+
+      final camera = mapCamera(tester);
+      expect(camera.center.latitude, closeTo(9.93, 0.0001));
+      expect(camera.center.longitude, closeTo(-84.09, 0.0001));
+      expect(camera.zoom, 16);
+
+      await settleAndDispose(tester);
+    });
+  }
+
+  for (final backendStatus in const [
+    'completed',
+    'cancelled',
+    'no_driver_available',
+  ]) {
+    testWidgets(
+      '$backendStatus locates the rider fix, not the retained driver fix',
+      (WidgetTester tester) async {
+        fixture();
+        // Seed the terminal state directly, before mount: the WS listener and
+        // the completion/cancel exits must not run for this camera assertion.
+        // The retained driver fix proves the terminal branch ignores it.
+        rideNotifier.updateFromCurrentRide({
+          'id': null,
+          'status': backendStatus,
+        });
+        rideNotifier.applyDriverLocation(
+          const DriverLocation(driverId: 'driver-1', lat: 9.93, lng: -84.09),
+        );
+
+        await tester.pumpWidget(
+          buildRouter(riderFix: () async => const LatLng(9.91, -84.07)),
+        );
+        await pumpRoute(tester);
+        await tester.pump();
+
+        await tester.tap(locateButton());
+        await tester.pump();
+        await tester.pump();
+
+        final camera = mapCamera(tester);
+        expect(camera.center.latitude, closeTo(9.91, 0.0001));
+        expect(camera.center.longitude, closeTo(-84.07, 0.0001));
+        expect(camera.zoom, 16);
+
+        await settleAndDispose(tester);
+      },
+    );
+  }
+
+  testWidgets('idle locates the rider fix', (WidgetTester tester) async {
+    fixture();
+
+    await tester.pumpWidget(
+      buildRouter(riderFix: () async => const LatLng(9.91, -84.07)),
+    );
+    await tester.pump();
+
+    expect(find.byTooltip('Current location'), findsOneWidget);
+    await tester.tap(locateButton());
+    await tester.pump();
+    await tester.pump();
+
+    final camera = mapCamera(tester);
+    expect(camera.center.latitude, closeTo(9.91, 0.0001));
+    expect(camera.center.longitude, closeTo(-84.07, 0.0001));
+    expect(camera.zoom, 16);
+
+    await settleAndDispose(tester);
+  });
+
+  testWidgets('the button cycles locate → fit route → locate', (
+    WidgetTester tester,
+  ) async {
+    fixture();
+    emit(acceptedEvent());
+    emit(driverLocationEvent(9.93, -84.09));
+
+    await tester.pumpWidget(buildRouter());
+    await pumpRoute(tester);
+    await tester.pump();
+
+    // Auto-fit is the fit half; tap 1 locates the driver.
+    await tester.tap(locateButton());
+    await tester.pump();
+    await tester.pump();
+    var camera = mapCamera(tester);
+    expect(camera.center.latitude, closeTo(9.93, 0.0001));
+    expect(find.byTooltip('Fit route'), findsOneWidget);
+
+    // Tap 2 fits the trip route.
+    await tester.tap(locateButton());
+    await tester.pump();
+    camera = mapCamera(tester);
+    expect(
+      camera.visibleBounds.contains(const LatLng(9.9281, -84.0907)),
+      isTrue,
+    );
+    expect(camera.visibleBounds.contains(const LatLng(9.94, -84.10)), isTrue);
+    expect(find.byTooltip('Current location'), findsOneWidget);
+
+    // Tap 3 locates the driver again.
+    await tester.tap(locateButton());
+    await tester.pump();
+    await tester.pump();
+    camera = mapCamera(tester);
+    expect(camera.center.latitude, closeTo(9.93, 0.0001));
+    expect(camera.center.longitude, closeTo(-84.09, 0.0001));
+
+    await settleAndDispose(tester);
+  });
+
+  testWidgets(
+    'a driving status with no driver fix says so and does not move the camera',
+    (WidgetTester tester) async {
+      fixture();
+      emit(acceptedEvent());
+
+      await tester.pumpWidget(buildRouter());
+      await pumpRoute(tester);
+      await tester.pump();
+
+      expect(rideNotifier.state.driverLocation, isNull);
+      final before = mapCamera(tester).center;
+
+      await tester.tap(locateButton());
+      await tester.pump();
+      await tester.pump();
+
+      expect(find.text('Waiting for driver location…'), findsOneWidget);
+      expect(find.byTooltip('Current location'), findsOneWidget);
+      expect(mapCamera(tester).center.latitude, closeTo(before.latitude, 1e-9));
+      expect(
+        mapCamera(tester).center.longitude,
+        closeTo(before.longitude, 1e-9),
+      );
+
+      await settleAndDispose(tester);
+    },
+  );
+
+  testWidgets('driver follow still re-centers after a locate press', (
+    WidgetTester tester,
+  ) async {
+    fixture();
+    emit(acceptedEvent());
+    emit(driverLocationEvent(9.93, -84.09));
+
+    await tester.pumpWidget(buildRouter());
+    await pumpRoute(tester);
+    await tester.pump();
+
+    await tester.tap(locateButton());
+    await tester.pump();
+    await tester.pump();
+    expect(mapCamera(tester).center.latitude, closeTo(9.93, 0.0001));
+
+    // A newer fix must still re-center (the locate press never pauses follow).
+    await emitAndSettle(tester, driverLocationEvent(9.935, -84.095));
+
+    final camera = mapCamera(tester);
+    expect(camera.center.latitude, closeTo(9.935, 0.0001));
+    expect(camera.center.longitude, closeTo(-84.095, 0.0001));
+    expect(camera.zoom, 16);
 
     await settleAndDispose(tester);
   });
