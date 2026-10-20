@@ -442,7 +442,7 @@ after the loop timed out must not block the HTTP handler or the WS goroutine.
 
 `time.After(offerTimeout)` and the buffered `offer.ch` can be ready at the same instant, and Go
 chooses among ready `select` cases pseudo-randomly. The current timeout branch
-(`internal/service/dispatch.go:430-434`, working tree) records `skipOfferTimeout` and calls
+(`internal/service/dispatch.go:430-434`, committed `a39129a`; §4.1.1 not yet implemented) records `skipOfferTimeout` and calls
 `sendOfferClosed(driverID, rideID, "expired")` unconditionally, so an accept that already committed
 can still produce a false `ride.offer_closed` `reason:"expired"` afterwards. The timeout branch must
 distinguish **no answer** from **the answer arrived but `select` chose the timer**:
@@ -548,7 +548,7 @@ Emission points:
 
 | Reason | When |
 | --- | --- |
-| `expired` | `offerRideToDriver` **wins the parked-generation claim** after `offerTimeout` (`internal/service/dispatch.go:430-434`, working tree): no answer was buffered and the entry is still present under this token. If `HandleAccept`/`WithdrawOffer` already claimed (deleted) the generation, this frame is **suppressed** and the timeout performs a **blocking receive** on the claimant's guaranteed answer and returns that outcome (§4.1.1). |
+| `expired` | `offerRideToDriver` **wins the parked-generation claim** after `offerTimeout` (`internal/service/dispatch.go:430-434`, committed in `a39129a`; §4.1.1 not yet applied): no answer was buffered and the entry is still present under this token. If `HandleAccept`/`WithdrawOffer` already claimed (deleted) the generation, this frame is **suppressed** and the timeout performs a **blocking receive** on the claimant's guaranteed answer and returns that outcome (§4.1.1). |
 | `declined` | `DeclineOffer` processes this driver's decline (`internal/service/dispatch.go:389`). |
 | `cancelled` | `RideService.CancelRide` withdraws via `WithdrawOffer` (§3). |
 | `accepted_elsewhere` | a parked offer is withdrawn because the ride was assigned elsewhere. |
@@ -749,7 +749,7 @@ production counterpart can (`parent/AGENTS.md` / STATUS Invariants).
 
 ---
 
-## Evidence map (commit `0a11b95`; rows marked working tree = uncommitted implementation of this plan)
+## Evidence map (baseline snapshot `0a11b95`; partial implementation committed `a39129a` on 2026-10-19 — §4.1.1 is **not yet applied**)
 
 | Claim | Evidence |
 | --- | --- |
@@ -762,7 +762,7 @@ production counterpart can (`parent/AGENTS.md` / STATUS Invariants).
 | `finishWithoutDriver` unconditional terminal write | `internal/service/dispatch.go:167-180` (write `:172`) |
 | Post-offer pending re-read then write | `internal/service/dispatch.go:275-289` (`:280`) |
 | Offer registration/defer/`ride.offer`/timeout | `internal/service/dispatch.go:317-355`; timeout `internal/service/dispatch_observability.go:216` |
-| Timeout vs accept race: unconditional `expired` frame; accept claim/answer ordering | **working tree (uncommitted implementation):** `internal/service/dispatch.go:430-434` (`recordSkip(skipOfferTimeout)` + `sendOfferClosed(..., "expired")`); `HandleAccept` claim/delete `:482-498`, authoritative `acceptRide` `:500`, non-blocking answer `:504-507`; parked `chan offerAnswer` buffered 1 `:383,388`; `WithdrawOffer` delete/answer `:532-549` |
+| Timeout vs accept race: unconditional `expired` frame; accept claim/answer ordering | **committed in `a39129a` (partial implementation; §4.1.1 not yet applied):** `internal/service/dispatch.go:430-434` (`recordSkip(skipOfferTimeout)` + `sendOfferClosed(..., "expired")`); `HandleAccept` claim/delete `:482-498`, authoritative `acceptRide` `:500`, non-blocking answer `:504-507`; parked `chan offerAnswer` buffered 1 `:383,388`; `WithdrawOffer` delete/answer `:532-549` |
 | `HandleAccept` ignores `driverID`, no result | `internal/service/dispatch.go:364-372` |
 | `DeclineOffer` driver match precedent | `internal/service/dispatch.go:389-396` |
 | HTTP accept bypasses the funnel + raw `DispatchConflictError` type assertion | `internal/service/dispatch.go:400-481`; `internal/handler/ride.go:681-694` (assertion `:686`) |
@@ -780,7 +780,7 @@ production counterpart can (`parent/AGENTS.md` / STATUS Invariants).
 
 **Drift to report (not fixed by this plan):**
 
-- **Working tree (uncommitted implementation of this plan)** moved the offer/timeout block:
+- **The implementation committed in `a39129a`** moved the offer/timeout block:
   `offerRideToDriver` is now `internal/service/dispatch.go:373-436` (timeout `:430-434`),
   `WithdrawOffer` is `:532-549`, and `HandleAccept` is `:481-526`. The evidence-map row that cites
   `:317-355` is the pre-implementation snapshot (`0a11b95`); the timeout row below cites the current
