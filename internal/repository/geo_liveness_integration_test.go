@@ -280,3 +280,37 @@ func TestTouchDriverPresenceWithoutRowIsNotFound(t *testing.T) {
 		t.Errorf("TouchDriverPresence invented a position row (%d found); it must never do that", count)
 	}
 }
+
+// TestGetDriverLocationComputesAgeInPostgres pins the accept-time freshness
+// contract (api_plans/[arrival]_accept_time_evaluation.md D2=A): GetDriverLocation
+// returns the SQL-computed AgeS of the SAME read as the fix, so it tracks a
+// backdated updated_at even though Go never compares clocks. The mock suite
+// cannot see this: only the real query proves the EXTRACT(EPOCH ...) expression
+// and the updated_at column mapping.
+func TestGetDriverLocationComputesAgeInPostgres(t *testing.T) {
+	db := integrationDB(t)
+	geo := NewGeoRepo(db)
+
+	const age = 90 * time.Second
+	id := seedDriverPosition(t, db, "accept-age-probe", age)
+
+	loc, err := geo.GetDriverLocation(id)
+	if err != nil {
+		t.Fatalf("GetDriverLocation: %v", err)
+	}
+	if loc == nil {
+		t.Fatal("GetDriverLocation returned nil result")
+	}
+	if loc.AgeS < 85 || loc.AgeS > 100 {
+		t.Errorf("AgeS = %.3fs, want ~90s (DB NOW() - updated_at, never the app clock)", loc.AgeS)
+	}
+	if loc.UpdatedAt.IsZero() {
+		t.Error("UpdatedAt is zero; the query must select updated_at")
+	}
+	if since := time.Since(loc.UpdatedAt); since < 85*time.Second || since > 100*time.Second {
+		t.Errorf("UpdatedAt is %s old, want ~90s (matches AgeS)", since)
+	}
+	if loc.Lat == 0 || loc.Lng == 0 {
+		t.Errorf("lat/lng = %v/%v, want the seeded fix", loc.Lat, loc.Lng)
+	}
+}

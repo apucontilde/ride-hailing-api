@@ -539,7 +539,7 @@ func TestGeofenceConfigFromEnv(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			for _, k := range []string{
 				"GEOFENCE_ENABLED", "GEOFENCE_NEARBY_RADIUS_M", "GEOFENCE_ARRIVE_RADIUS_M",
-				"GEOFENCE_HYSTERESIS_M", "GEOFENCE_MIN_MOVE_M",
+				"GEOFENCE_HYSTERESIS_M", "GEOFENCE_MIN_MOVE_M", "GEOFENCE_ACCEPT_FIX_MAX_AGE_S",
 			} {
 				t.Setenv(k, "")
 			}
@@ -562,6 +562,52 @@ func TestGeofenceConfigFromEnv(t *testing.T) {
 			}
 			if a.MinMoveM != tc.wantMinMov {
 				t.Errorf("MinMoveM = %v, want %v", a.MinMoveM, tc.wantMinMov)
+			}
+		})
+	}
+}
+
+// TestGeofenceAcceptFixMaxAgeFromEnv pins GEOFENCE_ACCEPT_FIX_MAX_AGE_S
+// (api_plans/[arrival]_accept_time_evaluation.md D1/D2). Unset/empty is the
+// shipped 60s; a finite positive value is itself; garbage, non-finite, zero and
+// negative all become 0 = SKIP accept-time evaluation (fail-closed, never
+// "trust everything"). The knob is independent of GEOFENCE_ENABLED.
+func TestGeofenceAcceptFixMaxAgeFromEnv(t *testing.T) {
+	cases := []struct {
+		name       string
+		enabled    string
+		raw        string
+		wantAge    float64
+		wantEnable bool
+	}{
+		{name: "unset_defaults_to_60", wantAge: 60, wantEnable: true},
+		{name: "empty_defaults_to_60", raw: "", wantAge: 60, wantEnable: true},
+		{name: "valid_value", raw: "45", wantAge: 45, wantEnable: true},
+		{name: "fractional_value", raw: "60.5", wantAge: 60.5, wantEnable: true},
+		{name: "garbage_skips", raw: "soon", wantAge: 0, wantEnable: true},
+		{name: "nan_skips", raw: "NaN", wantAge: 0, wantEnable: true},
+		{name: "inf_skips", raw: "+Inf", wantAge: 0, wantEnable: true},
+		{name: "zero_skips", raw: "0", wantAge: 0, wantEnable: true},
+		{name: "negative_skips", raw: "-5", wantAge: 0, wantEnable: true},
+		{
+			// Independent of the master switch: parsing still happens, and the
+			// value alone must not re-enable a disabled geofence.
+			name: "independent_of_disabled_geofence", enabled: "off", raw: "45",
+			wantAge: 45, wantEnable: false,
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Setenv("GEOFENCE_ENABLED", tc.enabled)
+			t.Setenv("GEOFENCE_ACCEPT_FIX_MAX_AGE_S", tc.raw)
+
+			a := Load().Arrival
+			if a.AcceptFixMaxAgeS != tc.wantAge {
+				t.Errorf("AcceptFixMaxAgeS = %v, want %v", a.AcceptFixMaxAgeS, tc.wantAge)
+			}
+			if a.Enabled != tc.wantEnable {
+				t.Errorf("Enabled = %v, want %v", a.Enabled, tc.wantEnable)
 			}
 		})
 	}

@@ -270,10 +270,20 @@ type ArrivalGeofence struct {
 	ArriveRadiusM float64 // GEOFENCE_ARRIVE_RADIUS_M; default defaultGeofenceArriveRadiusM (80).
 	HysteresisM   float64 // GEOFENCE_HYSTERESIS_M;   default defaultGeofenceHysteresisM (30).
 	MinMoveM      float64 // GEOFENCE_MIN_MOVE_M;     default defaultGeofenceMinMoveM (10).
+	// AcceptFixMaxAgeS gates the arrive-only evaluation at accept time
+	// (api_plans/[arrival]_accept_time_evaluation.md D1/D2). It reads the
+	// SQL-computed age of the driver's last fix. Default 60 (the dispatch
+	// offer contract's worst case: DriverLivenessWindow + offerTimeout).
+	// Unset/"" = 60; a finite value > 0 is that many seconds; garbage,
+	// non-finite, or <= 0 parses to 0, which SKIPS accept-time evaluation
+	// (fail-closed ops rollback, independent of Enabled). 0 never means
+	// "trust everything".
+	AcceptFixMaxAgeS float64 // GEOFENCE_ACCEPT_FIX_MAX_AGE_S
 }
 
 // Arrival geofence defaults — product UX thresholds, not a cost model, so no
-// measured sweep gates them; all four are env-tunable. 300 m is a comfortable
+// measured sweep gates them; the four proximity thresholds are env-tunable. 300
+// m is a comfortable
 // "almost here" radius at urban speeds; 80 m is about one vehicle length plus
 // GPS noise, so arrival fires at the kerb without a false positive from a
 // parallel street; 30 m of hysteresis stops the near_pickup flag flickering at
@@ -284,6 +294,14 @@ const (
 	defaultGeofenceArriveRadiusM = 80
 	defaultGeofenceHysteresisM   = 30
 	defaultGeofenceMinMoveM      = 10
+
+	// defaultGeofenceAcceptFixMaxAgeS is the shipped accept-time fix freshness
+	// bound (api_plans/[arrival]_accept_time_evaluation.md D1=A). Dispatch only
+	// offers drivers whose fix is younger than DriverLivenessWindow (30s), and
+	// an offer waits up to 30s for its answer, so the fix used at accept can be
+	// ~60s old even in the healthy path. 60 is that contract's worst case, not
+	// an arbitrary grace period.
+	defaultGeofenceAcceptFixMaxAgeS = 60
 )
 
 func Load() *Config {
@@ -341,11 +359,12 @@ func Load() *Config {
 		RideMaxStops:      getInt("RIDE_MAX_STOPS", DefaultRideMaxStops),
 
 		Arrival: ArrivalGeofence{
-			Enabled:       geofenceEnabledFromEnv(),
-			NearbyRadiusM: getFloat("GEOFENCE_NEARBY_RADIUS_M", defaultGeofenceNearbyRadiusM),
-			ArriveRadiusM: getFloat("GEOFENCE_ARRIVE_RADIUS_M", defaultGeofenceArriveRadiusM),
-			HysteresisM:   getFloat("GEOFENCE_HYSTERESIS_M", defaultGeofenceHysteresisM),
-			MinMoveM:      getFloat("GEOFENCE_MIN_MOVE_M", defaultGeofenceMinMoveM),
+			Enabled:          geofenceEnabledFromEnv(),
+			NearbyRadiusM:    getFloat("GEOFENCE_NEARBY_RADIUS_M", defaultGeofenceNearbyRadiusM),
+			ArriveRadiusM:    getFloat("GEOFENCE_ARRIVE_RADIUS_M", defaultGeofenceArriveRadiusM),
+			HysteresisM:      getFloat("GEOFENCE_HYSTERESIS_M", defaultGeofenceHysteresisM),
+			MinMoveM:         getFloat("GEOFENCE_MIN_MOVE_M", defaultGeofenceMinMoveM),
+			AcceptFixMaxAgeS: geofenceAcceptFixMaxAgeFromEnv(),
 		},
 
 		Payout: Payout{
@@ -420,6 +439,28 @@ func routingElevationEnabledFromEnv() bool {
 func geofenceEnabledFromEnv() bool {
 	v := os.Getenv("GEOFENCE_ENABLED")
 	return v == "" || v == "on"
+}
+
+// geofenceAcceptFixMaxAgeFromEnv parses GEOFENCE_ACCEPT_FIX_MAX_AGE_S
+// FAIL-CLOSED for the same reason payoutCommissionFromEnv checks NaN/±Inf:
+// strconv.ParseFloat("NaN") succeeds, and every comparison against NaN is
+// false, so a non-finite value would otherwise look valid. Unset or empty means
+// the shipped default (60). A finite value > 0 is that many seconds. Anything
+// else — garbage, NaN/±Inf, zero, negative — becomes 0, which SKIPS accept-time
+// evaluation entirely; it never degrades to "trust every fix", and it is the
+// ops rollback that does not need a redeploy. Independent of GEOFENCE_ENABLED:
+// this knob can only narrow accept-time evaluation, never re-enable a disabled
+// geofence.
+func geofenceAcceptFixMaxAgeFromEnv() float64 {
+	v := os.Getenv("GEOFENCE_ACCEPT_FIX_MAX_AGE_S")
+	if v == "" {
+		return defaultGeofenceAcceptFixMaxAgeS
+	}
+	f, err := strconv.ParseFloat(v, 64)
+	if err != nil || math.IsNaN(f) || math.IsInf(f, 0) || f <= 0 {
+		return 0
+	}
+	return f
 }
 
 // payoutCommissionFromEnv parses PAYOUT_COMMISSION_RATE fail-closed: unset,

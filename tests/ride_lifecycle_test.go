@@ -378,7 +378,8 @@ func lifeCoords(t *testing.T, seed int) (pickupLat, pickupLng, dropoffLat, dropo
 	pickupLng = -74.0060
 	dropoffLat = 40.7580 + offset
 	dropoffLng = -73.9855
-	driverLat = pickupLat + 0.0002
+	driverLat = pickupLat + 0.001 // ~111 m: outside the 80 m arrive gate, so the lifecycle
+	//                               accept stays "accepted"; accept-time arrival has its own suite.
 	driverLng = pickupLng
 	return pickupLat, pickupLng, dropoffLat, dropoffLng, driverLat, driverLng
 }

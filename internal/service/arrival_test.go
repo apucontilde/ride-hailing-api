@@ -362,3 +362,154 @@ func TestEvaluateArrivalTransitionFailureIsSwallowed(t *testing.T) {
 		t.Fatalf("status updates = %v, want none (the write failed)", got)
 	}
 }
+
+// --- Accept-time evaluation (api_plans/[arrival]_accept_time_evaluation.md) ---
+
+// TestEvaluateArrivalAtAcceptAdvancesInsideRadius: the arrive-only entry point
+// advances accepted→driver_arrived exactly once, with the same system actor and
+// event as the live PUT path.
+func TestEvaluateArrivalAtAcceptAdvancesInsideRadius(t *testing.T) {
+	repo := acceptedArrivalRide()
+	svc := newArrivalService(repo)
+
+	lat, lng := atMetres(60)
+	if !svc.EvaluateArrivalAtAccept(repo.ride, "driver-1", lat, lng) {
+		t.Fatal("EvaluateArrivalAtAccept = false at 60 m, want true")
+	}
+	if got := repo.updates(); len(got) != 1 || got[0] != "driver_arrived" {
+		t.Fatalf("status updates = %v, want [driver_arrived]", got)
+	}
+	events := repo.recordedEvents()
+	if len(events) != 1 || events[0].FromStatus != "accepted" ||
+		events[0].ToStatus != "driver_arrived" || events[0].Actor != "system" {
+		t.Fatalf("events = %+v, want one accepted->driver_arrived/system", events)
+	}
+
+	// Idempotent: a second accept-time call on the now-arrived ride is a no-op.
+	if svc.EvaluateArrivalAtAccept(repo.ride, "driver-1", lat, lng) {
+		t.Error("second EvaluateArrivalAtAccept = true, want false (ride is no longer accepted)")
+	}
+	if got := repo.updates(); len(got) != 1 {
+		t.Fatalf("status updates after second call = %v, want exactly one", got)
+	}
+}
+
+// TestEvaluateArrivalAtAcceptOutsideRadiusNeverTouchesNearby: an outside-arrive
+// fix is a non-event at accept time. It must not emit a ride.nearby push, and
+// crucially it must not prime the nearby hysteresis state: the live PUT path
+// must still fire its own one-per-crossing nearby push afterwards.
+func TestEvaluateArrivalAtAcceptOutsideRadiusNeverTouchesNearby(t *testing.T) {
+	repo := acceptedArrivalRide()
+	svc := newArrivalService(repo)
+	notifier := &recordingNotifier{}
+	svc.SetPushNotifier(notifier)
+
+	// 250 m is inside the 300 m nearby radius but outside the 80 m arrive gate.
+	lat, lng := atMetres(250)
+	if svc.EvaluateArrivalAtAccept(repo.ride, "driver-1", lat, lng) {
+		t.Fatal("EvaluateArrivalAtAccept = true at 250 m, want false (outside arrive)")
+	}
+	if got := repo.updates(); len(got) != 0 {
+		t.Fatalf("status updates = %v, want none outside the arrive gate", got)
+	}
+	// Nothing may have fired or been primed by the accept-time call.
+	if msgs := notifier.snapshot(); len(msgs) != 0 {
+		t.Fatalf("accept-time call emitted %d nearby push(es), want 0", len(msgs))
+	}
+	if n := len(svc.nearStates); n != 0 {
+		t.Fatalf("nearStates entries = %d after accept-time call, want 0", n)
+	}
+
+	// The live PUT path must still see the FIRST crossing and push exactly once.
+	if near, _ := svc.EvaluateArrival(repo.ride, "driver-1", lat, lng); !near {
+		t.Fatal("live EvaluateArrival = false at 250 m, want near")
+	}
+	msgs := waitForMessages(t, notifier, 1)
+	if len(msgs) != 1 || msgs[0].Data["type"] != "ride.nearby" {
+		t.Fatalf("pushes = %+v, want exactly one ride.nearby from the live path", msgs)
+	}
+	// A second live fix inside the radius stays one crossing.
+	lat, lng = atMetres(260)
+	svc.EvaluateArrival(repo.ride, "driver-1", lat, lng)
+	if n := len(notifier.snapshot()); n != 1 {
+		t.Fatalf("pushes = %d, want exactly 1 (one crossing)", n)
+	}
+	if got := repo.updates(); len(got) != 0 {
+		t.Fatalf("nearby changed status: %v", got)
+	}
+}
+
+// TestEvaluateArrivalAtAcceptNoOps pins the guards: disabled config, a foreign
+// driver, and a ride that is not accepted all do nothing.
+func TestEvaluateArrivalAtAcceptNoOps(t *testing.T) {
+	lat, lng := atMetres(60)
+
+	t.Run("disabled", func(t *testing.T) {
+		repo := acceptedArrivalRide()
+		svc := NewRideService(repo, nil, websocket.NewHub(), nil)
+		// Zero-value geofence = off.
+		if svc.EvaluateArrivalAtAccept(repo.ride, "driver-1", lat, lng) {
+			t.Error("returned true while the geofence is disabled")
+		}
+		if got := repo.updates(); len(got) != 0 {
+			t.Fatalf("status updates = %v, want none", got)
+		}
+	})
+
+	t.Run("wrong_driver", func(t *testing.T) {
+		repo := acceptedArrivalRide()
+		svc := newArrivalService(repo)
+		if svc.EvaluateArrivalAtAccept(repo.ride, "someone-else", lat, lng) {
+			t.Error("returned true for a foreign driver")
+		}
+		if got := repo.updates(); len(got) != 0 {
+			t.Fatalf("status updates = %v, want none", got)
+		}
+	})
+
+	t.Run("not_accepted", func(t *testing.T) {
+		for _, status := range []string{"pending", "driver_arrived", "in_progress", "completed", "cancelled"} {
+			repo := acceptedArrivalRide()
+			repo.ride.Status = status
+			svc := newArrivalService(repo)
+			if svc.EvaluateArrivalAtAccept(repo.ride, "driver-1", lat, lng) {
+				t.Errorf("status %q: returned true, want false", status)
+			}
+			if got := repo.updates(); len(got) != 0 {
+				t.Errorf("status %q: updates = %v, want none", status, got)
+			}
+		}
+	})
+}
+
+// TestEvaluateArrivalAtAcceptSwallowsTransitionFailure: the evaluator returns a
+// bool, never an error, and a failed write must not fabricate an update.
+func TestEvaluateArrivalAtAcceptSwallowsTransitionFailure(t *testing.T) {
+	repo := acceptedArrivalRide()
+	repo.updateErr = errors.New("db down")
+	svc := newArrivalService(repo)
+
+	lat, lng := atMetres(60)
+	if !svc.EvaluateArrivalAtAccept(repo.ride, "driver-1", lat, lng) {
+		t.Error("inside-radius result = false; the gate is geometric, independent of the write")
+	}
+	if got := repo.updates(); len(got) != 0 {
+		t.Fatalf("status updates = %v, want none (the write failed)", got)
+	}
+}
+
+// TestEvaluateArrivalAtAcceptHasNoAgeGate documents D1/D2's boundary: the
+// evaluator has no age input, so freshness is entirely the dispatch gate's job
+// (it reads the SQL-computed AgeS). A fix inside the arrive gate always
+// evaluates here, regardless of how old the caller believes it is.
+func TestEvaluateArrivalAtAcceptHasNoAgeGate(t *testing.T) {
+	repo := acceptedArrivalRide()
+	svc := newArrivalService(repo)
+	lat, lng := atMetres(60)
+	if !svc.EvaluateArrivalAtAccept(repo.ride, "driver-1", lat, lng) {
+		t.Fatal("evaluator returned false inside the arrive gate")
+	}
+	if got := repo.updates(); len(got) != 1 {
+		t.Fatalf("updates = %v, want exactly one", got)
+	}
+}

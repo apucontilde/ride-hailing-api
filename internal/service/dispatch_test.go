@@ -43,6 +43,12 @@ type fakeGeoRepo struct {
 	sweeps int
 	// onSweep, when set, fires on every MarkStaleDriversOffline call.
 	onSweep func()
+	// loc, when non-nil, is returned by GetDriverLocation for the accept-time
+	// freshness tests. AgeS is the SQL-computed age knob: set it on the value
+	// (e.g. 60.001 to pin the stale boundary).
+	loc *model.NearbyDriverResult
+	// locErr, when set, makes GetDriverLocation fail (the no-row/outage case).
+	locErr error
 }
 
 func (f *fakeGeoRepo) UpsertDriverPosition(string, float64, float64, float64, float64, string) error {
@@ -60,7 +66,13 @@ func (f *fakeGeoRepo) FindNearbyDrivers(_, _ float64, _ float64, _ int) ([]model
 }
 func (f *fakeGeoRepo) CountNearbyDrivers(_, _ float64, _ float64) (int, error) { return 0, nil }
 func (f *fakeGeoRepo) GetDriverLocation(string) (*model.NearbyDriverResult, error) {
-	return nil, repository.ErrNotFound
+	if f.locErr != nil {
+		return nil, f.locErr
+	}
+	if f.loc == nil {
+		return nil, repository.ErrNotFound
+	}
+	return f.loc, nil
 }
 func (f *fakeGeoRepo) MarkStaleDriversOffline() error {
 	f.mu.Lock()
@@ -96,6 +108,12 @@ type fakeRideRepo struct {
 	assignErr error
 	// findErr fails FindByID (the post-offer status-read outage case).
 	findErr error
+	// pickupLat/pickupLng let FindByID return a usable ride for the accept-time
+	// evaluator (the real evaluator measures against the pickup).
+	pickupLat, pickupLng float64
+	// driverID is set by AssignDriver, mirroring the committed row; FindByID
+	// returns it so the real evaluator broadcasts to both parties.
+	driverID *string
 	// assignCommitted/assignRelease hold AssignDriver at the point AFTER the
 	// assignment commits and BEFORE the accept funnel answers the parked loop.
 	// This makes the §4.1.1 timeout-vs-accept boundary deterministic: the
@@ -183,6 +201,7 @@ func (r *fakeRideRepo) AssignDriver(rideID, driverID string) error {
 		return fmt.Errorf("accept ride: %w", repository.ErrConflict)
 	}
 	r.assignments = append(r.assignments, driverID)
+	r.driverID = &driverID
 	r.status = "accepted"
 	committed, release := r.assignCommitted, r.assignRelease
 	r.mu.Unlock()
@@ -212,7 +231,14 @@ func (r *fakeRideRepo) FindByID(id string) (*model.Ride, error) {
 	if status == "" {
 		status = "pending"
 	}
-	return &model.Ride{ID: id, Status: status}, nil
+	return &model.Ride{
+		ID:        id,
+		RiderID:   "rider-1",
+		Status:    status,
+		DriverID:  r.driverID,
+		PickupLat: r.pickupLat,
+		PickupLng: r.pickupLng,
+	}, nil
 }
 func (r *fakeRideRepo) statusUpdateLog() []string {
 	r.mu.Lock()
@@ -1259,5 +1285,208 @@ func TestSocketWaitRecordsOneSkipForADroppedDriver(t *testing.T) {
 	retries := len(logs.linesContaining("ride=ride-dropped-verb socket-wait driver="))
 	if retries != socketBackoffAttempts {
 		t.Errorf("socket-wait lines = %d, want %d (one per poll)", retries, socketBackoffAttempts)
+	}
+}
+
+// --- Accept-time arrival evaluation (api_plans/[arrival]_accept_time_evaluation.md) ---
+
+type arrivalEvalCall struct {
+	status   string
+	driverID *string
+	driver   string
+	lat, lng float64
+}
+
+// recordingArrivalEvaluator records what the accept path passed to the seam.
+type recordingArrivalEvaluator struct {
+	mu     sync.Mutex
+	calls  []arrivalEvalCall
+	result bool
+}
+
+func (e *recordingArrivalEvaluator) EvaluateArrivalAtAccept(ride *model.Ride, driverID string, lat, lng float64) bool {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	var did *string
+	if ride.DriverID != nil {
+		v := *ride.DriverID
+		did = &v
+	}
+	e.calls = append(e.calls, arrivalEvalCall{
+		status: ride.Status, driverID: did, driver: driverID, lat: lat, lng: lng,
+	})
+	return e.result
+}
+
+func (e *recordingArrivalEvaluator) snapshot() []arrivalEvalCall {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	return append([]arrivalEvalCall(nil), e.calls...)
+}
+
+// newAcceptDispatch builds the minimum dispatch service for `acceptRide`.
+func newAcceptDispatch(geo *fakeGeoRepo, ride *fakeRideRepo, hub DriverHub, evaluator AcceptArrivalEvaluator, maxAgeS float64) *DispatchService {
+	svc := newTestDispatch(geo, ride, hub)
+	svc.SetArrivalAcceptFixMaxAgeS(maxAgeS)
+	if evaluator != nil {
+		svc.SetArrivalEvaluator(evaluator)
+	}
+	return svc
+}
+
+// TestAcceptEvaluatesArrivalFreshnessGate pins the D1/D2 gate exactly:
+// loc != nil && maxAgeS > 0 && loc.AgeS <= maxAgeS. The evaluator is called
+// once with the committed accepted ride, the driver id, and the fix coords.
+func TestAcceptEvaluatesArrivalFreshnessGate(t *testing.T) {
+	cases := []struct {
+		name    string
+		maxAgeS float64
+		loc     *model.NearbyDriverResult
+		locErr  error
+		want    bool
+	}{
+		{
+			name: "fresh_fix_evaluates", maxAgeS: 60,
+			loc: &model.NearbyDriverResult{Lat: 9.931, Lng: -84.081, AgeS: 12.5}, want: true,
+		},
+		{
+			name: "boundary_60s_evaluates", maxAgeS: 60,
+			loc: &model.NearbyDriverResult{Lat: 9.931, Lng: -84.081, AgeS: 60}, want: true,
+		},
+		{
+			name: "just_past_boundary_skips", maxAgeS: 60,
+			loc: &model.NearbyDriverResult{Lat: 9.931, Lng: -84.081, AgeS: 60.001}, want: false,
+		},
+		{
+			name: "configured_zero_skips", maxAgeS: 0,
+			loc: &model.NearbyDriverResult{Lat: 9.931, Lng: -84.081, AgeS: 1}, want: false,
+		},
+		{
+			name: "negative_max_age_skips", maxAgeS: -1,
+			loc: &model.NearbyDriverResult{Lat: 9.931, Lng: -84.081, AgeS: 1}, want: false,
+		},
+		{
+			name: "no_position_row_skips", maxAgeS: 60, loc: nil, want: false,
+		},
+		{
+			name: "geo_read_error_skips", maxAgeS: 60,
+			locErr: errors.New("db down"), want: false,
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			geo := &fakeGeoRepo{loc: tc.loc, locErr: tc.locErr}
+			ride := &fakeRideRepo{}
+			hub := newFakeHub()
+			eval := &recordingArrivalEvaluator{}
+			svc := newAcceptDispatch(geo, ride, hub, eval, tc.maxAgeS)
+
+			if err := svc.acceptRide("ride-accept", "driver-1"); err != nil {
+				t.Fatalf("acceptRide = %v, want nil (evaluation must never fail the accept)", err)
+			}
+
+			calls := eval.snapshot()
+			if !tc.want {
+				if len(calls) != 0 {
+					t.Fatalf("evaluator calls = %+v, want none", calls)
+				}
+			} else {
+				if len(calls) != 1 {
+					t.Fatalf("evaluator calls = %d, want exactly 1", len(calls))
+				}
+				call := calls[0]
+				if call.status != "accepted" {
+					t.Errorf("evaluator ride status = %q, want accepted (the in-memory ride must reflect the commit)", call.status)
+				}
+				if call.driverID == nil || *call.driverID != "driver-1" {
+					t.Errorf("evaluator ride driver_id = %v, want driver-1", call.driverID)
+				}
+				if call.driver != "driver-1" || call.lat != tc.loc.Lat || call.lng != tc.loc.Lng {
+					t.Errorf("evaluator args = (%s, %v, %v), want (driver-1, %v, %v)",
+						call.driver, call.lat, call.lng, tc.loc.Lat, tc.loc.Lng)
+				}
+			}
+		})
+	}
+}
+
+// TestAcceptNeverFailsOnEvaluation proves the seam is additive: an evaluator
+// that reports "no arrival" (including a lost transition) leaves the accept's
+// success untouched.
+func TestAcceptNeverFailsOnEvaluation(t *testing.T) {
+	geo := &fakeGeoRepo{loc: &model.NearbyDriverResult{Lat: 9.931, Lng: -84.081, AgeS: 1}}
+	ride := &fakeRideRepo{}
+	eval := &recordingArrivalEvaluator{result: false}
+	svc := newAcceptDispatch(geo, ride, newFakeHub(), eval, 60)
+
+	if err := svc.acceptRide("ride-accept", "driver-1"); err != nil {
+		t.Fatalf("acceptRide = %v, want nil", err)
+	}
+	if got := len(eval.snapshot()); got != 1 {
+		t.Fatalf("evaluator calls = %d, want 1", got)
+	}
+	if assigned := ride.assignmentLog(); len(assigned) != 1 || assigned[0] != "driver-1" {
+		t.Fatalf("assignments = %v, want exactly [driver-1]", assigned)
+	}
+}
+
+// orderingArrivalEvaluator records the broadcast state at the instant the
+// accept path calls it, then emits the driver_arrived patch the real evaluator
+// would emit. That pins the D3=A ordering without needing a real hub client.
+type orderingArrivalEvaluator struct {
+	hub           *fakeHub
+	atCallRider   []string
+	atCallDriver  []string
+	driverArrived int
+}
+
+func (e *orderingArrivalEvaluator) EvaluateArrivalAtAccept(ride *model.Ride, driverID string, lat, lng float64) bool {
+	e.atCallRider = e.hub.rideUpdatesTo(ride.RiderID)
+	e.atCallDriver = e.hub.rideUpdatesTo(driverID)
+	e.driverArrived++
+	msg := websocket.OutgoingMessage{
+		Type: "ride.updated",
+		Data: websocket.RideUpdateData{RideID: ride.ID, Status: "driver_arrived"},
+	}
+	e.hub.SendToUser(ride.RiderID, msg)
+	e.hub.SendToUser(driverID, msg)
+	return true
+}
+
+// TestAcceptTimeArrivalOrderingAcceptedThenArrived is the D3=A wire-order
+// proof: both parties receive the accepted patch BEFORE the evaluator runs; the
+// evaluator then causes exactly one driver_arrived broadcast, never before the
+// accepted one. (The end-to-end suite proves the real *RideService evaluator's
+// broadcast and single transition.)
+func TestAcceptTimeArrivalOrderingAcceptedThenArrived(t *testing.T) {
+	geo := &fakeGeoRepo{loc: &model.NearbyDriverResult{Lat: 9.931, Lng: -84.081, AgeS: 5}}
+	ride := &fakeRideRepo{}
+	hub := newFakeHub("rider-1", "driver-1")
+	eval := &orderingArrivalEvaluator{hub: hub}
+	svc := newAcceptDispatch(geo, ride, hub, eval, 60)
+
+	if err := svc.acceptRide("ride-order", "driver-1"); err != nil {
+		t.Fatalf("acceptRide = %v", err)
+	}
+
+	if eval.driverArrived != 1 {
+		t.Fatalf("evaluator calls = %d, want exactly 1", eval.driverArrived)
+	}
+	for _, got := range [][]string{eval.atCallRider, eval.atCallDriver} {
+		if len(got) != 1 || got[0] != "accepted" {
+			t.Fatalf("at evaluator call, ride.updated statuses = %v, want [accepted] (accepted must be sent first)", got)
+		}
+	}
+	for _, user := range []string{"rider-1", "driver-1"} {
+		got := hub.rideUpdatesTo(user)
+		want := []string{"accepted", "driver_arrived"}
+		if len(got) != len(want) || got[0] != want[0] || got[1] != want[1] {
+			t.Fatalf("%s ride.updated order = %v, want %v", user, got, want)
+		}
+	}
+	// Exactly one accepted->driver_arrived transition.
+	if updates := ride.statusUpdateLog(); len(updates) != 0 {
+		t.Fatalf("dispatch wrote status updates %v; the evaluator owns the arrival transition", updates)
 	}
 }

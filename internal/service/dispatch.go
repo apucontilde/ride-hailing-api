@@ -77,6 +77,15 @@ const (
 	offerWithdrawn
 )
 
+// AcceptArrivalEvaluator is the narrow seam the accept path uses to run the
+// ARRIVE-ONLY proximity evaluation once, after the assignment commits
+// (api_plans/[arrival]_accept_time_evaluation.md D4=A). *RideService implements
+// it. It never runs the nearby branch, never mutates nearby hysteresis state,
+// and never returns an error, so it can never alter the accept outcome.
+type AcceptArrivalEvaluator interface {
+	EvaluateArrivalAtAccept(ride *model.Ride, driverID string, lat, lng float64) bool
+}
+
 type DispatchService struct {
 	rideRepo        repository.RideRepository
 	geoRepo         repository.GeoRepository
@@ -85,6 +94,14 @@ type DispatchService struct {
 	hub             DriverHub
 	offerChannels   map[string]activeOffer
 	offerChannelsMu sync.Mutex
+	// arrivalEvaluator, when set, evaluates arrival once after the accepted
+	// broadcast. It is optional (db-less tests and legacy wiring compile
+	// unchanged) and only ever additive: the accept never reads its result.
+	arrivalEvaluator AcceptArrivalEvaluator
+	// arrivalAcceptFixMaxAgeS is GEOFENCE_ACCEPT_FIX_MAX_AGE_S as wired by the
+	// router. 0 (or negative) skips accept-time evaluation entirely: the
+	// fail-closed default for a service constructed without wiring.
+	arrivalAcceptFixMaxAgeS float64
 	// offerSeq is the generation source for activeOffer.token. It is advanced
 	// under offerChannelsMu so a re-offer cannot be deleted or claimed by a
 	// stale loop iteration.
@@ -108,6 +125,25 @@ func NewDispatchService(rideRepo repository.RideRepository, geoRepo repository.G
 	}
 	s.traces.Store(newDispatchTraceRecorder(logDispatchTrace))
 	return s
+}
+
+// SetArrivalEvaluator installs the arrive-only evaluator called after the
+// accepted broadcast in the one accept write
+// (api_plans/[arrival]_accept_time_evaluation.md §2.1, D3=A). It is a setter
+// because the dispatch service is built before the ride service is available to
+// pass in. A nil evaluator (the default) skips accept-time evaluation.
+func (s *DispatchService) SetArrivalEvaluator(e AcceptArrivalEvaluator) {
+	s.arrivalEvaluator = e
+}
+
+// SetArrivalAcceptFixMaxAgeS installs the accept-time fix freshness bound
+// (GEOFENCE_ACCEPT_FIX_MAX_AGE_S). A non-positive bound disables accept-time
+// evaluation, the documented fail-closed rollback; callers wire it from
+// cfg.Arrival.AcceptFixMaxAgeS. The bound is independent of GEOFENCE_ENABLED —
+// the evaluator itself still no-ops when the geofence is off, so this can only
+// narrow, never re-enable.
+func (s *DispatchService) SetArrivalAcceptFixMaxAgeS(maxAgeS float64) {
+	s.arrivalAcceptFixMaxAgeS = maxAgeS
 }
 
 // traceRecorder returns the attempt recorder. Every method on it tolerates a nil
@@ -669,6 +705,11 @@ func (s *DispatchService) acceptRide(rideID, driverID string) error {
 		log.Printf("ride %s: failed to record accepted event: %v", rideID, err)
 	}
 
+	// The driver's last fix is fetched BEFORE FindDriverByID: the accept-time
+	// arrival evaluation needs it even when the driver profile read fails (the
+	// assignment is already committed), and the ETA below uses it when the
+	// profile is available. It is best-effort either way.
+	loc, _ := s.geoRepo.GetDriverLocation(driverID)
 	driver, _ := s.userRepo.FindDriverByID(driverID)
 	// Real driver→pickup ETA (US-6): the rider sees how long until
 	// the matched driver arrives, computed from the live route engine.
@@ -688,7 +729,6 @@ func (s *DispatchService) acceptRide(rideID, driverID string) error {
 				PlateNumber: vehicle.PlateNumber,
 			}
 		}
-		loc, _ := s.geoRepo.GetDriverLocation(driverID)
 		var locInfo *websocket.LatLng
 		if loc != nil {
 			locInfo = &websocket.LatLng{
@@ -727,6 +767,28 @@ func (s *DispatchService) acceptRide(rideID, driverID string) error {
 	}
 	s.hub.SendToUser(ride.RiderID, msg)
 	s.hub.SendToUser(driverID, msg)
+
+	// Accept-time proximity arrival (api_plans/[arrival]_accept_time_evaluation.md
+	// D3=A): evaluate AFTER the accepted sends so the wire order is
+	// `accepted` then `driver_arrived`, and never before — a client must never
+	// see the arrival patch ahead of the accept confirmation. Freshness is the
+	// SQL-computed age of the SAME fix read above (D2=A), never time.Since; a
+	// missing row, a read error, or a stale fix skips evaluation silently. The
+	// result is ignored: the accept is already committed and must never fail
+	// because of this additive evaluation.
+	if s.arrivalEvaluator != nil && loc != nil && s.arrivalAcceptFixMaxAgeS > 0 {
+		if loc.AgeS <= s.arrivalAcceptFixMaxAgeS {
+			// The in-memory ride still says "pending" (it was read before the
+			// assignment write): reflect the committed accepted state so the
+			// evaluator's ownership/status guards see the truth.
+			ride.Status = "accepted"
+			ride.DriverID = &driverID
+			s.arrivalEvaluator.EvaluateArrivalAtAccept(ride, driverID, loc.Lat, loc.Lng)
+		} else {
+			log.Printf("ride %s: accept-time arrival skipped: last driver fix is %.3fs old (max %.3fs)",
+				rideID, loc.AgeS, s.arrivalAcceptFixMaxAgeS)
+		}
+	}
 
 	return nil
 }

@@ -31,6 +31,15 @@ type NearbyDriverResult struct {
 	Heading   float64 `db:"heading" json:"heading"`
 	Speed     float64 `db:"speed" json:"speed"`
 	DistanceM float64 `db:"distance_m" json:"distance_m"`
+	// UpdatedAt and AgeS are the accept-time fix freshness contract
+	// (api_plans/[arrival]_accept_time_evaluation.md D2/D6). AgeS is computed
+	// by Postgres in the same read as the fix — never from the app clock — and
+	// only GetDriverLocation selects either column; FindNearbyDrivers leaves
+	// both at their zero values. Both stay internal: GET
+	// /drivers/:id/location marshals this struct directly, so json:"-" keeps
+	// that response shape unchanged.
+	UpdatedAt time.Time `db:"updated_at" json:"-"`
+	AgeS      float64   `db:"age_s" json:"-"`
 }
 
 type RouteEdge struct {

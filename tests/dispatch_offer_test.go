@@ -81,7 +81,9 @@ func offerCoords(seed int) (pickupLat, pickupLng, dropoffLat, dropoffLng, driver
 	pickupLng = -74.0060
 	dropoffLat = 40.7580 + offset
 	dropoffLng = -73.9855
-	driverLat = pickupLat + 0.0002 // ~22 m from the pickup
+	driverLat = pickupLat + 0.001 // ~111 m: outside the 80 m arrive gate, so an accept
+	//                               in these offer-path tests stays "accepted"; the
+	//                               accept-time arrival cases seed their own in-radius fix.
 	driverLng = pickupLng
 	return
 }

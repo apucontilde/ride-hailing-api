@@ -419,3 +419,163 @@ func TestProximityBatchFinalFixAdvances(t *testing.T) {
 		t.Fatalf("status = %q, want driver_arrived", got)
 	}
 }
+
+// --- Accept-time proximity arrival (api_plans/[arrival]_accept_time_evaluation.md) ---
+
+// seedDriverFixAt directly writes the mocked last fix, without the PUT path, so
+// a test can put the driver inside the arrive gate before accept without
+// emitting an intermediate driver.location frame.
+func seedDriverFixAt(t *testing.T, srv *testutil.TestServer, driverID string, lat, lng float64) {
+	t.Helper()
+	if err := srv.GeoRepo.UpsertDriverPosition(driverID, lat, lng, 0, 0, "online"); err != nil {
+		t.Fatalf("seed driver fix: %v", err)
+	}
+}
+
+func arrivalEventCount(t *testing.T, srv *testutil.TestServer, rideID string) int {
+	t.Helper()
+	n := 0
+	for _, e := range srv.RideRepo.Events() {
+		if e.RideID == rideID && e.ToStatus == "driver_arrived" {
+			n++
+		}
+	}
+	return n
+}
+
+// TestAcceptTimeArrivalAdvancesWithoutLocationPut is the core end-to-end proof:
+// the driver accepts over HTTP while the mocked last fix is inside the 80 m
+// arrive gate, and the ride becomes driver_arrived WITHOUT any subsequent
+// PUT /geo/driver/location. The wire order is accepted then driver_arrived.
+func TestAcceptTimeArrivalAdvancesWithoutLocationPut(t *testing.T) {
+	srv := testutil.NewStrictTestServer(t)
+	if srv == nil {
+		return
+	}
+	defer srv.Close()
+	const seed = 992
+	_, driverToken, rideID, riderConn, _ := startOfferedRide(t, srv, seed)
+	pickupLat, pickupLng, _, _, _, _ := offerCoords(seed)
+	driverID := onlyDriverRow(t, srv)
+	seedDriverFixAt(t, srv, driverID, pickupLat+0.0005, pickupLng) // ~55.6 m
+
+	srv.DoRequest("POST", "/api/v1/driver/rides/"+rideID+"/accept", driverToken, nil).
+		AssertStatus(t, http.StatusOK)
+
+	first := testutil.ReadWSMessage(t, riderConn)
+	if first["type"] != "ride.updated" || first["data"].(map[string]interface{})["status"] != "accepted" {
+		t.Fatalf("first rider frame = %+v, want ride.updated accepted (accepted before arrived)", first)
+	}
+	second := testutil.ReadWSMessage(t, riderConn)
+	if second["type"] != "ride.updated" || second["data"].(map[string]interface{})["status"] != "driver_arrived" {
+		t.Fatalf("second rider frame = %+v, want ride.updated driver_arrived", second)
+	}
+
+	if got := rideStatus(t, srv, rideID); got != "driver_arrived" {
+		t.Fatalf("persisted status = %q, want driver_arrived with no location PUT", got)
+	}
+	if n := arrivalEventCount(t, srv, rideID); n != 1 {
+		t.Fatalf("driver_arrived events = %d, want exactly 1", n)
+	}
+}
+
+// TestAcceptTimeArrivalThenLocationPutDoesNotReBroadcast proves the accept-time
+// transition is single-writer: the client's re-published fix (the app-side
+// defence in depth) must not emit a second event or a second driver_arrived
+// broadcast.
+func TestAcceptTimeArrivalThenLocationPutDoesNotReBroadcast(t *testing.T) {
+	srv := testutil.NewStrictTestServer(t)
+	if srv == nil {
+		return
+	}
+	defer srv.Close()
+	const seed = 993
+	_, driverToken, rideID, riderConn, _ := startOfferedRide(t, srv, seed)
+	pickupLat, pickupLng, _, _, _, _ := offerCoords(seed)
+	driverID := onlyDriverRow(t, srv)
+	seedDriverFixAt(t, srv, driverID, pickupLat+0.0005, pickupLng)
+
+	srv.DoRequest("POST", "/api/v1/driver/rides/"+rideID+"/accept", driverToken, nil).
+		AssertStatus(t, http.StatusOK)
+	// Drain accepted + driver_arrived.
+	_ = testutil.ReadWSMessage(t, riderConn)
+	_ = testutil.ReadWSMessage(t, riderConn)
+	if n := arrivalEventCount(t, srv, rideID); n != 1 {
+		t.Fatalf("driver_arrived events after accept = %d, want 1", n)
+	}
+
+	putLatLng(t, srv, driverToken, pickupLat+0.0005, pickupLng)
+
+	// The live PUT still emits driver.location, but no second ride.updated.
+	next := testutil.ReadWSMessage(t, riderConn)
+	if next["type"] != "driver.location" {
+		t.Fatalf("post-arrival PUT emitted %v, want only driver.location (no second arrival broadcast)", next["type"])
+	}
+	if n := arrivalEventCount(t, srv, rideID); n != 1 {
+		t.Fatalf("driver_arrived events after PUT = %d, want exactly 1", n)
+	}
+	if extra, _ := testutil.TryReadWSMessage(riderConn, 250*time.Millisecond); extra != nil {
+		t.Fatalf("unexpected extra frame after the post-arrival PUT: %+v", extra)
+	}
+}
+
+// TestAcceptTimeArrivalStaleFixStaysAccepted pins the SQL-side freshness gate:
+// an in-radius fix older than the 60 s default must not advance at accept.
+func TestAcceptTimeArrivalStaleFixStaysAccepted(t *testing.T) {
+	srv := testutil.NewStrictTestServer(t)
+	if srv == nil {
+		return
+	}
+	defer srv.Close()
+	const seed = 994
+	_, driverToken, rideID, riderConn, _ := startOfferedRide(t, srv, seed)
+	pickupLat, pickupLng, _, _, _, _ := offerCoords(seed)
+	driverID := onlyDriverRow(t, srv)
+	seedDriverFixAt(t, srv, driverID, pickupLat+0.0005, pickupLng)
+	srv.GeoRepo.AgeDriverPosition(driverID, 90*time.Second)
+
+	srv.DoRequest("POST", "/api/v1/driver/rides/"+rideID+"/accept", driverToken, nil).
+		AssertStatus(t, http.StatusOK)
+
+	accepted := testutil.ReadWSMessage(t, riderConn)
+	if accepted["data"].(map[string]interface{})["status"] != "accepted" {
+		t.Fatalf("rider frame = %+v, want accepted", accepted)
+	}
+	if extra, _ := testutil.TryReadWSMessage(riderConn, 250*time.Millisecond); extra != nil {
+		t.Fatalf("stale fix produced an extra frame: %+v", extra)
+	}
+	if got := rideStatus(t, srv, rideID); got != "accepted" {
+		t.Fatalf("persisted status = %q, want accepted for a 90s-old fix", got)
+	}
+	if n := arrivalEventCount(t, srv, rideID); n != 0 {
+		t.Fatalf("driver_arrived events = %d, want 0", n)
+	}
+}
+
+// TestAcceptTimeArrivalNoFixStaysAccepted: with no position row the fetch fails,
+// evaluation is skipped silently, and the accept still succeeds.
+func TestAcceptTimeArrivalNoFixStaysAccepted(t *testing.T) {
+	srv := testutil.NewStrictTestServer(t)
+	if srv == nil {
+		return
+	}
+	defer srv.Close()
+	const seed = 995
+	_, driverToken, rideID, riderConn, _ := startOfferedRide(t, srv, seed)
+	driverID := onlyDriverRow(t, srv)
+	srv.GeoRepo.RemoveDriverPosition(driverID)
+
+	srv.DoRequest("POST", "/api/v1/driver/rides/"+rideID+"/accept", driverToken, nil).
+		AssertStatus(t, http.StatusOK)
+
+	accepted := testutil.ReadWSMessage(t, riderConn)
+	if accepted["data"].(map[string]interface{})["status"] != "accepted" {
+		t.Fatalf("rider frame = %+v, want accepted", accepted)
+	}
+	if got := rideStatus(t, srv, rideID); got != "accepted" {
+		t.Fatalf("persisted status = %q, want accepted with no position row", got)
+	}
+	if n := arrivalEventCount(t, srv, rideID); n != 0 {
+		t.Fatalf("driver_arrived events = %d, want 0", n)
+	}
+}

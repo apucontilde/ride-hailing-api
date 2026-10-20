@@ -129,7 +129,8 @@ func (r *GeoRepo) GetDriverLocation(driverID string) (*model.NearbyDriverResult,
 			driver_id,
 			ST_X(location::GEOMETRY) AS lng,
 			ST_Y(location::GEOMETRY) AS lat,
-			heading, speed
+			heading, speed, updated_at,
+			EXTRACT(EPOCH FROM (NOW() - updated_at))::double precision AS age_s
 		FROM driver_positions
 		WHERE driver_id = $1`
 	err := r.db.Get(result, query, driverID)

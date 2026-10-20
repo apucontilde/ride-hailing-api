@@ -785,6 +785,15 @@ func (m *MockRideRepo) CreateEvent(event *model.RideEvent) error {
 	return nil
 }
 
+// Events returns a copy of every recorded ride_event, in creation order. It is
+// used by the arrival regression tests to assert a transition happened exactly
+// once (the CAS loser must leave no event).
+func (m *MockRideRepo) Events() []*model.RideEvent {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return append([]*model.RideEvent(nil), m.events...)
+}
+
 func (m *MockRideRepo) CreateRating(rating *model.Rating) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -980,13 +989,26 @@ func (m *MockGeoRepo) GetDriverLocation(driverID string) (*model.NearbyDriverRes
 	if !ok {
 		return nil, fmt.Errorf("load driver location: %w", repository.ErrNotFound)
 	}
+	// Mirrors the real query's SQL-computed freshness
+	// (EXTRACT(EPOCH FROM (NOW() - updated_at))). AgeDriverPosition backdates
+	// updatedAt, so the AgeS knob is the same knob the liveness tests use.
 	return &model.NearbyDriverResult{
-		DriverID: driverID,
-		Lat:      d.lat,
-		Lng:      d.lng,
-		Heading:  d.heading,
-		Speed:    d.speed,
+		DriverID:  driverID,
+		Lat:       d.lat,
+		Lng:       d.lng,
+		Heading:   d.heading,
+		Speed:     d.speed,
+		UpdatedAt: d.updatedAt,
+		AgeS:      time.Since(d.updatedAt).Seconds(),
 	}, nil
+}
+
+// RemoveDriverPosition deletes a driver's stored fix, modelling the "no
+// position row" state for the accept-time evaluation (fetch error ⇒ skip).
+func (m *MockGeoRepo) RemoveDriverPosition(driverID string) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	delete(m.drivers, driverID)
 }
 
 func (m *MockGeoRepo) CountNearbyDrivers(lat, lng float64, radiusM float64) (int, error) {

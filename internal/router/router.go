@@ -170,6 +170,12 @@ func SetupWithRepos(cfg *config.Config, userRepo repository.UserRepository, ride
 	// of the payout commission (api_plans/[payout]).
 	rideService.SetEarnings(earningsRepo, cfg.Payout.CommissionRate)
 	dispatchService := service.NewDispatchService(rideRepo, geoRepo, userRepo, wsHub, navService)
+	// Accept-time arrival evaluation: the one accept write (WS and HTTP) reads
+	// the last fix and runs the arrive-only evaluator after the accepted
+	// broadcast (api_plans/[arrival]_accept_time_evaluation.md). The max age is
+	// independent of GEOFENCE_ENABLED, which still gates the evaluator itself.
+	dispatchService.SetArrivalAcceptFixMaxAgeS(cfg.Arrival.AcceptFixMaxAgeS)
+	dispatchService.SetArrivalEvaluator(rideService)
 	wsHub.SetDispatchHandler(dispatchService)
 	// Cancel must stop a parked dispatch offer and notify its driver
 	// (api_plans/[rides]_cancel_accept_race.md §3). The dispatch service is

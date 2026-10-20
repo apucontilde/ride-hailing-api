@@ -78,16 +78,55 @@ func (s *RideService) EvaluateArrival(ride *model.Ride, driverID string, lat, ln
 	// Arrive gate. Deliberately evaluated BEFORE the min-move nearby debounce:
 	// a slow creep from 82 m to 77 m in sub-MIN_MOVE steps must still fire
 	// arrival (plan §3 D3).
-	if arrive := s.arriveRadiusM(); arrive > 0 && d <= arrive {
-		if _, err := s.AdvanceStatus(ride.ID, "driver_arrived", "system"); err != nil {
-			// A failed or lost-race transition never fails the location update.
-			log.Printf("ride %s: proximity arrival transition failed: %v", ride.ID, err)
-		}
+	if s.advanceIfInsideArriveRadius(ride, d) {
 		s.forgetNearState(ride.ID)
 		return true, d
 	}
 
 	return s.evaluateNearby(ride, lat, lng, d), d
+}
+
+// EvaluateArrivalAtAccept is the ARRIVE-ONLY entry point used by the accept
+// path (api_plans/[arrival]_accept_time_evaluation.md D4=A). It runs exactly the
+// same arrive gate as EvaluateArrival and nothing else: it never evaluates the
+// nearby radius, never fires a ride.nearby push, and never primes or clears the
+// nearby hysteresis state. A driver who accepts while already inside the arrive
+// radius is advanced to driver_arrived without depending on the app
+// re-publishing a fix.
+//
+// Like EvaluateArrival it never returns an error and swallows a failed or
+// lost-race transition (the [rides] CAS already makes the transition
+// single-writer). Freshness is deliberately NOT its concern: the accept path
+// gates the SQL-computed fix age before calling it, while the live PUT path is
+// inherently fresh.
+func (s *RideService) EvaluateArrivalAtAccept(ride *model.Ride, driverID string, lat, lng float64) bool {
+	if s == nil || ride == nil || !s.arrival.Enabled {
+		return false
+	}
+	if ride.DriverID == nil || *ride.DriverID != driverID {
+		return false
+	}
+	if ride.Status != "accepted" {
+		return false
+	}
+	return s.advanceIfInsideArriveRadius(ride, HaversineMeters(lat, lng, ride.PickupLat, ride.PickupLng))
+}
+
+// advanceIfInsideArriveRadius is the ONE arrive gate shared by EvaluateArrival
+// and EvaluateArrivalAtAccept. It reports whether the fix is inside the
+// (clamped) arrive radius; it deliberately does NOT touch the nearby hysteresis
+// state — the live PUT caller does that itself, and the accept-time caller must
+// not (D4=A). A failed or lost-race transition is logged and swallowed so a
+// geofence failure never fails the location update or the accept.
+func (s *RideService) advanceIfInsideArriveRadius(ride *model.Ride, d float64) bool {
+	arrive := s.arriveRadiusM()
+	if arrive <= 0 || d > arrive {
+		return false
+	}
+	if _, err := s.AdvanceStatus(ride.ID, "driver_arrived", "system"); err != nil {
+		log.Printf("ride %s: proximity arrival transition failed: %v", ride.ID, err)
+	}
+	return true
 }
 
 // arriveRadiusM applies the ARRIVE <= NEARBY rule: a misconfigured ARRIVE >
