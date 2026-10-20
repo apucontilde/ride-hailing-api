@@ -57,7 +57,7 @@ Backed by the existing backend: JWT auth, driver role endpoints, pgRouting navig
 | US-D5 Receive a ride request | ✅ `ride.offer` (id only) + `GET /driver/rides/:id` | Incoming-ride dialog + auto detail fetch |
 | US-D6 Accept the ride | ✅ WS `ride.accept`/`ride.decline` (+ HTTP accept fallback) | Accept/decline with expiry countdown |
 | US-D7 Navigate to the pickup | ✅ `GET /navigation/route` | Navigation screen (map + polyline) |
-| US-D8 Arrived at pickup | ✅ `driver_arrived` auto-advanced by the server proximity geofence (no notify-arrival route) | Remove the manual Arrival button; WS feedback |
+| US-D8 Arrived at pickup | ✅ `driver_arrived` auto-advanced by the server proximity geofence, including once at accept time from the last stored fix (freshness-gated; no notify-arrival route) | Remove the manual Arrival button; WS feedback |
 | US-D9 Start and complete the trip | ✅ status `in_progress`/`completed` | Trip controls + fare summary |
 | US-D10 Rate the rider | ✅ `POST /driver/rides/:id/rate` | Rating screen after completion |
 | US-11 Cancel a ride (driver side) | ✅ `POST /driver/rides/:id/cancel` (state machine enforced) | Cancel-trip action pre-pickup |
@@ -112,7 +112,7 @@ Backed by the existing backend: JWT auth, driver role endpoints, pgRouting navig
 | `PUT /driver/rides/:id/status` | trip state buttons (**M7**) |
 | `POST /driver/rides/:id/cancel` | cancel-trip action (**M7**) |
 | `POST /driver/rides/:id/rate` | rating screen (**M8**) |
-| `POST /driver/rides/:id/notify-arrival` | **removed server-side** (arrival is auto-advanced by the proximity geofence); do not call |
+| `POST /driver/rides/:id/notify-arrival` | **removed server-side** (arrival is auto-advanced by the proximity geofence, and once at accept time from the last stored fix); do not call |
 | `GET /driver/rides/queue`*, `GET /driver/ratings`* | (no screen — stub, see §4) |
 | `PUT /geo/driver/location` (+ `/batch`) | location stream (**M3**) |
 | `GET /navigation/route` | pickup navigation screen (**M6**) |
@@ -175,7 +175,7 @@ Backed by the existing backend: JWT auth, driver role endpoints, pgRouting navig
 | `GET /driver/me/earnings` + withdraw are STUB | Earnings screen computes totals client-side from `GET /driver/rides/history`; **Withdraw entry hidden**. | Earnings + payout endpoints |
 | `GET /driver/ratings` + `GET /driver/rides/queue` are STUB | Show the driver's rating from `driver.rating_summary` (already in `GET /driver/me`); no ratings-breakdown screen. No queue screen. | Ratings breakdown; real queue |
 | `POST /driver/rides/:id/decline` (HTTP) is STUB | Use **WS `ride.decline`** for declining (works). Don't call the HTTP endpoint. | HTTP decline with reason |
-| `POST /notify-arrival` was removed | Do not call it — the server auto-advances `accepted -> driver_arrived` from the proximity geofence, which already pushes `ride.updated` to the rider. `PUT /driver/rides/:id/status {driver_arrived}` stays as a manual override. | (none needed) |
+| `POST /notify-arrival` was removed | Do not call it — the server auto-advances `accepted -> driver_arrived` from the proximity geofence, and evaluates the last stored fix once at accept time (freshness-gated, default 60 s), which already pushes `ride.updated` to the rider. `PUT /driver/rides/:id/status {driver_arrived}` stays as a manual override. | (none needed) |
 | `eta_seconds` in accept payload is route-based but falls back to 300 when driver location/routing is unavailable; route duration = dist/11 | Compute distance-to-pickup client-side (haversine) for the offer card + countdown-looking ETA; trust the server ETA only when the location was present in the payload, else treat 300 as "unknown". | (none — ETA is already real from routing) |
 | Ride ID may be needed in many screens | Thread the active ride (id + status) through the ride-state notifier; never store raw paging state in widgets. | — |
 
@@ -255,7 +255,7 @@ driver_app/
 ### M7 — Arrived / Start / Complete (US-D8, US-D9)
 - **Files:** `features/ride/trip_provider.dart`, trip screen.
 - **Data:** state machine drives the single primary button:
-  - `accepted` → `PUT /driver/rides/:id/status {driver_arrived}` → await WS `ride.updated(driver_arrived)`
+  - `accepted` → arrival is server-owned: the proximity geofence (or the accept-time evaluation of the last stored fix) auto-advances to `driver_arrived` and pushes WS `ride.updated(driver_arrived)`; `PUT /driver/rides/:id/status {driver_arrived}` remains the manual override
   - `driver_arrived` → `{in_progress}` → await WS `in_progress`
   - `in_progress` → `{completed}` → WS `completed` includes `fare` → show summary
   - `completed` → navigate to rating.

@@ -506,6 +506,26 @@
   `RIDER_API_GUIDE.md`, `DRIVER_APP_PLAN.md`, `USER_STORIES.md`). Reported green: `make test`
   366 pass, `make lint` 0, `make test-integration` green. Closes bug #25; the rider/driver
   `01_[arrival]` consumers are condensed by their own owners.
+- **Arrival evaluated once at accept time** (landed `64a2f67`, adversarially **CONFIRMED**) — the
+  single accept write (`internal/service/dispatch.go:768,771-790`) reads the driver's last fix,
+  freshness-gates it SQL-side, sets the in-memory ride to the committed `accepted` state, and calls
+  the **arrive-only** `EvaluateArrivalAtAccept` (`internal/service/arrival.go:102`) *after* the
+  accepted sends (`dispatch.go:768-769`), so WS/HTTP accept order is `accepted` then
+  `driver_arrived`; the result is ignored (`dispatch.go:786`), an error/lost CAS is logged and
+  swallowed (`arrival.go:121-131`), and HTTP accept stays `200`. It never runs the nearby branch or
+  touches nearby hysteresis (`arrival.go:116-130`). Freshness is the SQL-computed `AgeS` from the
+  existing `GetDriverLocation` read (`internal/repository/geo_repo.go:125,132-133`) exposed
+  internally on `NearbyDriverResult` (`internal/model/geo.go:41-42`, both `json:"-"`, so the
+  `GET /drivers/:id/location` shape is unchanged; no migration, no new read method).
+  `GEOFENCE_ACCEPT_FIX_MAX_AGE_S` defaults to **60** and fails closed (`internal/config/config.go:281,304,367,454-463`:
+  unset/empty 60; finite >0 honored; garbage/non-finite/≤0 → 0 = skip), independent of
+  `GEOFENCE_ENABLED`; wired from the router (`internal/router/router.go:177-178`). Adopts the landed
+  `[rides]` CAS verbatim. Tests `internal/config/config_test.go:575`,
+  `internal/service/arrival_test.go:371,401,444,487,505`,
+  `internal/service/dispatch_test.go:1340,1417,1462`,
+  `internal/service/arrival_accept_race_test.go:87`,
+  `tests/arrival_geofence_test.go:450,486,524,557`,
+  `internal/repository/geo_liveness_integration_test.go:290` (`AgeS` provenance, integration tag).
 
 ### [payout]
 - **Driver earnings ledger + `GET /driver/me/earnings` + idempotent `POST /driver/earnings/withdraw`
@@ -568,6 +588,11 @@
 | 28 | **Replacement-generation-then-deleted liveness case** (latent). The timeout branch treats `present` with a different token as its own timeout and returns without a frame (`:441-444`); the absent branch blocks for a claimant answer (`:445-452`). A replacement generation that is itself claimed and deleted between those observations is the retained reviewer residual — not reachable in the current one-generation-per-ride dispatch flow | `internal/service/dispatch.go:441-452`; replacement left untouched pinned by `internal/service/cancel_accept_race_test.go:910-947` | low | [rides] |
 | 29 | **Cancel-vs-timeout boundary can leave the offered driver with only `expired`** (latent). If the timeout wins the generation claim just before the rider cancel, `WithdrawOffer` finds nothing and returns `""`; the offered driver gets `ride.offer_closed {reason:"expired"}` but no terminal `ride.updated {status:"cancelled"}`, because the fan-out cannot name them | `internal/service/dispatch.go:434-440,580-587`; `internal/service/ride.go:498-512,531-560` | low | [rides] |
 | 30 | **`SetOfferTimeoutForTest` is an unsynchronized exported test seam** — it writes the package-level `offerTimeout` with no lock, so a test that changes it concurrently with a dispatch goroutine is a data race. Production never calls it | `internal/service/dispatch_observability.go:219-226` (`offerTimeout` at `:216`) | low | [rides] |
+| 31 | **Accept-vs-concurrent-PUT race is proven only at service level** — the test races the two evaluators against a CAS fake and asserts pushes/events, not a real HTTP `PUT /geo/driver/location` handler racing the accept goroutine, and it does not count a connected-hub broadcast | `internal/service/arrival_accept_race_test.go:87` | low | [arrival] |
+| 32 | **No dedicated WS-accept in-radius arrival test** — the end-to-end accept-time proofs are HTTP-only; the WS path is covered only transitively because both funnel through `HandleAccept`→`acceptRide` | `tests/arrival_geofence_test.go:450,486,524,557`; `internal/service/dispatch.go:563,685` | low | [arrival] |
+| 33 | **`MockGeoRepo.AgeS` is app-clock derived** — it uses `time.Since(updatedAt)` while production computes `AgeS` SQL-side, so only the `//go:build integration` test proves the DB provenance; unit freshness gates exercise the mock's clock | `tests/testutil/mock_repos.go:1002`; `internal/repository/geo_liveness_integration_test.go:290` | low | [arrival] |
+| 34 | **Stale-accept skip logs on every stale accept** — request-path noise at `log.Printf` rather than debug/rate-limited | `internal/service/dispatch.go:788` | low | [arrival] |
+| 35 | **Legal `ErrInvalidTransition` interleaving not separately raced** — when the concurrent PUT already committed `driver_arrived`, the accept-side evaluator's illegal-edge error is swallowed but no test races that specific interleaving | `internal/service/arrival.go:121-131`; `internal/service/ride.go:595` | low | [arrival] |
 
 ## Test-audit follow-ups
 
@@ -624,7 +649,6 @@
 | `[routing]_valle_central.md` | routing | landed `[routing]` gate correctness + snap-radius coverage (STATUS.md) | **open (independent, unnumbered — renamed back from `01_` now that its prerequisite is landed)** — one `valle_central` region (`level=state`, `parent_region='cr'`) covering the **Central Valley BASIN** (supersedes the nationwide/province question; the 4 full provinces are **out** — Alajuela reaches the northern border, San José the Pacific). Within-basin trips road-follow; any pin outside the basin (incl. the rest of the 4 provinces and cross-basin trips) → 200 `is_estimate`. **TOP OPEN INPUT:** the exact basin polygon (`regions/valle_central.poly`, CONFIRM-BEFORE-IMPORT) vs the bbox fallback `-84.45,9.65,-83.65,10.25`. Remaining: clip + import `valle_central`; the elevation gate fix (bug #24) is now **landed** (STATUS.md → Landed `[routing]` gate correctness), so run the `--region valle_central` backfill; one fare card (`make seed-fares SEED_FARES_REGION=valle_central`); retire the `cr-sj` **network** rows (edges before vertices) + single `default_region` owner; restart; then the **final `cr-sj` delete** (`fare_rates`→`fare_demand_windows`→`fare_regions`→`routing_regions`, FK order, guarded on no active `cr-sj` ride; historical `rides.fare_region_id` audit refs go stale by design — no FK); acceptance tests. Still open: any downstream keying on `cr-sj`. **No app contract change** beyond `region_id` moving `cr-sj`→`valle_central` for new rides (completed keep booked `cr-sj`; no app keys on it) |
 | `[push]_production_provider.md` | push | push delivery pipeline + device-token registration seam (STATUS.md) | **deferred** — wire real FCM/APNs/web providers behind `push.Provider`/`MultiProvider` (the shipped `LogProvider` is a no-op) and real token sources (both apps ship `NoopPushTokenSource`); no credentials/SDK exist in this harness. Canonical push file; the rider/driver halves are referenced by path from their own STATUS, not duplicated |
 | `[auth]_web_session_token_contract.md` | auth | — | **contract record, no API change**: the rider-web session bug is fixed Flutter-only. Documents the Bearer refresh contract (15m access / 720h refresh, rotate-and-revoke, 401-vs-5xx, `AllowAllOrigins` rules out cookies) + the client obligations (cold-start exchange, atomic rotated-token persist, single-flight refresh) and contract guardrails |
-| `[arrival]_accept_time_evaluation.md` | arrival | landed `[rides]` CAS + accept funnel (STATUS.md → Landed `[rides]`) | **open** — evaluate arrival once inside the single accept write (`DispatchService.acceptRide`) from the last `driver_positions` fix, SQL-side freshness-gated at **60 s** (`NearbyDriverResult.AgeS` selected by the existing `GetDriverLocation`; no `DriverFix`/new read), so a driver who accepts while already inside the 80 m arrive radius no longer depends on the client re-publishing a fix. Covers the WebSocket accept (the primary path) as well as the HTTP fallback; the evaluation must never fail the accept, is **arrive-only** (never fires `ride.nearby` or touches nearby hysteresis). CAS is **adopted verbatim** from the now-landed `[rides]` work (`UpdateRideStatusFrom` + `ErrTransitionConflict`); this plan adds no repository method/sentinel and only requires the accept-time evaluation + concurrent `PUT /geo/driver/location` ⇒ exactly one transition/event/broadcast test. App-side re-publish stays as defence. **Decision-complete** — D1=A + env knob `GEOFENCE_ACCEPT_FIX_MAX_AGE_S` (default 60 s, unset/empty→60, garbage/non-finite/≤0→skip; independent of `GEOFENCE_ENABLED`), D2=A SQL-side `AgeS`, D3=A keep both WS patches (`accepted` then `driver_arrived`, evaluation after the accepted sends, zero client change), D4=A arrive-only, D5=A CAS adopted from the landed `[rides]` work, D6=B no `DriverFix`. **Unblocked** — its `[rides]` prerequisite is now landed; no product decisions remain |
 
 **Deferred follow-up (no plan file yet) — receipt-level per-leg breakdown:** the completed-ride
 receipt/history would need the per-leg split stored on the ride (a new row/columns → a migration)
@@ -828,3 +852,11 @@ gofmt -w <files> && go vet ./...   # golangci-lint is NOT on PATH by default: PA
   production token registration is inert; the driver app's registration seam is landed but resolves
   `NoopPushTokenSource`, and the rider half is tracked in `rider_app_plans` (Landed → [push]).
 
+## Wave-3 condensed 2026-10-20
+- **`[arrival]_accept_time_evaluation` landed `64a2f67`, adversarially CONFIRMED** (reviewer checked
+  the accept-path gate/order, arrive-only evaluator, SQL-side `AgeS`, and fail-closed config).
+  Implementer-reported gates: gofmt/build/`go test ./...`/`go vet`/`make lint` green. DB-integration
+  caveat: the implementer's run passed the new `AgeS` test; the suite's only failures were unrelated
+  elevation tests that require an imported road network. Real-device limitation: no device/emulator
+  validation was performed — the accept-time path and the retained client re-publish are proven only
+  by service/HTTP tests, not on hardware.
