@@ -11,6 +11,33 @@ import '../../rides/data/rated_rides_provider.dart';
 import '../../rides/presentation/rate_sheet.dart';
 import '../providers/trip_notifier.dart';
 
+/// One-shot device fix for the locate button's fallback. Widget tests override
+/// it so they never touch the geolocator platform channel.
+final driverCurrentPositionProvider = Provider<Future<LatLng?> Function()>(
+  (ref) => () async {
+    final position = await LocationHelper.getCurrentPosition();
+    return position == null
+        ? null
+        : LatLng(position.latitude, position.longitude);
+  },
+);
+
+/// The material route key for the driver map's locate button.
+///
+/// Only the next waypoint and the route status participate, so a 200 m driver
+/// refetch (or a silent refresh) with the same waypoint and status does not
+/// auto-fit or reset the press cycle. `fetchedAt`, the moving driver fix and
+/// same-endpoint geometry changes are deliberately excluded.
+@visibleForTesting
+String driverTripRouteKey(TripWaypoint? next, RouteCache? route) {
+  final status = route == null
+      ? 'none'
+      : route.isEstimate
+      ? 'estimate'
+      : 'ready';
+  return '${next?.lat},${next?.lng}:$status';
+}
+
 /// Trip journey screen (US-D7/D8/D9, US-11): one stage-driven primary button
 /// over a flutter_map route, driver-initiated cancel, and a clean landing
 /// screen for a completed or cancelled trip.
@@ -30,7 +57,6 @@ class TripScreen extends ConsumerStatefulWidget {
 
 class _TripScreenState extends ConsumerState<TripScreen> {
   final MapController _mapController = MapController();
-  String? _fittedKey;
 
   @override
   void initState() {
@@ -77,21 +103,6 @@ class _TripScreenState extends ConsumerState<TripScreen> {
           currentLat: position.lat,
           currentLng: position.lng,
         );
-  }
-
-  void _fitTo(List<LatLng> points, String key) {
-    if (points.length < 2 || _fittedKey == key) return;
-    _fittedKey = key;
-    WidgetsBinding.instance.addPostFrameCallback((_) {
-      if (!mounted) return;
-      _mapController.fitCamera(
-        CameraFit.coordinates(
-          coordinates: points,
-          padding: const EdgeInsets.all(48),
-          maxZoom: 16,
-        ),
-      );
-    });
   }
 
   /// Ends the trip locally: drop the held ride (so `/home` no longer routes
@@ -166,7 +177,7 @@ class _TripScreenState extends ConsumerState<TripScreen> {
     // answer across a refresh; an unresolved future is `unknown`.
     final ratingStatus =
         ref.watch(ratedRideStatusProvider(ride?.id ?? '')).valueOrNull ??
-            RatingStatus.unknown;
+        RatingStatus.unknown;
     final ratedRides = ref.watch(ratedRidesProvider);
     final canRate =
         ride != null && ride.id.isNotEmpty && ratingStatus.canPrompt;
@@ -246,7 +257,6 @@ class _TripScreenState extends ConsumerState<TripScreen> {
                       next: next,
                       driverPosition: position,
                       route: trip.route,
-                      onFit: _fitTo,
                     ),
             ),
             Expanded(
@@ -302,14 +312,12 @@ class _MapView extends ConsumerWidget {
   final TripWaypoint? next;
   final GeoPoint? driverPosition;
   final RouteCache? route;
-  final void Function(List<LatLng> points, String key) onFit;
 
   const _MapView({
     required this.controller,
     required this.next,
     required this.driverPosition,
     required this.route,
-    required this.onFit,
   });
 
   LatLng? get _nextPoint => next == null ? null : LatLng(next!.lat, next!.lng);
@@ -333,11 +341,47 @@ class _MapView extends ConsumerWidget {
   List<LatLng> get _roadPoints => (route?.polyline ?? const [])
       .map(
         (p) => LatLng(
-            (p['lat'] as num?)?.toDouble() ?? 0,
-            (p['lng'] as num?)?.toDouble() ?? 0,
+          (p['lat'] as num?)?.toDouble() ?? 0,
+          (p['lng'] as num?)?.toDouble() ?? 0,
         ),
       )
       .toList();
+
+  /// Fit the road polyline when it is actually drawn; otherwise fit the dashed
+  /// driver → next-waypoint line (the geometry the map really shows).
+  List<LatLng> _routeFitPoints(
+    List<LatLng> road,
+    List<LatLng> focus,
+    bool useFallback,
+  ) => (!useFallback && road.length >= 2) ? road : focus;
+
+  /// A route exists when there is a drawn road polyline or a two-point focus
+  /// leg. A lone driver fix (or a lone waypoint) is not a route.
+  bool _canFitRoute(List<LatLng> road, List<LatLng> focus) =>
+      road.length >= 2 || focus.length >= 2;
+
+  /// Center on the driver's live fix, or the one-shot device fallback. Returns
+  /// `false` (without moving the camera) when neither yields a fix.
+  Future<bool> _locate(WidgetRef ref) async {
+    final cached = ref.read(lastPositionProvider);
+    if (cached != null) {
+      return centerMapCamera(controller, LatLng(cached.lat, cached.lng));
+    }
+    LatLng? fix;
+    try {
+      fix = await ref.read(driverCurrentPositionProvider)();
+    } catch (_) {
+      fix = null;
+    }
+    if (fix == null) return false;
+    return centerMapCamera(controller, fix);
+  }
+
+  void _showLocationUnavailable(BuildContext context) {
+    ScaffoldMessenger.maybeOf(context)?.showSnackBar(
+      const SnackBar(content: Text('Waiting for your location…')),
+    );
+  }
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
@@ -366,39 +410,55 @@ class _MapView extends ConsumerWidget {
 
     final focus = <LatLng>[?driverPoint, ?nextPoint];
     final initialCenter = driverPoint ?? const LatLng(9.9281, -84.0907);
-    if (focus.length >= 2) {
-      // The destination is part of the key so a destination-only `ride.updated`
-      // re-fits the camera even if the route request failed and `fetchedAt`
-      // never changed.
-      onFit(
-        focus,
-        '${next?.lat},${next?.lng}:${route?.fetchedAt.millisecondsSinceEpoch}',
-      );
-    }
 
     final tileConfig = ref.watch(driverMapTileConfigProvider);
     final tile = ref.watch(mapTileLayerProvider(tileConfig));
-    return FlutterMap(
-      mapController: controller,
-      options: MapOptions(initialCenter: initialCenter, initialZoom: 13),
+    return Stack(
       children: [
-        ?tile,
-        PolylineLayer(polylines: polylines),
-        MarkerLayer(
-          markers: [
-            if (nextPoint != null)
-              Marker(
-                point: nextPoint,
-                child: Icon(_nextIcon, color: _nextColor),
+        Positioned.fill(
+          child: FlutterMap(
+            mapController: controller,
+            options: MapOptions(initialCenter: initialCenter, initialZoom: 13),
+            children: [
+              ?tile,
+              PolylineLayer(polylines: polylines),
+              MarkerLayer(
+                markers: [
+                  if (nextPoint != null)
+                    Marker(
+                      point: nextPoint,
+                      child: Icon(_nextIcon, color: _nextColor),
+                    ),
+                  if (driverPoint != null)
+                    Marker(
+                      point: driverPoint,
+                      child: const Icon(
+                        Icons.navigation,
+                        color: AppColors.info,
+                      ),
+                    ),
+                ],
               ),
-            if (driverPoint != null)
-              Marker(
-                point: driverPoint,
-                child: const Icon(Icons.navigation, color: AppColors.info),
-              ),
-          ],
+              MapTileAttribution(config: tileConfig),
+            ],
+          ),
         ),
-        MapTileAttribution(config: tileConfig),
+        Positioned(
+          right: 16,
+          bottom: 16,
+          child: AppMapLocateButton(
+            routeKey: driverTripRouteKey(next, route),
+            hasRoute: _canFitRoute(road, focus),
+            onFitRoute: () => fitMapCamera(
+              controller,
+              _routeFitPoints(road, focus, useFallback),
+              padding: const EdgeInsets.all(48),
+              maxZoom: 16,
+            ),
+            onCurrentLocation: () => _locate(ref),
+            onLocationUnavailable: () => _showLocationUnavailable(context),
+          ),
+        ),
       ],
     );
   }
@@ -574,12 +634,12 @@ class _StageControls extends StatelessWidget {
               crossAxisAlignment: CrossAxisAlignment.stretch,
               children: [
                 Text(switch (stage) {
-                    TripStage.pre => 'Waiting for the trip to start',
-                    TripStage.enrouteToPickup => 'Drive to the pickup',
-                    TripStage.arrived => 'Arrived at the pickup',
-                    TripStage.driving => 'Driving to the dropoff',
-                    TripStage.post => 'Trip completed',
-                    TripStage.cancelled => 'Trip cancelled',
+                  TripStage.pre => 'Waiting for the trip to start',
+                  TripStage.enrouteToPickup => 'Drive to the pickup',
+                  TripStage.arrived => 'Arrived at the pickup',
+                  TripStage.driving => 'Driving to the dropoff',
+                  TripStage.post => 'Trip completed',
+                  TripStage.cancelled => 'Trip cancelled',
                 }, style: Theme.of(context).textTheme.headlineSmall),
                 const SizedBox(height: 4),
                 _ItineraryList(waypoints: waypoints, next: next),
@@ -605,31 +665,31 @@ class _StageControls extends StatelessWidget {
         // never sends `driver_arrived` itself.
         switch (stage) {
           TripStage.enrouteToPickup => Text(
-              'Waiting for arrival…',
-              textAlign: TextAlign.center,
-              style: Theme.of(context).textTheme.bodySmall,
-            ),
+            'Waiting for arrival…',
+            textAlign: TextAlign.center,
+            style: Theme.of(context).textTheme.bodySmall,
+          ),
           TripStage.arrived => AppButton(
-              key: const Key('trip-primary-button'),
-              label: 'Start trip',
-              onPressed: onAdvance,
-            ),
+            key: const Key('trip-primary-button'),
+            label: 'Start trip',
+            onPressed: onAdvance,
+          ),
           TripStage.driving => AppButton(
-              key: const Key('trip-primary-button'),
-              label: 'Complete Trip',
-              onPressed: onComplete,
-            ),
+            key: const Key('trip-primary-button'),
+            label: 'Complete Trip',
+            onPressed: onComplete,
+          ),
           // `pending` has no driver-side transition, and there is nothing to
           // drive at all without a ride.
           TripStage.pre =>
             ride == null
-              ? const SizedBox.shrink()
-              : AppButton(
-                  key: const Key('trip-primary-button'),
-                  label: 'Accept the offer to start',
-                  variant: AppButtonVariant.secondary,
-                  onPressed: null,
-                ),
+                ? const SizedBox.shrink()
+                : AppButton(
+                    key: const Key('trip-primary-button'),
+                    label: 'Accept the offer to start',
+                    variant: AppButtonVariant.secondary,
+                    onPressed: null,
+                  ),
           TripStage.post || TripStage.cancelled => const SizedBox.shrink(),
         },
         const SizedBox(height: 8),
@@ -737,13 +797,13 @@ class _ItineraryList extends StatelessWidget {
     final icon = waypoint.isPickup
         ? Icons.location_pin
         : waypoint.isDestination
-            ? Icons.flag
-            : Icons.circle;
+        ? Icons.flag
+        : Icons.circle;
     final color = waypoint.isPickup
         ? AppColors.success
         : waypoint.isDestination
-            ? AppColors.danger
-            : AppColors.info;
+        ? AppColors.danger
+        : AppColors.info;
     return Padding(
       padding: const EdgeInsets.symmetric(vertical: 2),
       child: Row(
