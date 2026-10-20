@@ -104,6 +104,32 @@ func (w *fakeWithdrawer) snapshot() []string {
 	return append([]string(nil), w.reasons...)
 }
 
+// gatedOfferClosedHub records sends like fakeHub but blocks inside SendToUser
+// for the ride.offer_closed frame until released. It pins the window between a
+// claimer's delete and its answer: the claim already owns the generation, so a
+// fire-now timeout must wait for the answer instead of emitting its own frame.
+type gatedOfferClosedHub struct {
+	*fakeHub
+	closed  chan struct{}
+	release chan struct{}
+}
+
+func newGatedOfferClosedHub(driverID string) *gatedOfferClosedHub {
+	return &gatedOfferClosedHub{
+		fakeHub: newFakeHub(driverID),
+		closed:  make(chan struct{}, 1),
+		release: make(chan struct{}),
+	}
+}
+
+func (h *gatedOfferClosedHub) SendToUser(userID string, msg interface{}) {
+	h.fakeHub.SendToUser(userID, msg)
+	if om, ok := msg.(websocket.OutgoingMessage); ok && om.Type == "ride.offer_closed" {
+		h.closed <- struct{}{}
+		<-h.release
+	}
+}
+
 // recipientNotifier records which user each backgrounded push targeted.
 type recipientNotifier struct {
 	mu    sync.Mutex
@@ -683,6 +709,14 @@ func TestDispatchOfferClosedOnTimeout(t *testing.T) {
 	if err := svc.HandleAccept("driver-a", "ride-timeout"); !errors.Is(err, ErrNoActiveOffer) {
 		t.Errorf("late HandleAccept = %v, want ErrNoActiveOffer", err)
 	}
+	// A decline after the timeout sees no entry and sends no second frame:
+	// the timeout claimed first.
+	if err := svc.DeclineOffer("driver-a", "ride-timeout"); !errors.Is(err, ErrNoActiveOffer) {
+		t.Errorf("late DeclineOffer = %v, want ErrNoActiveOffer", err)
+	}
+	if reasons := hub.offerClosedReasons(); len(reasons) != 1 || reasons[0] != "expired" {
+		t.Errorf("ride.offer_closed reasons after late decline = %v, want exactly [expired]", reasons)
+	}
 }
 
 // TestNoExpiredOfferClosedAfterCommittedAccept is the deterministic §4.1.1
@@ -777,5 +811,137 @@ func TestNoExpiredOfferClosedAfterCommittedAccept(t *testing.T) {
 		if reason == "expired" {
 			t.Errorf("ride.offer_closed reason = %q, want no expired frame after a committed accept", reason)
 		}
+	}
+}
+
+// TestDeclineClaimsBeforeTimeout is the deterministic decline-vs-timeout
+// boundary proof. The gated hub holds DeclineOffer after it has deleted the
+// generation and sent the "declined" frame but BEFORE it sends its answer; the
+// shrunken offerTimeout then fires. The timeout branch must find no entry,
+// block on the parked channel for the claimant's guaranteed answer, and adopt
+// the decline — no skipOfferTimeout, no second frame, exactly one answer.
+func TestDeclineClaimsBeforeTimeout(t *testing.T) {
+	old := offerTimeout
+	offerTimeout = 100 * time.Millisecond
+	t.Cleanup(func() { offerTimeout = old })
+
+	const rideID = "ride-decline-boundary"
+	geo := &fakeGeoRepo{drivers: []model.NearbyDriverResult{{DriverID: "driver-a"}}}
+	repo := &fakeRideRepo{}
+	hub := newGatedOfferClosedHub("driver-a")
+	svc := newTestDispatch(geo, repo, hub)
+	traces := collectTraces(svc, 1)
+
+	if err := svc.Dispatch(pendingRide(rideID)); err != nil {
+		t.Fatalf("Dispatch: %v", err)
+	}
+	awaitOfferChannel(t, svc, rideID, nil)
+
+	declineErr := make(chan error, 1)
+	go func() { declineErr <- svc.DeclineOffer("driver-a", rideID) }()
+
+	select {
+	case <-hub.closed:
+	case <-time.After(5 * time.Second):
+		t.Fatal("DeclineOffer never reached the offer_closed send")
+	}
+
+	// The decline owns the generation; its answer is still withheld.
+	svc.offerChannelsMu.Lock()
+	_, stillParked := svc.offerChannels[rideID]
+	svc.offerChannelsMu.Unlock()
+	if stillParked {
+		t.Error("the offer is still registered after the decline claimed it")
+	}
+
+	// Let the timer fire while the answer is unsent. The loop must block.
+	time.Sleep(3 * offerTimeout)
+	select {
+	case tr := <-traces:
+		t.Fatalf("dispatch loop closed before the decline answer was sent (outcome=%q); "+
+			"the timeout branch must block for the claimant's answer", tr.Outcome())
+	default:
+	}
+	if reasons := hub.offerClosedReasons(); len(reasons) != 1 || reasons[0] != "declined" {
+		t.Errorf("ride.offer_closed before the answer = %v, want exactly [declined]", reasons)
+	}
+
+	close(hub.release)
+	select {
+	case err := <-declineErr:
+		if err != nil {
+			t.Fatalf("DeclineOffer: %v", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("DeclineOffer did not return after the send was released")
+	}
+
+	tr := awaitTrace(t, traces)
+	if tr.Outcome() != "candidates_skipped" {
+		t.Errorf("outcome = %q, want candidates_skipped (decline adopted)", tr.Outcome())
+	}
+	if tr.NotPending {
+		t.Error("trace recorded not_pending; the timeout branch did not adopt the decline outcome")
+	}
+	declines := 0
+	for _, skip := range tr.Skips {
+		if skip.Reason == skipDriverDeclined {
+			declines++
+		}
+		if skip.Reason == skipOfferTimeout {
+			t.Errorf("skip = %+v, want no skipOfferTimeout for a claimed decline", skip)
+		}
+	}
+	if declines != 1 {
+		t.Errorf("driver_declined skips = %d, want exactly 1 (one answer, one outcome)", declines)
+	}
+	if reasons := hub.offerClosedReasons(); len(reasons) != 1 || reasons[0] != "declined" {
+		t.Errorf("ride.offer_closed reasons = %v, want exactly [declined] (never a false expired)", reasons)
+	}
+	if got := hub.offersTo(); len(got) != 1 {
+		t.Errorf("ride.offer deliveries = %d, want 1: a canonical decline must not re-offer", len(got))
+	}
+}
+
+// TestTimeoutLeavesReplacementGenerationUntouched pins the §4.1.1 "present but
+// a different token" branch: a re-offer owns the map entry when the older
+// generation times out, so the timeout must not delete it or send a frame for
+// it.
+func TestTimeoutLeavesReplacementGenerationUntouched(t *testing.T) {
+	old := offerTimeout
+	offerTimeout = 100 * time.Millisecond
+	t.Cleanup(func() { offerTimeout = old })
+
+	const rideID = "ride-replacement"
+	hub := newFakeHub("driver-a")
+	svc := newTestDispatch(&fakeGeoRepo{}, &fakeRideRepo{}, hub)
+
+	done := make(chan offerOutcome, 1)
+	go func() { done <- svc.offerRideToDriver(rideID, "driver-a", 1, 1, false) }()
+	awaitOfferChannel(t, svc, rideID, nil)
+
+	// A re-offer installs a newer generation before the first one times out.
+	svc.offerChannelsMu.Lock()
+	svc.offerSeq++
+	newer := activeOffer{driverID: "driver-a", token: svc.offerSeq, ch: make(chan offerAnswer, 1)}
+	svc.offerChannels[rideID] = newer
+	svc.offerChannelsMu.Unlock()
+
+	select {
+	case outcome := <-done:
+		if outcome != offerTimedOut {
+			t.Errorf("outcome = %v, want offerTimedOut", outcome)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("offerRideToDriver did not return")
+	}
+	if reasons := hub.offerClosedReasons(); len(reasons) != 0 {
+		t.Errorf("ride.offer_closed reasons = %v, want none: the expired frame belongs to the old generation", reasons)
+	}
+	svc.offerChannelsMu.Lock()
+	cur, ok := svc.offerChannels[rideID]
+	svc.offerChannelsMu.Unlock()
+	if !ok || cur.token != newer.token {
+		t.Errorf("replacement generation = (%v, token %d), want it left untouched", ok, cur.token)
 	}
 }

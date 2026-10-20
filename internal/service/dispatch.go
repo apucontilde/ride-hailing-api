@@ -545,8 +545,10 @@ func (s *DispatchService) HandleAccept(driverID, rideID string) error {
 
 	err := s.acceptRide(rideID, driverID)
 
-	// Tell the parked loop the authoritative outcome. Non-blocking: after a
-	// timeout nobody is reading, and a late answer must not block the caller.
+	// Tell the parked loop the authoritative outcome. Non-blocking: an accept
+	// answer must never block the caller. A timeout branch that lost the claim
+	// (§4.1.1) is blocked reading this same channel and is woken here; a
+	// genuinely late answer may have no reader at all, hence the default.
 	select {
 	case offer.ch <- offerAnswer{accepted: err == nil, err: err}:
 	default:
@@ -621,15 +623,23 @@ func (s *DispatchService) HandleDecline(driverID, rideID string) {
 func (s *DispatchService) DeclineOffer(driverID, rideID string) error {
 	s.offerChannelsMu.Lock()
 	offer, ok := s.offerChannels[rideID]
-	s.offerChannelsMu.Unlock()
 	if !ok || offer.driverID != driverID {
+		s.offerChannelsMu.Unlock()
 		return ErrNoActiveOffer
 	}
+	// Decline IS a claimer: delete the generation under the same lock/token
+	// rule as HandleAccept and WithdrawOffer BEFORE sending anything. If the
+	// timeout fires after this point it finds no entry, blocks on offer.ch,
+	// and adopts this answer — so a decline can never emit a false "expired"
+	// beside "declined". A timeout that claimed first means this call reaches
+	// the missing-entry branch above and sends no frame.
+	delete(s.offerChannels, rideID)
+	s.offerChannelsMu.Unlock()
+
 	s.sendOfferClosed(driverID, rideID, "declined")
-	select {
-	case offer.ch <- offerAnswer{accepted: false}:
-	default:
-	}
+	// Claimed means this is the only answerer, so the buffered send always
+	// succeeds and delivers exactly one answer to the parked loop.
+	offer.ch <- offerAnswer{accepted: false}
 	return nil
 }
 

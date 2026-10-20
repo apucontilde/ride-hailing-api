@@ -216,6 +216,15 @@ var (
 	offerTimeout = 30 * time.Second
 )
 
+// SetOfferTimeoutForTest shortens the parked-offer wait and returns a restore
+// function. It exists so the wire-level "expired" frame is observable without a
+// 30 s wait; production wiring never calls it.
+func SetOfferTimeoutForTest(d time.Duration) func() {
+	old := offerTimeout
+	offerTimeout = d
+	return func() { offerTimeout = old }
+}
+
 // The driver-side requirements this gate implements (one live socket per online
 // session, presence refreshed at least every repository.DriverLivenessWindow,
 // no reliance on a server ping) live in

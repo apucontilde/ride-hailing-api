@@ -9,6 +9,7 @@ import (
 	"github.com/gorilla/websocket"
 
 	"ride-hailing-api/internal/repository"
+	"ride-hailing-api/internal/service"
 	"ride-hailing-api/tests/testutil"
 )
 
@@ -396,5 +397,44 @@ func TestWSOfferClosedAndCancelReachOfferedDriver(t *testing.T) {
 	}
 	if data["cancelled_by"] != "rider" {
 		t.Errorf("cancelled_by = %v, want rider", data["cancelled_by"])
+	}
+}
+
+// TestWSOfferClosedOnTimeout pins the wire frame when an offer is delivered
+// and never answered: the driver's real WebSocket receives exactly one
+// ride.offer_closed with reason "expired". The wait is shrunk via the
+// service's test hook; production keeps the 30 s window.
+func TestWSOfferClosedOnTimeout(t *testing.T) {
+	srv := testutil.NewStrictTestServer(t)
+	if srv == nil {
+		return
+	}
+	defer srv.Close()
+
+	restore := service.SetOfferTimeoutForTest(150 * time.Millisecond)
+	defer restore()
+
+	_, _, rideID, _, driverConn := startOfferedRide(t, srv, 991)
+
+	closed := readUntilType(t, driverConn, "ride.offer_closed", 3*time.Second)
+	data := closed["data"].(map[string]interface{})
+	if data["reason"] != "expired" {
+		t.Errorf("offer_closed reason = %v, want expired", data["reason"])
+	}
+	if data["ride_id"] != rideID {
+		t.Errorf("offer_closed ride_id = %v, want %s", data["ride_id"], rideID)
+	}
+
+	// The offer is claimed by the timeout, so a late WS accept must fail as
+	// OFFER_EXPIRED rather than falsely succeed.
+	if err := driverConn.WriteJSON(map[string]interface{}{
+		"type": "ride.accept", "data": map[string]string{"ride_id": rideID},
+	}); err != nil {
+		t.Fatalf("send ride.accept: %v", err)
+	}
+	failure := readUntilType(t, driverConn, "ride.accept_failed", 3*time.Second)
+	failureData := failure["data"].(map[string]interface{})
+	if failureData["code"] != "OFFER_EXPIRED" {
+		t.Errorf("accept_failed code = %v, want OFFER_EXPIRED", failureData["code"])
 	}
 }
