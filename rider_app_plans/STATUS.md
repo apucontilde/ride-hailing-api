@@ -95,6 +95,20 @@
   honesty unchanged. Tests `test/features/home/data/driver_eta_provider_test.dart:281-348`
   (per-ride reset via `in_progress` + terminal `no_driver_available`), `:350-419` (stale in-flight
   regression, RED→GREEN).
+- Movable + scrollable estimate/active-trip sheets (bug #35) — app-local
+  `features/home/presentation/rider_sheet.dart`: `RiderSheetScrollBody` `:8-47` shrink-wraps a short
+  body (`Flexible(fit: loose)`) with the action in `SafeArea(top: false)` `:45`, and
+  `RiderDraggableSheet` `:64-255` snaps from a handle-only min to a measured content opening and a
+  full-screen max, keys the scrollable `rider-sheet-scroll` `:229`, and hides the footer below the
+  min while it would not fit `:122-127,240-248`. Estimate modal uses it under an 85% `ConstrainedBox`
+  with `Confirm Ride` pinned — `features/home/presentation/ride_estimate_sheet.dart:39-49`; the
+  active-trip panel uses `RiderDraggableSheet` with only `Cancel Ride` pinned —
+  `features/home/presentation/active_ride_screen.dart:979-1000` — and hides the locate control at
+  full-screen `:951-966`. Shared `AppBottomSheet` semantics unchanged (driver/rating consumers
+  untouched). Tests `test/features/home/presentation/rider_sheet_test.dart:41-100` (distinct opening
+  snap; full-screen body still scrolls), `ride_estimate_sheet_test.dart:340-369` (Confirm pinned at
+  400×480), `:371-394` (list scrolls under the pinned action), `active_ride_screen_test.dart:514-536`
+  (movable + scrollable), `:538-575` (clipped top scrolls into view while Cancel stays put).
 
 ### [arrival]
 - Driver-nearby + auto-arrival consumption (X3-R): `DriverLocation` parses the additive
@@ -152,11 +166,26 @@
 - Post-auth live-trip restore (X1-R): the bootstrap also calls `checkOnce()` and a pure
   `resolvePostAuthRoute` maps `pending` → `/driver-matching`, `accepted`/`driver_arrived`/`in_progress`
   → `/active-ride`, everything else → `/home`; `pending` now counts in `needsRestore` and the
-  unreachable `completed` was dropped — `features/home/data/current_ride_provider.dart:159-166`,
+  unreachable `completed` was dropped — `features/home/data/current_ride_provider.dart:161-198`,
   `core/router/post_auth_route.dart:18-31`; a fresh login restores too
   (`features/auth/presentation/login_screen.dart:94-103`); the caller-less `RideStatusNotifier.restore()`
   was deleted. Tests `test/core/router/app_router_test.dart:14-48`,
   `test/features/auth/presentation/login_screen_test.dart`, `test/features/home/data/current_ride_provider_test.dart`.
+- Truthful matching timeout + session-scoped ride state (bug #36) —
+  `features/home/data/current_ride_provider.dart`: `searchTimedOut` on `CurrentRideState` `:18,26-49`;
+  `maxAttempts = 60` `:67`; `checkOnce()` is uncapped, resets `_attempts`/`_startedAt`, clears the
+  whole prior view then polls `:98-110` (call `:103`); `reset()` stops the timer and clears attempts
+  + state `:120-124`; the cap stops polling and writes `searchTimedOut: true` without fabricating
+  `noDriverAvailable` `:127-137`. Logout/account switch resets `currentRideProvider` **and** the
+  WS-backed `rideStatusProvider` — `core/auth/auth_provider.dart:77-94`. Terminal UI
+  `features/home/presentation/driver_matching_screen.dart:114-115,158-159` with "Search timed out" +
+  `Try again` `:226-235`. `resolvePostAuthRoute`'s pending mapping unchanged
+  (`core/router/post_auth_route.dart:18-31`). Tests
+  `test/features/home/data/current_ride_provider_test.dart:210-239` (cap writes terminal state),
+  `:241-276` (`checkOnce` after the cap really requests and clears the flag), `:359-383` (`reset`
+  clears attempts/timer/state); `test/core/auth/auth_provider_test.dart:494-522` (logout clears warm
+  ride state), `:523+` (logout clears typed `RideState`); `driver_matching_screen_test.dart:363-401`
+  (timed-out terminal view, Try again retries), `:431` (Cancel path).
 
 ### [web]
 - Ride creation on web/CORS: backend allows `Idempotency-Key`
@@ -277,6 +306,20 @@
   (mouse up/down reaches max/min), `:1442-1461` (mouse-only `supportedDevices`),
   `:1467-1562` (cancel settle + drag-cancel callback), `:1567-1616` (fling direction), `:1618-1663`
   (Android inert + touch still resizes), plus the existing touch/handle-toggle cases `:1315-1363`.
+- Pinned `Request Trip` + content-fit/safe-area booking panel (bugs #33/#34) —
+  `features/home/presentation/home_screen.dart`: `_kSheetMaxFraction = 1.0` `:92` (content-fit max, no
+  `0.9` cap) and the measurement includes the pinned footer `:585-613`; one `_sheetScrollPadding`
+  helper `:576-581` feeds both the scroll body (`:823-830`) and the measurement, adding only the
+  keyboard inset because the footer's `SafeArea(top: false)` owns the bottom inset once
+  `:938-951`; `_buildNearbyDriversChip` returns `NearbyDriversChip` directly with a null-center guard
+  `:1001-1006`; the chip's tokenized vertical margin lives in
+  `features/home/presentation/nearby_drivers_chip.dart:11-19` (`top: AppSpacing.xs`,
+  `bottom: AppSpacing.sm`, `count == 0` still a zero-size `SizedBox.shrink()`). Tests
+  `test/features/home/presentation/home_screen_test.dart:1242-1332` (content-fit max above 0.9,
+  pinned action at max on an overflowing form), `:1334-1375` (safe area counted once via
+  `FakeViewPadding`), `:1376-1394` (chip margin), and
+  `test/features/home/presentation/nearby_drivers_chip_test.dart:40-82,84-133` (padding + empty
+  collapse).
 
 ### [routing]
 - Routing data in the API — landed/superseded by the `api_plans/` series (A* engine
@@ -585,6 +628,19 @@ unless they cross a package, in which case they are repo-relative
 | 30 | **ETA throttle bookkeeping leaked across rides (residual of `[ontrip]_driver_arrival_eta.md`):** `DriverEtaNotifier` is a global non-`autoDispose` provider and `stop()` only cancelled the tick — it never reset `_referenceFix`/`_lastRequestAt`, so the D4 "immediate on the first fix after entering `driverApproaching`" guarantee held only for the **session's first ride**. On a later ride the first compute was floored by the previous ride's `_lastRequestAt` (up to 5 s late) and the ≥150 m early trigger compared against a stale fix from the earlier ride. The R1 client compute and the request floor themselves are correct; only the per-ride reset was missing. — **FIXED** by `[ontrip]_eta_state_reset.md`: `_resetThrottle()` clears the reference at every boundary and bumps a ride/session `_generation` that gates any stale in-flight response | post-fix `features/home/data/driver_eta_provider.dart:93-98,116-122,149-169,186-201,219,233,239,243`; pre-fix `:82-88,131-134,243-246`; screen `stop()` on dispose `features/home/presentation/active_ride_screen.dart:140`; regression tests `test/features/home/data/driver_eta_provider_test.dart:281-419` | medium | [ontrip] |
 | 31 | **Test gap (tracked, not a code defect):** the web-reload bootstrap fix was covered only at the unit level (`resolveRedirect` / `SessionBootstrap.run`) plus cold-start and post-login integration; there was **no** full-widget test that mounted `RiderApp`/the router at a reloaded shell location with a stored session to assert it lands on `HomeScreen`. The real browser reload is UNVERIFIABLE in this WSL harness. — **FIXED** by `[test]_rider_coverage_gaps.md` (T1/T2): a full-widget test mounts the real `RiderApp` booted at `/home` and asserts the reload window shows the splash spinner (never `LoginScreen`) and settles on `HomeScreen`; observed RED→GREEN against the `!bootstrapComplete` gate. **Honest scope limit:** the `routerInitialLocationProvider` seam does not discriminate on its own (booting at `/splash` vs `/home` converges because `resolveRedirect` funnels pre-bootstrap entries to `/splash`); T1's real teeth are the gate, and a real browser reload remains UNVERIFIABLE here | post-fix `test/features/auth/presentation/app_reload_test.dart:107,120-145`; seam `core/router/app_router.dart:25-28,33`; unit `test/core/router/app_router_test.dart:50-164`; bootstrap `test/app_bootstrap_test.dart:77-108` | low | [test] |
 | 32 | **Home booking panel does not resize with a mouse on web/desktop:** the panel's only **pointer-drag** resize path was the internal scroll drag (the `Semantics` toggle/`animateTo` also resized, accessibility-only), but Flutter's default `ScrollBehavior.dragDevices` excludes `PointerDeviceKind.mouse`; the 48 dp handle was a `Semantics`-only toggle with no drag recognizer, so a mouse drag on it never reached `DraggableScrollableSheet`; touch on mobile worked. — **FIXED** by `[home]_panel_drag_desktop_web.md`: a platform-gated (`shouldEnableSheetDragHandle`) desktop/web-only grabber, keyed `home-sheet-handle`, with `behavior: HitTestBehavior.opaque` and `supportedDevices: {PointerDeviceKind.mouse}`, drives `_sheetController` and settles end **and** cancel on a fling-aware `{min, initial, max}` snap; mobile callbacks stay null so the touch/scroll path is unchanged; no physics change (the sheet controller already injects `AlwaysScrollableScrollPhysics`) | post-fix `features/home/presentation/home_screen.dart:737-772,364-422`, `core/platform/sheet_drag_handle.dart:5-21`; tests `test/core/platform/sheet_drag_handle_test.dart:5-43`, `test/features/home/presentation/home_screen_test.dart:1365-1663`; pre-fix `features/home/presentation/home_screen.dart` handle (old numbering `:661-664,665-687`) | medium | [home] |
+| 33 | **Home booking panel max snap does not guarantee the primary action is visible on web/short viewports:** the content-driven max was hard-capped at `0.9`, and the scroll content's bottom padding was only `AppSpacing.lg + MediaQuery.viewInsetsOf` (the **keyboard** inset, not `MediaQuery.padding.bottom` — so there was no **safe-area** gutter); `Request Trip` could sit below the visible viewport at max. — **FIXED** by `[home]_sheet_web_action_visibility.md`: `Request Trip` is pinned in a `SafeArea(top: false)` footer below the scroll body, the content-fit ceiling is `1.0`, and one `_sheetScrollPadding` helper feeds both layout and measurement so the safe area is owned exactly once by the footer | post-fix `features/home/presentation/home_screen.dart:92,576-581,585-613,823-830,938-951`; tests `test/features/home/presentation/home_screen_test.dart:1242-1332,1334-1375`; pre-fix `features/home/presentation/home_screen.dart:518-531` (cap `:527`), `:723-727` | medium | [home] |
+| 34 | **Nearby-drivers chip had no deliberate vertical spacing token:** `NearbyDriversChip` returned a bare `AppStatusChip` and Home wrapped it in a bare `Align`; the ~30 dp gap was incidental rather than a design token. — **FIXED** by `[home]_sheet_web_action_visibility.md` D4: the chip wraps its `Align(centerLeft)` in `Padding(top: AppSpacing.xs, bottom: AppSpacing.sm)` (no horizontal margin; `count == 0` still returns a true zero-size `SizedBox.shrink()`), and Home returns the chip directly with a null-center guard | post-fix `features/home/presentation/nearby_drivers_chip.dart:11-19`; `features/home/presentation/home_screen.dart:1001-1006`; tests `test/features/home/presentation/nearby_drivers_chip_test.dart:40-82,84-133`, `test/features/home/presentation/home_screen_test.dart:1376-1394`; pre-fix `nearby_drivers_chip.dart:7-21` | low | [home] |
+| 35 | **Ride-estimate and active-trip bottom sheets were neither movable nor scrollable:** `RideEstimateSheet` was a `mainAxisSize.min` `Column` (Confirm unreachable on a short/web viewport); `_buildDriverInfoSheet` was a static `AppBottomSheet`/`Column` in a bottom `Positioned` with only `bottom: 0`, so the `Column` was unbounded/bottom-anchored — `Cancel Ride` stayed visible while the **top** (handle / driver row / status) was clipped above the viewport. — **FIXED** by `[ontrip]_bottom_sheet_scroll_consistency.md`: app-local `RiderSheetScrollBody` + `RiderDraggableSheet` give both sheets a bounded scroll body, a content-fit opening, a full-screen max, and a pinned action in `SafeArea(top: false)`; the min hides the footer instead of overflowing; shared `AppBottomSheet` semantics untouched | post-fix `features/home/presentation/rider_sheet.dart:8-47,64-255`; `features/home/presentation/ride_estimate_sheet.dart:39-49`; `features/home/presentation/active_ride_screen.dart:979-1000` (locate hidden at full-screen `:951-966`); tests `test/features/home/presentation/rider_sheet_test.dart:41-100`, `ride_estimate_sheet_test.dart:340-394`, `active_ride_screen_test.dart:514-575`; pre-fix `ride_estimate_sheet.dart:39-69`, `active_ride_screen.dart:934-962,1029-1118` | medium | [ontrip] |
+| 36 | **Matching could sit on "Finding your driver…" forever, and a warm provider could carry a previous session's status:** `CurrentRideNotifier` silently `stopPolling()`ed at `maxAttempts = 60` (~5 min at the 5 s interval) with **no terminal state and no navigation**; `stopPolling()` did not reset `_attempts`, so a later `checkOnce()` was a no-op; and `AuthNotifier.onLoggedOut` cleared the profile + pickup but **not** `currentRideProvider`, so a new login could be routed by the old session's status. Server dispatch's real ceiling is **~2.6 min** (5 candidates × 30 s offer timeout + 3 s re-arm, `dispatch.go:171-201,272-305`; `dispatch_observability.go:194-216`), shorter than the ~5 min poll cap. — **FIXED** by `[trip]_matching_poll_terminal_state.md`: the cap writes `searchTimedOut: true` (last real status preserved, `noDriverAvailable` never fabricated), `checkOnce()` is uncapped and clears state/attempts/`_startedAt` (`:98-110`, call `:103`), `reset()` stops the timer and clears attempts/state, logout/account switch resets `currentRideProvider` **and** `rideStatusProvider`, and `DriverMatchingScreen` renders the terminal view with `Try again`/cancel. `resolvePostAuthRoute` pending mapping unchanged. The stale-`pending` half is **API-owned and landed separately**: `api_plans/STATUS.md` → Landed `[rides]` | post-fix `features/home/data/current_ride_provider.dart:18,26-49,67,98-110,120-124,127-137`; `core/auth/auth_provider.dart:77-94`; `features/home/presentation/driver_matching_screen.dart:114-115,158-159,226-235`; tests `test/features/home/data/current_ride_provider_test.dart:210-276,359-383`, `test/core/auth/auth_provider_test.dart:494-523`, `test/features/home/presentation/driver_matching_screen_test.dart:363-431`; pre-fix `current_ride_provider.dart:63,73-85,96,108-112,124-128` | medium | [trip] |
+
+**Residual risks for #33–#36 (not defects):** real Chrome/Android viewport, safe-area and
+touch/fling behavior remain **UNVERIFIABLE** in this WSL harness — the safe-area-once and
+content-fit contracts are covered by `FakeViewPadding` widget tests (`home_screen_test.dart:1334-1375`,
+`rider_sheet_test.dart:41-100`), not a real device. Home's locate button at full-screen is
+`Transform.translate`d off-screen but **not removed** (`home_screen.dart:770-785`; the active trip
+does hide it, `active_ride_screen.dart:951-966`); removing it on Home is a product follow-up, not a
+bug. The stale-`pending` half of #36 is landed in `api_plans/STATUS.md` → Landed `[rides]`, not
+duplicated here.
 
 *Rows #25–#26 track `tests/AUDIT_REPORT.md` §5.2–§5.3. Both are **resolved**: #25 by Landed `[map]`; #26 by the shared additive timer seam (2026-10-11). #26 is shared-owned (no shared `STATUS.md`).*
 
@@ -619,6 +675,10 @@ The 2026-10-13 wave — `[auth]_web_reload_session_bootstrap.md`,
 The 2026-10-15 bug-fix wave — `[ontrip]_eta_state_reset.md` (bug #30) and
 `[test]_rider_coverage_gaps.md` (bugs #31/#27/#28) — landed, were condensed into Landed
 `[ontrip]`/`[test]` above, and were deleted (2026-10-15).
+The 2026-10-20 sheet/matching wave — `[home]_sheet_web_action_visibility.md`,
+`[ontrip]_bottom_sheet_scroll_consistency.md` and `[trip]_matching_poll_terminal_state.md`
+(bugs #33–#36) — landed, were condensed into Landed `[home]`/`[ontrip]`/`[trip]` above, and were
+deleted. The three deferred plans remain.
 
 ## Invariants
 
@@ -693,6 +753,23 @@ export PATH=~/fvm/default/bin:$HOME/.pub-cache/bin:$PATH   # Linux FVM SDK + Mel
 melos run analyze
 melos run test
 ```
+
+Landing — `[home]_sheet_web_action_visibility.md` (bugs #33/#34),
+`[ontrip]_bottom_sheet_scroll_consistency.md` (bug #35) and
+`[trip]_matching_poll_terminal_state.md` (bug #36), 2026-10-20: all three implementations were
+adversarially reviewed and **CONFIRMED-LANDED** by tag `[home]`/`[ontrip]`/`[trip]`. Each plan is
+condensed into Landed above, its file was deleted, its Open-plans row removed, and each bug row is
+**FIXED** with post-fix `file:line` evidence. Gates (reported on this landing tree; **not re-run** by
+this condensation): `melos run analyze` clean; `melos run test` green — rider **518**, driver
+**467**, shared **225 passed + 1 skipped** (Linux FVM SDK + native Melos 8; the one skip is the
+browser-only `window.localStorage` case). Dangling-`depends_on` check after deleting the three
+`depends_on: []` plans: the only survivors are `[map]_self_hosted_tile_host.md`,
+`[map]_runtime_remote_tile_config.md` and `[release]_app_id_and_store_readiness.md`, all
+`depends_on: []` — no dangling reference in the rider domain. **UNVERIFIABLE in this WSL harness:**
+real Chrome/Android viewport, safe-area and touch/fling behavior (the widget suites cover the
+safe-area-once and content-fit contracts via `FakeViewPadding`); real login/logout/account-switch
+against a live API. Home's locate control is translated off-screen but not removed at full-screen
+(`home_screen.dart:770-785`) — a product follow-up, not a defect. No driver/api/code file was edited.
 
 Landing — `[map]_current_location_button.md` (canonical shared locate/fit contract + both rider
 surfaces), 2026-10-20: adversarially reviewed and **CONFIRMED** (static verification; the reviewer's
@@ -976,3 +1053,38 @@ Bug-fix plan authoring + landing (2026-10-15): the two reviewed rider bug-fix pl
 `api_plans/[push]_production_provider.md` (`[push]`, `status: deferred`) is the one canonical push
 plan; its §Scope item 3 owns the real-FCM/APNs token source, referencing the rider registration half
 (`Landed [push]` above) by path rather than duplicating it.
+
+Plan correction + authoring — Home / bottom-sheet / matching-poll (2026-10-20, plan-only):
+re-audited every cited line against the tree after the adversarial review and applied its
+corrections to the two survivor plans. `[home]_sheet_web_action_visibility.md` now states that
+`Request Trip` is reachable by inner scroll today (`:727` keeps the 16 dp gutter; there is no
+**safe-area** gutter), that a 1.0 ceiling only fully shows forms inside `0.9 <
+contentHeight/viewport <= 1.0`, and records the explicit A/B/C choice — **B chosen**: pin the
+action in a `SafeArea(top: false)` footer below the scroll body, keep the cap/padding fixes; the
+chip note now records the real ~30 dp gap instead of claiming the chip is flush.
+`[ontrip]_bottom_sheet_scroll_consistency.md` corrects the active-trip evidence (bottom-only
+`Positioned` makes the `Column` unbounded/bottom-anchored, so the **top** clips and `Cancel Ride`
+stays visible), replaces the green-pre-fix 400×520 assertion with an overflowing-surface
+clipped-top contract, aligns `maxChildSize` to Home's 1.0, and defines the safe area as owned
+exactly once by the pinned footer.
+
+Authored one new independent, unnumbered plan: `[trip]_matching_poll_terminal_state.md` (tag
+`trip`, bug #36), which flips bug #36 from **DEFERRED** to **PLANNED**, corrects its false
+"~12.5 min" rationale to the verified **~2.6 min** dispatch ceiling
+(`internal/service/dispatch.go:171-201,272-305`; `dispatch_observability.go:194-216`), and records
+the rider-side reset + truthful-timeout work. It references
+`api_plans/[rides]_orphaned_pending_expiry.md` by path as **complementary, not a dependency**.
+**No source, test or manifest was edited; `melos run analyze` / `melos run test` were not run**
+(plan-only change). Dangling-`depends_on` check at authoring time: all six rider plan files were
+`depends_on: []` (`[home]_sheet_web_action_visibility.md`, `[ontrip]_bottom_sheet_scroll_consistency.md`,
+`[trip]_matching_poll_terminal_state.md`, `[map]_self_hosted_tile_host.md`,
+`[map]_runtime_remote_tile_config.md`, `[release]_app_id_and_store_readiness.md`) — no dangling
+reference; the first three subsequently landed and were deleted (2026-10-20). **UNVERIFIABLE in this
+WSL harness:** real Chrome/Android viewport and safe-area behavior, and a real
+login/logout/account-switch cycle against a live API; the plans name the exact on-host closing
+commands. **Drift found (report only):** the incoming brief said the `[tracking]` ride
+detail/receipt/rating work was still open and that `active_ride_screen.dart` read invented
+`driver_lat`/`driver_name`; the tree shows the LC-3/LC-4 work landed (Landed `[tracking]` above;
+typed `RideState.driver`/`driverLocation` at `features/home/presentation/active_ride_screen.dart:396-399,537-556`)
+and the current `maxAttempts` citation is `:67` (older audits wrote `:63`/`:64`); `checkOnce()` is
+`:103` (older audits wrote `:96`).

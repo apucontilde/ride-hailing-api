@@ -14,7 +14,8 @@ class DriverMatchingScreen extends ConsumerStatefulWidget {
   const DriverMatchingScreen({super.key, this.onCancelled});
 
   @override
-  ConsumerState<DriverMatchingScreen> createState() => _DriverMatchingScreenState();
+  ConsumerState<DriverMatchingScreen> createState() =>
+      _DriverMatchingScreenState();
 }
 
 class _DriverMatchingScreenState extends ConsumerState<DriverMatchingScreen>
@@ -78,7 +79,8 @@ class _DriverMatchingScreenState extends ConsumerState<DriverMatchingScreen>
     if (_cancelInFlight) return;
 
     final rideId =
-        ref.read(rideStatusProvider).rideId ?? ref.read(rideCreationProvider).rideId;
+        ref.read(rideStatusProvider).rideId ??
+        ref.read(rideCreationProvider).rideId;
     if (rideId == null) {
       _goHome();
       return;
@@ -91,9 +93,9 @@ class _DriverMatchingScreenState extends ConsumerState<DriverMatchingScreen>
 
     final creationState = ref.read(rideCreationProvider);
     if (creationState.cancelError != null) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text(creationState.cancelError!)),
-      );
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(SnackBar(content: Text(creationState.cancelError!)));
       return;
     }
     ScaffoldMessenger.of(context).showSnackBar(
@@ -106,8 +108,11 @@ class _DriverMatchingScreenState extends ConsumerState<DriverMatchingScreen>
   Widget build(BuildContext context) {
     final rideState = ref.watch(rideStatusProvider);
     final pollState = ref.watch(currentRideProvider);
-    final showNoDrivers = rideState.status == RideStatus.noDriverAvailable ||
+    final showNoDrivers =
+        rideState.status == RideStatus.noDriverAvailable ||
         pollState.noDriverAvailable;
+    final searchTimedOut = pollState.searchTimedOut;
+    final isTerminal = showNoDrivers || searchTimedOut;
 
     ref.listen<RideState>(rideStatusProvider, (previous, next) {
       if (_navigating) return;
@@ -121,7 +126,9 @@ class _DriverMatchingScreenState extends ConsumerState<DriverMatchingScreen>
         case RideStatus.noDriverAvailable:
           _currentRideNotifier.stopPolling();
           ScaffoldMessenger.of(context).showSnackBar(
-            const SnackBar(content: Text('No drivers found right now. Please try again.')),
+            const SnackBar(
+              content: Text('No drivers found right now. Please try again.'),
+            ),
           );
         default:
           break;
@@ -143,12 +150,14 @@ class _DriverMatchingScreenState extends ConsumerState<DriverMatchingScreen>
       appBar: AppBar(
         title: const Text('Finding Driver'),
         leading: AppBackButton(
-          onPressed: showNoDrivers ? _goHome : _cancelRequest,
+          onPressed: isTerminal ? _goHome : _cancelRequest,
         ),
       ),
       body: Center(
         child: showNoDrivers
             ? _buildNoDriversView()
+            : searchTimedOut
+            ? _buildSearchTimedOutView()
             : _buildSearchingView(pollState),
       ),
     );
@@ -164,10 +173,7 @@ class _DriverMatchingScreenState extends ConsumerState<DriverMatchingScreen>
           child: CircularProgressIndicator(strokeWidth: 4),
         ),
         const SizedBox(height: 24),
-        Text(
-          'Finding your driver...',
-          style: AppTextStyles.title,
-        ),
+        Text('Finding your driver...', style: AppTextStyles.title),
         const SizedBox(height: 8),
         Text(
           pollState.stillSearching
@@ -191,10 +197,7 @@ class _DriverMatchingScreenState extends ConsumerState<DriverMatchingScreen>
       children: [
         Icon(Icons.no_accounts_outlined, size: 80, color: AppColors.mutedFaint),
         const SizedBox(height: 24),
-        Text(
-          'No drivers found',
-          style: AppTextStyles.title,
-        ),
+        Text('No drivers found', style: AppTextStyles.title),
         const SizedBox(height: 8),
         Text(
           'No nearby drivers are available right now. Please try again later.',
@@ -202,11 +205,47 @@ class _DriverMatchingScreenState extends ConsumerState<DriverMatchingScreen>
           style: AppTextStyles.body.copyWith(color: AppColors.muted),
         ),
         const SizedBox(height: 24),
+        AppButton(label: 'Back to Home', onPressed: _goHome),
+      ],
+    );
+  }
+
+  /// The poll hit its cap: the client could not confirm a match. This is a
+  /// client-only flag (the last real backend status is preserved), so it is
+  /// deliberately not rendered as `no_driver_available`.
+  Widget _buildSearchTimedOutView() {
+    return Column(
+      mainAxisAlignment: MainAxisAlignment.center,
+      children: [
+        const Icon(
+          Icons.timer_off_outlined,
+          size: 80,
+          color: AppColors.mutedFaint,
+        ),
+        const SizedBox(height: 24),
+        Text('Search timed out', style: AppTextStyles.title),
+        const SizedBox(height: 8),
+        Text(
+          "We couldn't confirm a driver in time. "
+          'Retry the search or cancel the request.',
+          textAlign: TextAlign.center,
+          style: AppTextStyles.body.copyWith(color: AppColors.muted),
+        ),
+        const SizedBox(height: 24),
+        AppButton(label: 'Try again', onPressed: _retrySearch),
+        const SizedBox(height: 8),
         AppButton(
-          label: 'Back to Home',
-          onPressed: _goHome,
+          label: 'Cancel request',
+          variant: AppButtonVariant.text,
+          onPressed: _cancelInFlight ? null : _cancelRequest,
         ),
       ],
     );
+  }
+
+  /// `startPolling` clears the timeout flag and arms a fresh search.
+  void _retrySearch() {
+    if (_navigating) return;
+    _currentRideNotifier.startPolling();
   }
 }

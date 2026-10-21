@@ -8,6 +8,8 @@ import '../network/websocket_service.dart';
 import '../push/device_token_service.dart';
 import '../../features/home/model/rider_profile.dart';
 import '../../features/home/data/pickup_memory_provider.dart';
+import '../../features/home/data/current_ride_provider.dart';
+import '../../features/home/data/ride_status_provider.dart';
 
 export 'package:ride_hailing_shared/ride_hailing_shared.dart'
     show AuthStatus, AuthState;
@@ -79,6 +81,17 @@ class AuthNotifier extends AppAuthController {
     // The remembered pickup is rider-scoped too; one rider's pickup must not
     // greet the next session.
     _ref.read(pickupMemoryProvider.notifier).clear();
+    // The ride poll is session-scoped as well: account switching runs the same
+    // hook, so a previous rider's pending/active status must not restore into
+    // the next login.
+    _ref.read(currentRideProvider.notifier).reset();
+    // The WS-backed typed ride state is rider-scoped too. Without this the
+    // previous session's `RideState` (status, driver, fare) survives logout and
+    // account switch. Missing means it was never created, so there is no typed
+    // state to clear (and reading it would need a live WS service).
+    if (_ref.exists(rideStatusProvider)) {
+      _ref.read(rideStatusProvider.notifier).reset();
+    }
   }
 
   @override

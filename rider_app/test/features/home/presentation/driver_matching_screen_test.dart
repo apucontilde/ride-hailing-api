@@ -7,6 +7,7 @@ import 'package:go_router/go_router.dart';
 import 'package:http_mock_adapter/http_mock_adapter.dart';
 import 'package:ride_hailing_shared/ride_hailing_shared.dart';
 import 'package:rider_app/core/auth/auth_provider.dart';
+import 'package:rider_app/features/home/data/current_ride_provider.dart';
 import 'package:rider_app/features/home/data/location_ping_service.dart';
 import 'package:rider_app/features/home/data/pickup_memory_provider.dart';
 import 'package:rider_app/features/home/data/ride_status_provider.dart';
@@ -39,12 +40,34 @@ class FakeLocationPingService extends LocationPingService {
   bool get isActive => _active;
 }
 
+/// A poll notifier whose state a test can drive without waiting for the real
+/// 60-attempt cap. `startPolling` is the screen's retry path: it clears the
+/// timeout flag and returns to the searching state.
+class FakeCurrentRideNotifier extends CurrentRideNotifier {
+  FakeCurrentRideNotifier(super.apiClient, super.ref);
+
+  int startPollingCalls = 0;
+
+  @override
+  void startPolling({Duration interval = const Duration(seconds: 5)}) {
+    startPollingCalls++;
+    // Exercise the production restart (reset + a real `/rides/current` poll)
+    // instead of only flipping test state.
+    super.startPolling(interval: interval);
+  }
+
+  void forceTimedOut() {
+    state = const CurrentRideState(status: 'pending', searchTimedOut: true);
+  }
+}
+
 void main() {
   late FakeWebSocketService ws;
   late RideStatusNotifier rideNotifier;
   late ApiClient apiClient;
   late DioAdapter dioAdapter;
   late ProviderContainer container;
+  FakeCurrentRideNotifier? fakeRidePoll;
 
   setUp(() {
     ws = FakeWebSocketService();
@@ -66,7 +89,10 @@ void main() {
     await tester.pump();
   }
 
-  Widget buildRouter({FakeLocationPingService? ping}) {
+  Widget buildRouter({
+    FakeLocationPingService? ping,
+    bool withFakeRidePoll = false,
+  }) {
     final router = GoRouter(
       initialLocation: '/driver-matching',
       routes: [
@@ -85,6 +111,12 @@ void main() {
       overrides: [
         apiClientProvider.overrideWithValue(apiClient),
         rideStatusProvider.overrideWith((ref) => rideNotifier),
+        if (withFakeRidePoll)
+          currentRideProvider.overrideWith((ref) {
+            final fake = FakeCurrentRideNotifier(apiClient, ref);
+            fakeRidePoll = fake;
+            return fake;
+          }),
         if (ping != null) locationPingServiceProvider.overrideWithValue(ping),
       ],
     );
@@ -98,7 +130,9 @@ void main() {
   testWidgets('shows finding driver animation', (WidgetTester tester) async {
     dioAdapter.onGet(
       '/api/v1/rides/current',
-      (server) => server.reply(200, {'ride': {'id': 'ride-1', 'status': 'pending'}}),
+      (server) => server.reply(200, {
+        'ride': {'id': 'ride-1', 'status': 'pending'},
+      }),
     );
 
     await tester.pumpWidget(buildRouter());
@@ -112,15 +146,20 @@ void main() {
     await tester.pump(const Duration(milliseconds: 1));
   });
 
-  testWidgets('cancel button hits the cancel endpoint and returns home',
-      (WidgetTester tester) async {
+  testWidgets('cancel button hits the cancel endpoint and returns home', (
+    WidgetTester tester,
+  ) async {
     dioAdapter.onGet(
       '/api/v1/rides/current',
-      (server) => server.reply(200, {'ride': {'id': 'ride-1', 'status': 'pending'}}),
+      (server) => server.reply(200, {
+        'ride': {'id': 'ride-1', 'status': 'pending'},
+      }),
     );
     dioAdapter.onPost(
       '/api/v1/rides/ride-1/cancel',
-      (server) => server.reply(200, {'ride': {'id': 'ride-1', 'status': 'cancelled'}}),
+      (server) => server.reply(200, {
+        'ride': {'id': 'ride-1', 'status': 'cancelled'},
+      }),
     );
     await makeMatching(tester);
 
@@ -141,57 +180,63 @@ void main() {
     await tester.pump(const Duration(milliseconds: 1));
   });
 
-  testWidgets('a second cancel tap while the cancel POST is in flight posts once',
-      (WidgetTester tester) async {
-    dioAdapter.onGet(
-      '/api/v1/rides/current',
-      (server) =>
-          server.reply(200, {'ride': {'id': 'ride-1', 'status': 'pending'}}),
-    );
-    final gate = Completer<void>();
-    var cancelPosts = 0;
-    dioAdapter.onPost(
-      '/api/v1/rides/ride-1/cancel',
-      (server) => server.replyCallbackAsync(200, (_) async {
-        cancelPosts++;
-        await gate.future;
-        return {'ride': {'id': 'ride-1', 'status': 'cancelled'}};
-      }),
-    );
-    await makeMatching(tester);
+  testWidgets(
+    'a second cancel tap while the cancel POST is in flight posts once',
+    (WidgetTester tester) async {
+      dioAdapter.onGet(
+        '/api/v1/rides/current',
+        (server) => server.reply(200, {
+          'ride': {'id': 'ride-1', 'status': 'pending'},
+        }),
+      );
+      final gate = Completer<void>();
+      var cancelPosts = 0;
+      dioAdapter.onPost(
+        '/api/v1/rides/ride-1/cancel',
+        (server) => server.replyCallbackAsync(200, (_) async {
+          cancelPosts++;
+          await gate.future;
+          return {
+            'ride': {'id': 'ride-1', 'status': 'cancelled'},
+          };
+        }),
+      );
+      await makeMatching(tester);
 
-    await tester.pumpWidget(buildRouter());
-    await tester.pump();
+      await tester.pumpWidget(buildRouter());
+      await tester.pump();
 
-    // First tap starts the POST and parks it on `gate`.
-    await tester.tap(find.text('Cancel request'));
-    await tester.pump();
-    await tester.pump(const Duration(milliseconds: 10));
-    expect(cancelPosts, 1);
+      // First tap starts the POST and parks it on `gate`.
+      await tester.tap(find.text('Cancel request'));
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 10));
+      expect(cancelPosts, 1);
 
-    // Second tap while the request is in flight must be dropped by the existing
-    // `_cancelInFlight` early return.
-    await tester.tap(find.text('Cancel request'));
-    await tester.pump();
-    await tester.pump(const Duration(milliseconds: 10));
+      // Second tap while the request is in flight must be dropped by the existing
+      // `_cancelInFlight` early return.
+      await tester.tap(find.text('Cancel request'));
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 10));
 
-    expect(cancelPosts, 1, reason: 'the second tap must not post again');
+      expect(cancelPosts, 1, reason: 'the second tap must not post again');
 
-    gate.complete();
-    await tester.pump();
-    await tester.pump(const Duration(milliseconds: 10));
-    await tester.pump();
+      gate.complete();
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 10));
+      await tester.pump();
 
-    expect(cancelPosts, 1);
-    expect(find.text('Home'), findsOneWidget);
+      expect(cancelPosts, 1);
+      expect(find.text('Home'), findsOneWidget);
 
-    await tester.pump(const Duration(seconds: 5));
-    await tester.pumpWidget(const SizedBox());
-    await tester.pump(const Duration(milliseconds: 1));
-  });
+      await tester.pump(const Duration(seconds: 5));
+      await tester.pumpWidget(const SizedBox());
+      await tester.pump(const Duration(milliseconds: 1));
+    },
+  );
 
-  testWidgets('no-driver Back to Home keeps the pickup for a retry',
-      (WidgetTester tester) async {
+  testWidgets('no-driver Back to Home keeps the pickup for a retry', (
+    WidgetTester tester,
+  ) async {
     dioAdapter.onGet(
       '/api/v1/rides/current',
       (server) => server.reply(200, {
@@ -217,8 +262,64 @@ void main() {
   });
 
   testWidgets(
-      'the leading AppBackButton replaces Icons.close and routes through the no-driver home path',
-      (WidgetTester tester) async {
+    'the leading AppBackButton replaces Icons.close and routes through the no-driver home path',
+    (WidgetTester tester) async {
+      dioAdapter.onGet(
+        '/api/v1/rides/current',
+        (server) => server.reply(200, {
+          'ride': {'id': 'ride-1', 'status': 'no_driver_available'},
+        }),
+      );
+      await makeMatching(tester);
+
+      await tester.pumpWidget(buildRouter());
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 10));
+
+      expect(find.byIcon(Icons.arrow_back), findsOneWidget);
+      expect(find.byIcon(Icons.close), findsNothing);
+
+      await tester.tap(find.byType(AppBackButton));
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 10));
+
+      expect(find.text('Home'), findsOneWidget);
+      expect(container.read(pickupMemoryProvider).restoreOnHome, isTrue);
+
+      await tester.pump(const Duration(seconds: 5));
+      await tester.pumpWidget(const SizedBox());
+      await tester.pump(const Duration(milliseconds: 1));
+    },
+  );
+
+  testWidgets(
+    'no drivers state appears when poll returns no_driver_available',
+    (WidgetTester tester) async {
+      dioAdapter.onGet(
+        '/api/v1/rides/current',
+        (server) => server.reply(200, {
+          'ride': {'id': 'ride-1', 'status': 'no_driver_available'},
+        }),
+      );
+      await makeMatching(tester);
+
+      await tester.pumpWidget(buildRouter());
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 10));
+
+      expect(find.text('No drivers found'), findsOneWidget);
+      expect(find.text('Back to Home'), findsOneWidget);
+      expect(find.byType(CircularProgressIndicator), findsNothing);
+
+      await tester.pump(const Duration(seconds: 5));
+      await tester.pumpWidget(const SizedBox());
+      await tester.pump(const Duration(milliseconds: 1));
+    },
+  );
+
+  testWidgets('no drivers toast appears once when the poll flags it', (
+    WidgetTester tester,
+  ) async {
     dioAdapter.onGet(
       '/api/v1/rides/current',
       (server) => server.reply(200, {
@@ -231,60 +332,10 @@ void main() {
     await tester.pump();
     await tester.pump(const Duration(milliseconds: 10));
 
-    expect(find.byIcon(Icons.arrow_back), findsOneWidget);
-    expect(find.byIcon(Icons.close), findsNothing);
-
-    await tester.tap(find.byType(AppBackButton));
-    await tester.pump();
-    await tester.pump(const Duration(milliseconds: 10));
-
-    expect(find.text('Home'), findsOneWidget);
-    expect(container.read(pickupMemoryProvider).restoreOnHome, isTrue);
-
-    await tester.pump(const Duration(seconds: 5));
-    await tester.pumpWidget(const SizedBox());
-    await tester.pump(const Duration(milliseconds: 1));
-  });
-
-  testWidgets('no drivers state appears when poll returns no_driver_available',
-      (WidgetTester tester) async {
-    dioAdapter.onGet(
-      '/api/v1/rides/current',
-      (server) => server.reply(200, {
-        'ride': {'id': 'ride-1', 'status': 'no_driver_available'},
-      }),
+    expect(
+      find.text('No drivers found right now. Please try again.'),
+      findsOneWidget,
     );
-    await makeMatching(tester);
-
-    await tester.pumpWidget(buildRouter());
-    await tester.pump();
-    await tester.pump(const Duration(milliseconds: 10));
-
-    expect(find.text('No drivers found'), findsOneWidget);
-    expect(find.text('Back to Home'), findsOneWidget);
-    expect(find.byType(CircularProgressIndicator), findsNothing);
-
-    await tester.pump(const Duration(seconds: 5));
-    await tester.pumpWidget(const SizedBox());
-    await tester.pump(const Duration(milliseconds: 1));
-  });
-
-  testWidgets('no drivers toast appears once when the poll flags it',
-      (WidgetTester tester) async {
-    dioAdapter.onGet(
-      '/api/v1/rides/current',
-      (server) => server.reply(200, {
-        'ride': {'id': 'ride-1', 'status': 'no_driver_available'},
-      }),
-    );
-    await makeMatching(tester);
-
-    await tester.pumpWidget(buildRouter());
-    await tester.pump();
-    await tester.pump(const Duration(milliseconds: 10));
-
-    expect(find.text('No drivers found right now. Please try again.'),
-        findsOneWidget);
 
     // The same no-driver signal arriving again (twice) must not stack two
     // toasts: the messenger renders exactly one at a time.
@@ -298,8 +349,95 @@ void main() {
     await tester.pump();
 
     expect(find.byType(SnackBar), findsOneWidget);
-    expect(find.text('No drivers found right now. Please try again.'),
-        findsOneWidget);
+    expect(
+      find.text('No drivers found right now. Please try again.'),
+      findsOneWidget,
+    );
+
+    await tester.pump(const Duration(seconds: 5));
+    await tester.pumpWidget(const SizedBox());
+    await tester.pump(const Duration(milliseconds: 1));
+  });
+
+  testWidgets(
+    'a timed-out poll renders the terminal view and Try again retries',
+    (WidgetTester tester) async {
+      var polls = 0;
+      dioAdapter.onGet(
+        '/api/v1/rides/current',
+        (server) => server.replyCallback(200, (_) {
+          polls++;
+          return {
+            'ride': {'id': 'ride-1', 'status': 'pending'},
+          };
+        }),
+      );
+
+      await tester.pumpWidget(buildRouter(withFakeRidePoll: true));
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 10));
+
+      expect(find.text('Finding your driver...'), findsOneWidget);
+      final fake = fakeRidePoll!;
+      expect(fake.startPollingCalls, 1);
+      expect(polls, 1);
+
+      fake.forceTimedOut();
+      await tester.pump();
+
+      expect(find.text('Search timed out'), findsOneWidget);
+      expect(find.textContaining("couldn't confirm a driver"), findsOneWidget);
+      expect(find.byType(CircularProgressIndicator), findsNothing);
+
+      await tester.tap(find.text('Try again'));
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 10));
+
+      // The real notifier restart clears the flag and polls the endpoint again.
+      expect(fake.startPollingCalls, 2);
+      expect(polls, 2);
+      expect(container.read(currentRideProvider).searchTimedOut, isFalse);
+      expect(find.text('Search timed out'), findsNothing);
+      expect(find.text('Finding your driver...'), findsOneWidget);
+
+      await tester.pumpWidget(const SizedBox());
+      await tester.pump(const Duration(milliseconds: 1));
+    },
+  );
+
+  testWidgets('Cancel request from the timeout view cancels and returns home', (
+    WidgetTester tester,
+  ) async {
+    dioAdapter.onPost(
+      '/api/v1/rides/ride-1/cancel',
+      (server) => server.reply(200, {
+        'ride': {'id': 'ride-1', 'status': 'cancelled'},
+      }),
+    );
+    dioAdapter.onGet(
+      '/api/v1/rides/current',
+      (server) => server.reply(200, {
+        'ride': {'id': 'ride-1', 'status': 'pending'},
+      }),
+    );
+    await makeMatching(tester);
+
+    await tester.pumpWidget(buildRouter(withFakeRidePoll: true));
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 10));
+
+    fakeRidePoll!.forceTimedOut();
+    await tester.pump();
+    expect(find.text('Search timed out'), findsOneWidget);
+
+    await tester.tap(find.text('Cancel request'));
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 10));
+    await tester.pump();
+
+    expect(find.text('Ride cancelled successfully'), findsOneWidget);
+    expect(find.text('Home'), findsOneWidget);
+    expect(container.read(pickupMemoryProvider).restoreOnHome, isTrue);
 
     await tester.pump(const Duration(seconds: 5));
     await tester.pumpWidget(const SizedBox());
@@ -311,8 +449,9 @@ void main() {
     (WidgetTester tester) async {
       dioAdapter.onGet(
         '/api/v1/rides/current',
-        (server) =>
-            server.reply(200, {'ride': {'id': 'ride-1', 'status': 'pending'}}),
+        (server) => server.reply(200, {
+          'ride': {'id': 'ride-1', 'status': 'pending'},
+        }),
       );
       final ping = FakeLocationPingService(apiClient);
 

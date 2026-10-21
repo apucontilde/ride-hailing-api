@@ -9,6 +9,8 @@ import 'package:rider_app/core/api/api_exceptions.dart';
 import 'package:rider_app/core/api/endpoints.dart';
 import 'package:rider_app/core/network/websocket_service.dart';
 import 'package:rider_app/features/auth/model/auth_user.dart';
+import 'package:rider_app/features/home/data/current_ride_provider.dart';
+import 'package:rider_app/features/home/data/ride_status_provider.dart';
 import 'package:rider_app/features/home/model/rider_profile.dart';
 
 class MockAuthStorage extends Mock implements AuthStorage {}
@@ -51,6 +53,8 @@ void main() {
     when(() => mockApiClient.dio).thenReturn(mockDio);
     when(() => mockWebSocketService.connect(token: any(named: 'token')))
         .thenAnswer((_) async {});
+    when(() => mockWebSocketService.events)
+        .thenAnswer((_) => const Stream<Map<String, dynamic>>.empty());
     when(() => mockWebSocketService.disconnect()).thenAnswer((_) async {});
     container = ProviderContainer(
       overrides: [
@@ -485,6 +489,61 @@ void main() {
 
         expect(container.read(riderProfileProvider), isNull);
         expect(authNotifier.state.status, AuthStatus.unauthenticated);
+      });
+
+      test('logout clears the warm current-ride provider', () async {
+        // A previous session's pending/active status must not restore into the
+        // next login (logout and account switch share `onLoggedOut`).
+        when(() => mockDio.get(ApiEndpoints.currentRide)).thenAnswer(
+          (_) async => Response(
+            requestOptions: RequestOptions(path: ApiEndpoints.currentRide),
+            statusCode: 200,
+            data: {
+              'ride': {'id': 'ride-1', 'status': 'pending'},
+            },
+          ),
+        );
+        final rideNotifier = container.read(currentRideProvider.notifier);
+        await rideNotifier.pollNow();
+        expect(container.read(currentRideProvider).status, 'pending');
+        expect(container.read(currentRideProvider).needsRestore, isTrue);
+
+        when(() => mockStorage.clearTokens()).thenAnswer((_) async {});
+        when(() => mockStorage.getRefreshToken())
+            .thenAnswer((_) async => null);
+
+        await authNotifier.logout();
+
+        final state = container.read(currentRideProvider);
+        expect(state.status, isNull);
+        expect(state.rideId, isNull);
+        expect(state.needsRestore, isFalse);
+        expect(state.searchTimedOut, isFalse);
+      });
+      test('logout clears the warm typed ride state', () async {
+        // The WS-backed `RideState` is rider-scoped too: a previous session's
+        // accepted status/driver must not survive into the next login.
+        final rideNotifier = container.read(rideStatusProvider.notifier);
+        rideNotifier.updateFromCurrentRide({
+          'id': 'ride-1',
+          'status': 'accepted',
+        });
+        expect(
+          container.read(rideStatusProvider).status,
+          RideStatus.driverApproaching,
+        );
+        expect(container.read(rideStatusProvider).rideId, 'ride-1');
+
+        when(() => mockStorage.clearTokens()).thenAnswer((_) async {});
+        when(() => mockStorage.getRefreshToken())
+            .thenAnswer((_) async => null);
+
+        await authNotifier.logout();
+
+        final state = container.read(rideStatusProvider);
+        expect(state.status, RideStatus.idle);
+        expect(state.rideId, isNull);
+        expect(state.driver, isNull);
       });
     });
   });
