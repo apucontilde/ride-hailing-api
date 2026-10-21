@@ -83,6 +83,30 @@ func run() error {
 	sweeper.Start()
 	defer sweeper.Stop()
 
+	// Pending-ride lifecycle (api_plans/[rides]_orphaned_pending_expiry.md).
+	//
+	// A `pending` ride has no owner once its in-process dispatch goroutine dies,
+	// so the sweeper closes orphaned rows to no_driver_available: ALL pending
+	// rows at boot (single-instance invariant; RIDE_BOOT_RECONCILE=off for
+	// multi-replica/rolling deploys) and only rows older than
+	// RIDE_PENDING_STALE_AFTER on each tick. Start() runs the boot reconcile
+	// synchronously before serving. The router builds its own RideRepo with the
+	// same threshold so the GET /rides/current read guard and this sweep agree.
+	//
+	// A second RideRepo over the same pool is deliberate, exactly like the
+	// liveness GeoRepo above: a thin struct around the existing connection pool,
+	// with the lifecycle kept in main rather than inside the router.
+	rideRepo := repository.NewRideRepo(db, repository.WithPendingStaleAfter(cfg.RideLifecycle.PendingStaleAfter))
+	rideSweeper := service.NewPendingRideSweeper(rideRepo,
+		cfg.RideLifecycle.PendingStaleAfter,
+		cfg.RideLifecycle.SweepInterval,
+		cfg.RideLifecycle.BootReconcile)
+	rideSweeper.Start()
+	// This defer is reached only on a normal return from run(): the process has
+	// no signal-driven graceful shutdown (same pre-existing pattern as the
+	// liveness sweeper above). Stop is idempotent and safe before Start.
+	defer rideSweeper.Stop()
+
 	addr := ":" + cfg.ServerPort
 	log.Printf("server starting on %s", addr)
 	if err := r.Run(addr); err != nil {

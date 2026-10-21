@@ -9,6 +9,7 @@ import (
 	"sync"
 	"time"
 
+	"ride-hailing-api/internal/config"
 	"ride-hailing-api/internal/model"
 	"ride-hailing-api/internal/repository"
 )
@@ -316,12 +317,21 @@ func (m *MockUserRepo) RevokeUserPasswordResetTokens(userID string) error {
 
 // --- MockRideRepo ---
 
+// The real RideRepo is the production implementation; this assertion makes a
+// future RideRepository change fail the build instead of silently breaking a
+// handler test that relies on the mock.
+var _ repository.RideRepository = (*MockRideRepo)(nil)
+
 type MockRideRepo struct {
 	mu       sync.Mutex
 	rides    map[string]*model.Ride
 	events   []*model.RideEvent
 	ratings  []*model.Rating
 	vehicles map[string]*model.DriverVehicle
+	// pendingStaleAfter mirrors RideRepo's pending-only age bound
+	// (api_plans/[rides]_orphaned_pending_expiry.md): a pending ride older than
+	// this is not "current". Defaults to the shipped config default.
+	pendingStaleAfter time.Duration
 	// stops is the per-ride itinerary, mirroring ride_stops: one entry per
 	// (ride_id, sequence), replaced wholesale by ReplaceDestination.
 	stops map[string][]model.RideStop
@@ -346,6 +356,13 @@ func NewMockRideRepo() *MockRideRepo {
 		stops:    make(map[string][]model.RideStop),
 
 		trackPoints: make(map[string][]model.RideTrackPoint),
+
+		// Pinned to the shipped default rather than the loaded config: mock
+		// tests must not override RIDE_PENDING_STALE_AFTER, because this
+		// constructor has no access to the server's config. A test that needs
+		// a different age filter must age the ride explicitly via
+		// SetRideCreatedAt (or a future setter), not the environment.
+		pendingStaleAfter: config.DefaultRidePendingStaleAfter,
 	}
 }
 
@@ -385,6 +402,22 @@ func (m *MockRideRepo) CreateRide(ride *model.Ride) error {
 	if len(ride.Stops) > 0 {
 		m.stops[id] = append([]model.RideStop(nil), ride.Stops...)
 	}
+	return nil
+}
+
+// SetRideCreatedAt rewrites a stored row's created_at. CreateRide always stamps
+// "now", so the only way a handler test can seed a stale `pending` row (and thus
+// exercise MockRideRepo's age filter) is to age it explicitly. The filter is
+// the mock-parity twin of the real FindCurrentRideByRider SQL guard
+// (api_plans/[rides]_orphaned_pending_expiry.md D4).
+func (m *MockRideRepo) SetRideCreatedAt(rideID string, createdAt time.Time) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	r, ok := m.rides[rideID]
+	if !ok {
+		return fmt.Errorf("set ride created_at: %w", repository.ErrNotFound)
+	}
+	r.CreatedAt = createdAt
 	return nil
 }
 
@@ -501,13 +534,20 @@ func (m *MockRideRepo) FindCurrentRideByRider(riderID string) (*model.Ride, erro
 	if err := failNext(&m.FailNext); err != nil {
 		return nil, err
 	}
+	now := time.Now()
+	cutoff := now.Add(-m.pendingStaleAfter)
 	var latest *model.Ride
 	for _, r := range m.rides {
-		if r.RiderID == riderID && (r.Status == "pending" || r.Status == "accepted" || r.Status == "driver_arrived" || r.Status == "in_progress") {
-			if latest == nil || r.CreatedAt.After(latest.CreatedAt) {
-				cp := *r
-				latest = &cp
-			}
+		if r.RiderID != riderID || (r.Status != "pending" && r.Status != "accepted" && r.Status != "driver_arrived" && r.Status != "in_progress") {
+			continue
+		}
+		// Mirror the SQL age guard: only pending is age-filtered.
+		if r.Status == "pending" && !r.CreatedAt.After(cutoff) {
+			continue
+		}
+		if latest == nil || r.CreatedAt.After(latest.CreatedAt) {
+			cp := *r
+			latest = &cp
 		}
 	}
 	if latest == nil {

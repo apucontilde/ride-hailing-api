@@ -112,6 +112,30 @@ type Config struct {
 	// driver_earnings_and_withdraw.md). Money is integer cents everywhere in
 	// this subsystem — the earnings endpoints never deal in major units.
 	Payout Payout
+
+	// RideLifecycle configures the server-side owner of orphaned `pending`
+	// rides (api_plans/[rides]_orphaned_pending_expiry.md): the age guard on
+	// GET /rides/current, the periodic stale sweep, and boot reconciliation.
+	RideLifecycle RideLifecycle
+}
+
+// RideLifecycle bounds the lifetime of a `pending` ride, which otherwise has no
+// owner other than the in-process dispatch goroutine. Both durations are parsed
+// through positiveDuration so a misconfigured 0/negative value can never hide
+// every fresh pending row or sweep every pending row (D2).
+type RideLifecycle struct {
+	// PendingStaleAfter is RIDE_PENDING_STALE_AFTER: how old a `pending` ride
+	// must be before the read guard hides it and the sweep closes it. The
+	// default (10 min) is ~3.9x the corrected ~2.6 min dispatch ceiling and
+	// longer than the rider app's ~5 min poll window; never set it below 5 min
+	// without re-deriving it from the dispatch loop.
+	PendingStaleAfter time.Duration
+	// SweepInterval is RIDE_STALE_SWEEP_INTERVAL: the periodic sweep period.
+	SweepInterval time.Duration
+	// BootReconcile is RIDE_BOOT_RECONCILE: close ALL pending rows at boot
+	// (single-instance invariant, D1/D5). off/false/0 disables it for
+	// multi-replica or rolling-restart topologies; garbage fails closed to off.
+	BootReconcile bool
 }
 
 // Payout configures the driver earnings ledger. Withdrawals are RECORDED
@@ -148,6 +172,21 @@ const (
 	// create path was previously unbounded (api_plans/[fare]_waypoint_fare.md
 	// §5). Configurable for regions with larger vehicles.
 	DefaultRideMaxStops = 8
+)
+
+// Ride lifecycle defaults (api_plans/[rides]_orphaned_pending_expiry.md).
+const (
+	// DefaultRidePendingStaleAfter is RIDE_PENDING_STALE_AFTER's shipped
+	// default. Dispatch's worst-case offer wait is ~2.6 min (5 sequential
+	// 30 s offers + rearm/backoff), so 10 min is ~3.9x that ceiling and longer
+	// than the rider app's ~5 min poll window: a legitimate search is never
+	// hidden mid-poll. Never set it below 5 min (2x the ceiling) without
+	// re-deriving the ceiling from the dispatch loop.
+	DefaultRidePendingStaleAfter = 10 * time.Minute
+	// DefaultRideSweepInterval is RIDE_STALE_SWEEP_INTERVAL's shipped default:
+	// an orphan created while the process stays up is closed within
+	// staleAfter + one interval, and the sweep is one indexed UPDATE.
+	DefaultRideSweepInterval = time.Minute
 )
 
 // defaultRoutingSnapRadiusM is ROUTING_SNAP_RADIUS_M's shipped default: 50 km
@@ -372,6 +411,12 @@ func Load() *Config {
 			Currency:         getEnv("PAYOUT_CURRENCY", DefaultPayoutCurrency),
 			CommissionRate:   payoutCommissionFromEnv(),
 		},
+
+		RideLifecycle: RideLifecycle{
+			PendingStaleAfter: positiveDuration("RIDE_PENDING_STALE_AFTER", DefaultRidePendingStaleAfter),
+			SweepInterval:     positiveDuration("RIDE_STALE_SWEEP_INTERVAL", DefaultRideSweepInterval),
+			BootReconcile:     rideBootReconcileFromEnv(),
+		},
 	}
 }
 
@@ -402,6 +447,19 @@ func getDuration(key string, fallback time.Duration) time.Duration {
 		if d, err := time.ParseDuration(v); err == nil {
 			return d
 		}
+	}
+	return fallback
+}
+
+// positiveDuration is getDuration with an explicit > 0 guard. getDuration
+// returns parsed 0/negative durations unchanged (see above), so a bare
+// getDuration("RIDE_PENDING_STALE_AFTER", 10*time.Minute) with `0s` would yield
+// a zero cutoff — hiding EVERY fresh pending ride on read and sweeping EVERY
+// pending row. This guard makes such a misconfiguration fail closed to the
+// documented default instead of "always stale".
+func positiveDuration(key string, fallback time.Duration) time.Duration {
+	if d := getDuration(key, fallback); d > 0 {
+		return d
 	}
 	return fallback
 }
@@ -439,6 +497,21 @@ func routingElevationEnabledFromEnv() bool {
 func geofenceEnabledFromEnv() bool {
 	v := os.Getenv("GEOFENCE_ENABLED")
 	return v == "" || v == "on"
+}
+
+// rideBootReconcileFromEnv whitelists RIDE_BOOT_RECONCILE, the escape hatch for
+// the single-instance boot reconciliation (api_plans
+// [rides]_orphaned_pending_expiry.md D1): unset/empty means ON (the shipped
+// default); "on"/"true"/"1" mean on; anything else — including a typo — fails
+// CLOSED to off, so a multi-replica deploy never silently clobbers another
+// replica's live dispatch search.
+func rideBootReconcileFromEnv() bool {
+	switch os.Getenv("RIDE_BOOT_RECONCILE") {
+	case "", "on", "true", "1":
+		return true
+	default:
+		return false
+	}
 }
 
 // geofenceAcceptFixMaxAgeFromEnv parses GEOFENCE_ACCEPT_FIX_MAX_AGE_S

@@ -81,7 +81,7 @@ func Setup(cfg *config.Config, db *sqlx.DB) *gin.Engine {
 	)
 	return SetupWithRepos(cfg,
 		repository.NewUserRepo(db),
-		repository.NewRideRepo(db),
+		repository.NewRideRepo(db, repository.WithPendingStaleAfter(cfg.RideLifecycle.PendingStaleAfter)),
 		repository.NewGeoRepo(db),
 		navRepo,
 		repository.NewPlacesRepo(db),

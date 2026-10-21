@@ -3,6 +3,7 @@ package config
 import (
 	"math"
 	"testing"
+	"time"
 )
 
 // Plan 06 knobs: the per-region graph budget and the per-city datasource pools.
@@ -452,6 +453,107 @@ func TestRideMaxStopsConfigFromEnv(t *testing.T) {
 	}
 	if DefaultRideMaxStops != 8 {
 		t.Errorf("DefaultRideMaxStops = %d, want the documented 8", DefaultRideMaxStops)
+	}
+}
+
+// Pending-ride lifecycle knobs (api_plans/[rides]_orphaned_pending_expiry.md
+// D2). The regression pin: getDuration returns a parsed 0/negative duration
+// unchanged, so both fields MUST route through positiveDuration. A `0s` must
+// never become "everything is stale" (hide every fresh pending row on read,
+// sweep every pending row).
+func TestRideLifecycleConfigFromEnv(t *testing.T) {
+	unset := map[string]string{
+		"RIDE_PENDING_STALE_AFTER":  "",
+		"RIDE_STALE_SWEEP_INTERVAL": "",
+		"RIDE_BOOT_RECONCILE":       "",
+	}
+	// Explicitly clear the ambient environment so "unset" cases are truly unset.
+	for k := range unset {
+		t.Setenv(k, "")
+	}
+
+	t.Run("defaults", func(t *testing.T) {
+		c := Load().RideLifecycle
+		if c.PendingStaleAfter != DefaultRidePendingStaleAfter {
+			t.Errorf("PendingStaleAfter = %s, want %s", c.PendingStaleAfter, DefaultRidePendingStaleAfter)
+		}
+		if c.SweepInterval != DefaultRideSweepInterval {
+			t.Errorf("SweepInterval = %s, want %s", c.SweepInterval, DefaultRideSweepInterval)
+		}
+		if !c.BootReconcile {
+			t.Error("BootReconcile = false, want the shipped default on")
+		}
+	})
+
+	durationCases := []struct {
+		name string
+		env  string
+		want time.Duration
+	}{
+		{name: "unset", env: "", want: DefaultRidePendingStaleAfter},
+		{name: "garbage", env: "soon", want: DefaultRidePendingStaleAfter},
+		{name: "zero_fails_closed", env: "0s", want: DefaultRidePendingStaleAfter},
+		{name: "negative_fails_closed", env: "-5m", want: DefaultRidePendingStaleAfter},
+		{name: "valid_override", env: "3m", want: 3 * time.Minute},
+	}
+	for _, tc := range durationCases {
+		t.Run("stale_after_"+tc.name, func(t *testing.T) {
+			t.Setenv("RIDE_PENDING_STALE_AFTER", tc.env)
+			if got := Load().RideLifecycle.PendingStaleAfter; got != tc.want {
+				t.Errorf("PendingStaleAfter(%q) = %s, want %s", tc.env, got, tc.want)
+			}
+		})
+	}
+
+	intervalCases := []struct {
+		name string
+		env  string
+		want time.Duration
+	}{
+		{name: "unset", env: "", want: DefaultRideSweepInterval},
+		{name: "garbage", env: "often", want: DefaultRideSweepInterval},
+		{name: "zero_fails_closed", env: "0s", want: DefaultRideSweepInterval},
+		{name: "negative_fails_closed", env: "-1m", want: DefaultRideSweepInterval},
+		{name: "valid_override", env: "30s", want: 30 * time.Second},
+	}
+	for _, tc := range intervalCases {
+		t.Run("sweep_interval_"+tc.name, func(t *testing.T) {
+			t.Setenv("RIDE_STALE_SWEEP_INTERVAL", tc.env)
+			if got := Load().RideLifecycle.SweepInterval; got != tc.want {
+				t.Errorf("SweepInterval(%q) = %s, want %s", tc.env, got, tc.want)
+			}
+		})
+	}
+
+	// Unset/empty -> on; off/false/0 -> off; garbage -> off (fail closed).
+	bootCases := []struct {
+		name string
+		env  string
+		want bool
+	}{
+		{name: "empty_is_on", env: "", want: true},
+		{name: "on", env: "on", want: true},
+		{name: "true", env: "true", want: true},
+		{name: "one", env: "1", want: true},
+		{name: "off", env: "off", want: false},
+		{name: "false", env: "false", want: false},
+		{name: "zero", env: "0", want: false},
+		{name: "garbage_fails_closed", env: "yes", want: false},
+	}
+	for _, tc := range bootCases {
+		t.Run("boot_reconcile_"+tc.name, func(t *testing.T) {
+			t.Setenv("RIDE_BOOT_RECONCILE", tc.env)
+			if got := Load().RideLifecycle.BootReconcile; got != tc.want {
+				t.Errorf("BootReconcile(%q) = %v, want %v", tc.env, got, tc.want)
+			}
+		})
+	}
+
+	if DefaultRidePendingStaleAfter != 10*time.Minute {
+		t.Errorf("DefaultRidePendingStaleAfter = %s, want the documented 10m", DefaultRidePendingStaleAfter)
+	}
+	if DefaultRideSweepInterval != time.Minute {
+		t.Errorf("DefaultRideSweepInterval = %s, want the documented 1m", DefaultRideSweepInterval)
 	}
 }
 

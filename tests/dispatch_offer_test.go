@@ -117,7 +117,7 @@ func driverIDOf(t *testing.T, srv *testutil.TestServer, token string) string {
 // rider nobody is available.
 //
 // It has to be the WebSocket: no_driver_available is deliberately NOT an
-// "active" status in FindCurrentRideByRider (internal/repository/ride_repo.go:61),
+// "active" status in FindCurrentRideByRider (internal/repository/ride_repo.go:303),
 // so GET /rides/current stops reporting the ride the moment dispatch gives up.
 // The push is the only way the rider learns.
 func assertRiderToldNoDriver(t *testing.T, riderConn *websocket.Conn, within time.Duration) {

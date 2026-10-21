@@ -10,6 +10,7 @@ import (
 	"github.com/jmoiron/sqlx"
 	"github.com/lib/pq"
 
+	"ride-hailing-api/internal/config"
 	"ride-hailing-api/internal/model"
 )
 
@@ -52,12 +53,55 @@ type RideRepository interface {
 
 var _ RideRepository = (*RideRepo)(nil)
 
-type RideRepo struct {
-	db *sqlx.DB
+// PendingRideRepository is the NARROW surface the pending-ride sweeper needs
+// (api_plans/[rides]_orphaned_pending_expiry.md). It exists so the sweeper does
+// not force the two list methods onto every RideRepository fake; *RideRepo
+// satisfies both interfaces. New read/write capabilities go here only when the
+// sweeper actually needs them.
+type PendingRideRepository interface {
+	// FindPendingRideIDs lists EVERY pending ride (boot reconciliation).
+	FindPendingRideIDs() ([]string, error)
+	// FindStalePendingRideIDs lists pending rides older than the repo's
+	// configured PendingStaleAfter, using the database clock.
+	FindStalePendingRideIDs() ([]string, error)
+	// UpdateRideStatusFrom is the landed atomic CAS; the sweep always expects
+	// exactly []string{"pending"}.
+	UpdateRideStatusFrom(rideID string, expectedFrom []string, status string, timestamp *time.Time) (updated bool, err error)
+	// CreateEvent records the sweep's audit row (actor "system").
+	CreateEvent(event *model.RideEvent) error
 }
 
-func NewRideRepo(db *sqlx.DB) *RideRepo {
-	return &RideRepo{db: db}
+var _ PendingRideRepository = (*RideRepo)(nil)
+
+type RideRepo struct {
+	db *sqlx.DB
+	// pendingStaleAfter is the pending-only age bound shared by the read guard
+	// in FindCurrentRideByRider and FindStalePendingRideIDs. It is always > 0
+	// (WithPendingStaleAfter falls back to the config default).
+	pendingStaleAfter time.Duration
+}
+
+// RideRepoOption configures a RideRepo without widening the constructor.
+type RideRepoOption func(*RideRepo)
+
+// WithPendingStaleAfter overrides the pending-ride age bound. A non-positive
+// value falls back to config.DefaultRidePendingStaleAfter, mirroring
+// config.positiveDuration: a zero cutoff would hide every fresh pending row and
+// sweep every pending row.
+func WithPendingStaleAfter(d time.Duration) RideRepoOption {
+	return func(r *RideRepo) {
+		if d > 0 {
+			r.pendingStaleAfter = d
+		}
+	}
+}
+
+func NewRideRepo(db *sqlx.DB, opts ...RideRepoOption) *RideRepo {
+	r := &RideRepo{db: db, pendingStaleAfter: config.DefaultRidePendingStaleAfter}
+	for _, opt := range opts {
+		opt(r)
+	}
+	return r
 }
 
 // CreateRide inserts the ride and its itinerary (ride.Stops, migration 016) in
@@ -245,16 +289,56 @@ func (r *RideRepo) FindByID(id string) (*model.Ride, error) {
 	return ride, nil
 }
 
+// FindCurrentRideByRider returns the rider's newest active ride. A `pending`
+// row is only active while it is younger than pendingStaleAfter
+// (api_plans/[rides]_orphaned_pending_expiry.md D4): an orphaned pending ride
+// must be indistinguishable from "no ride" on the wire, so it falls through to
+// sql.ErrNoRows (→ ErrNotFound → 200 {ride:null}). accepted/driver_arrived/
+// in_progress are never age-filtered — a long trip is legitimate.
+//
+// The cutoff uses the DATABASE clock (NOW()) so created_at and the cutoff share
+// one clock, and $2 is bound as a float64 then cast ::double precision: binding
+// a time.Duration would send its raw nanoseconds and Postgres would read them
+// as billions of seconds (see geo_repo.go:41-54).
 func (r *RideRepo) FindCurrentRideByRider(riderID string) (*model.Ride, error) {
 	ride := &model.Ride{}
 	err := r.db.Get(ride, `
 		SELECT * FROM rides
-		WHERE rider_id = $1 AND status IN ('pending', 'accepted', 'driver_arrived', 'in_progress')
-		ORDER BY created_at DESC LIMIT 1`, riderID)
+		WHERE rider_id = $1
+		  AND status IN ('pending', 'accepted', 'driver_arrived', 'in_progress')
+		  AND (status <> 'pending'
+		       OR created_at > NOW() - make_interval(secs => $2::double precision))
+		ORDER BY created_at DESC LIMIT 1`, riderID, r.pendingStaleAfter.Seconds())
 	if err != nil {
 		return nil, wrapDB("load active ride", err)
 	}
 	return ride, nil
+}
+
+// FindPendingRideIDs lists every pending ride id (boot reconciliation, D5). It
+// is deliberately unbounded by age: under the documented single-instance
+// invariant no other process owns a dispatch goroutine for these rows.
+func (r *RideRepo) FindPendingRideIDs() ([]string, error) {
+	var ids []string
+	if err := r.db.Select(&ids, `SELECT id FROM rides WHERE status = 'pending'`); err != nil {
+		return nil, wrapDB("list pending rides", err)
+	}
+	return ids, nil
+}
+
+// FindStalePendingRideIDs lists pending rides older than the repo's configured
+// PendingStaleAfter, using the same DATABASE clock (NOW()) as the read guard so
+// the sweep and GET /rides/current agree on what is stale.
+func (r *RideRepo) FindStalePendingRideIDs() ([]string, error) {
+	var ids []string
+	if err := r.db.Select(&ids, `
+		SELECT id FROM rides
+		WHERE status = 'pending'
+		  AND created_at < NOW() - make_interval(secs => $1::double precision)`,
+		r.pendingStaleAfter.Seconds()); err != nil {
+		return nil, wrapDB("list stale pending rides", err)
+	}
+	return ids, nil
 }
 
 func (r *RideRepo) FindCurrentRideByDriver(driverID string) (*model.Ride, error) {

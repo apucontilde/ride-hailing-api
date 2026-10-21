@@ -214,11 +214,11 @@
   rename/migration/config/app change.
 - A failed terminal `no_driver_available` persist **skips the rider push on BOTH dispatch
   paths**, because a push must never announce a status the database does not hold. Both paths
-  now share one helper: the zero-candidate path (`internal/service/dispatch.go:112`) and the
-  candidates-exhausted, still-pending path (`:176-180`) both call `finishWithoutDriver`
-  (`:127-138`), whose early `return` at `:135` precedes `pushNoDriverAvailable` (`:137`); the
+  now share one helper: the zero-candidate path (`internal/service/dispatch.go:207`) and the
+  candidates-exhausted, still-pending path (`:376`) both call `finishWithoutDriver`
+  (`:224-244`), whose early `return` at `:234` precedes `pushNoDriverAvailable` (`:243`); the
   ride stays `pending` so the ride service can retry or expire it. The trace is still published
-  — from a `defer` at `:128-130`, after the write settles — so support sees the attempt.
+  — from a `defer` at `:225-227`, after the write settles — so support sees the attempt.
   Pinned by `TestDispatchNoDriverAvailableWhenPersistenceFails`
   (`internal/service/dispatch_test.go:620`) and `TestDispatchFailedTerminalWriteDoesNotPushTheRider`
   (`:653`). See `rider_app_plans/STATUS.md:22` for the client-side dependency. What the trace
@@ -467,6 +467,7 @@
   141,178,185,193,216,231,258,290,347,372,407`); frame names/shapes pinned verbatim
   (`ride.accept_failed` codes, `ride.offer_closed` reasons). **Reviewer verdicts:** §4.1.1
   CONFIRMED; the decline/WS extension PARTIAL — only latent residuals, recorded as bugs #27–#30.
+- **Orphaned `pending` ride expiry** (bug #36, adversarially **CONFIRMED-LANDED**; code in the working tree, no commit yet) — `GET /rides/current` is age-bounded in SQL: only a `pending` younger than `RIDE_PENDING_STALE_AFTER` (10 min default) is active, while `accepted`/`driver_arrived`/`in_progress` are never age-filtered (`internal/repository/ride_repo.go:303-312`; option `:87-94`), so a stale row falls through to the existing `200 {"ride":null,"stops":[]}` (`internal/handler/ride.go:240-283`, success `:282`); boot reconciliation closes every `pending` synchronously before serving and a ticker closes stale rows through the single-row CAS `pending→no_driver_available`, writing best-effort `actor=system` events with `reason=boot_reconcile|stale_pending_sweep` (`internal/service/ride_stale.go:49,76,107,122-163`); config fails `0`/negative durations closed to defaults and `RIDE_BOOT_RECONCILE=off/false/0/garbage` disables boot reconcile (`internal/config/config.go:116-138,185-189,415-418,460-466,508-516`); wired in `cmd/server/main.go:99-105` with the shared threshold in `internal/router/router.go:84`; index-only migration `025_pending_ride_sweep_index.up.sql`; tests `internal/service/ride_stale_test.go:150-441` (incl. ticker 200/200 stress), `internal/repository/ride_stale_integration_test.go:38,77,107,149`, `tests/ride_current_stale_integration_test.go:144,170`, `tests/ride_current_stale_mock_test.go:23`, `internal/config/config_test.go:464`. **Live proof 2026-10-20:** the three stuck dev-DB rows are now `no_driver_available` (stale `pending` count 0), each with a `ride_events` `pending→no_driver_available` row (`actor=system`, `reason=boot_reconcile`); index `idx_rides_pending_created` present on the dev DB.
 
 ### [push]
 - Push delivery pipeline + bug #20 — migration `018_push_pipeline.up.sql:28,31`;
@@ -593,6 +594,7 @@
 | 33 | **`MockGeoRepo.AgeS` is app-clock derived** — it uses `time.Since(updatedAt)` while production computes `AgeS` SQL-side, so only the `//go:build integration` test proves the DB provenance; unit freshness gates exercise the mock's clock | `tests/testutil/mock_repos.go:1002`; `internal/repository/geo_liveness_integration_test.go:290` | low | [arrival] |
 | 34 | **Stale-accept skip logs on every stale accept** — request-path noise at `log.Printf` rather than debug/rate-limited | `internal/service/dispatch.go:788` | low | [arrival] |
 | 35 | **Legal `ErrInvalidTransition` interleaving not separately raced** — when the concurrent PUT already committed `driver_arrived`, the accept-side evaluator's illegal-edge error is swallowed but no test races that specific interleaving | `internal/service/arrival.go:121-131`; `internal/service/ride.go:595` | low | [arrival] |
+| 36 | ~~Orphaned `pending` rides are returned by `GET /rides/current` forever, so a rider whose previous dispatch died on a process restart (or whose terminal write failed) is restored to `/driver-matching` on login even though no live search exists. The app's `pending → matching` mapping is correct; the API's read was not age-bounded~~ — **FIXED 2026-10-20, adversarially CONFIRMED-LANDED.** The read guard, synchronous boot reconciliation and periodic sweep now bound every `pending` row; `GET /rides/current` answers `200 {"ride":null,"stops":[]}` for a stale row instead of reviving the matching screen. A failed terminal write still leaves the ride `pending` (`internal/service/dispatch.go:224-244`), but the sweep now closes it | **Post-fix:** age-bounded read `internal/repository/ride_repo.go:303-312` (option `:87-94`); handler contract `internal/handler/ride.go:240-283`; sweeper `internal/service/ride_stale.go:49,76,107,122-163`; config `internal/config/config.go:116-138,415-418,460-466,508-516`; wiring `cmd/server/main.go:99-105`, `internal/router/router.go:84`; migration `025_pending_ride_sweep_index.up.sql`; tests `internal/service/ride_stale_test.go`, `internal/repository/ride_stale_integration_test.go`, `tests/ride_current_stale_integration_test.go`, `tests/ride_current_stale_mock_test.go:23`. **Live proof 2026-10-20:** the three stuck rows are `no_driver_available`, each with a `ride_events` row `actor=system`, `reason=boot_reconcile`; stale `pending` count 0. **Residual risks:** (a) multi-replica boot clobber — `RIDE_BOOT_RECONCILE=off` is the escape hatch (age guard + tick still fix the bug with a delay); (b) no signal-driven graceful shutdown (pre-existing) — `defer sweeper.Stop()` runs only on normal return; (c) the mock threshold is pinned to the default (`tests/testutil/mock_repos.go:331-334,365,528-538`), so only the integration test exercises a configured TTL; (d) the migration `025` partial index was verified manually on the dev DB (`idx_rides_pending_created`), with no automated index test | closed | [rides] |
 
 ## Test-audit follow-ups
 
@@ -837,11 +839,15 @@ asks, preserving the single-summed-price semantics and the estimate `legs` contr
 ## Verification
 
 ```bash
-make test                       # unit tests, no DB (must stay green)
-make lint                       # golangci-lint v2, schema v2 config; 0 issues
-make test-integration           # DB-backed
-gofmt -w <files> && go vet ./...   # golangci-lint is NOT on PATH by default: PATH="$PATH:$(go env GOPATH)/bin"
+go test -count=1 ./...             # pass — all packages (DB-free)
+make lint                          # 0 issues (golangci-lint v2, schema v2 config)
+make test-integration              # pass — all packages against ride-hailing-db
+gofmt -w <touched go files> && go vet ./...   # clean
 ```
+
+**Final `[rides]` orphaned-pending gates (2026-10-20):** `go test -count=1 ./...` pass;
+`make lint` 0 issues; `make test-integration` pass (repository suite 207.8 s, all packages `ok`);
+ticker test stress **200/200**; `gofmt -l` empty and `go vet ./...` clean.
 
 ## Wave-1 condensed 2026-09-30
 - [routing]_estimate_fallback_default (bug #2), [routing]_native_engine_default (bug #1), [errors]_route_outage_contract_test, [dispatch]_reliability_and_no_driver_false_negative, [errors]_idempotency_middleware_tests + [errors]_idempotent_replay_body: landed, files deleted, evidence in STATUS.md Landed sections. ~~Routing regression N1 (native snap gate returns 500 instead of 200 estimate for uncovered pins ~265m band) remains; fix owned by routing planner.~~ **Correction 2026-10-15: N1 is landed.** `ErrPinUncovered` + the `coverageAuthority` split + the service's `200 is_estimate` mapping shipped in `00b2a5e` (2026-09-30), pinned by `TestRadiusBoundaryBandBetweenTheTwoCoveragePredicates` (`internal/repository/pin_uncovered_test.go:116-178`) and `tests/route_uncovered_estimate_test.go:26`; see Landed → [routing] coverage-gate correctness (the §A1 half). The stale "remains" here was never reconciled until now.
