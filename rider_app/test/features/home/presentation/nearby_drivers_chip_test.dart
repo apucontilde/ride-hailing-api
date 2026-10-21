@@ -3,7 +3,7 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:latlong2/latlong.dart';
 import 'package:http_mock_adapter/http_mock_adapter.dart';
-import 'package:rider_app/core/api/api_client.dart';
+import 'package:ride_hailing_shared/ride_hailing_shared.dart';
 import 'package:rider_app/core/api/endpoints.dart';
 import 'package:rider_app/core/auth/auth_provider.dart';
 import 'package:rider_app/features/home/presentation/nearby_drivers_chip.dart';
@@ -51,6 +51,34 @@ void main() {
     await pumpChip(tester);
 
     expect(find.text('2 drivers nearby'), findsOneWidget);
+    expect(find.byType(AppStatusChip), findsOneWidget);
+    // The deliberate vertical token pair lives on the chip, with the
+    // left-alignment inside it (no horizontal margin — the sheet supplies it).
+    expect(
+      find.ancestor(
+        of: find.byType(AppStatusChip),
+        matching: find.byWidgetPredicate(
+          (widget) =>
+              widget is Padding &&
+              widget.padding ==
+                  const EdgeInsets.only(
+                    top: AppSpacing.xs,
+                    bottom: AppSpacing.sm,
+                  ),
+        ),
+      ),
+      findsOneWidget,
+    );
+    expect(
+      find.ancestor(
+        of: find.byType(AppStatusChip),
+        matching: find.byWidgetPredicate(
+          (widget) =>
+              widget is Align && widget.alignment == Alignment.centerLeft,
+        ),
+      ),
+      findsOneWidget,
+    );
   });
 
   testWidgets('uses the singular label for one driver', (tester) async {
@@ -89,5 +117,21 @@ void main() {
     await pumpChip(tester);
 
     expect(find.byType(Chip), findsNothing);
+    // A true zero-size result: no padding and no chip reserves a gap when the
+    // nearby list is empty.
+    expect(find.byType(AppStatusChip), findsNothing);
+    expect(tester.getSize(find.byType(NearbyDriversChip)), Size.zero);
+    expect(
+      find.byWidgetPredicate(
+        (widget) =>
+            widget is Padding &&
+            widget.padding ==
+                const EdgeInsets.only(
+                  top: AppSpacing.xs,
+                  bottom: AppSpacing.sm,
+                ),
+      ),
+      findsNothing,
+    );
   });
 }

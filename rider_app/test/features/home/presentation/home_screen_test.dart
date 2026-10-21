@@ -127,10 +127,15 @@ void main() {
   late ProviderContainer container;
   late FakeLocationService fakeLocation;
 
+  /// The mutable `GET /places/nearby-drivers` answer, so a test can populate the
+  /// nearby chip without registering a second route matcher.
+  late Map<String, dynamic> nearbyPayload;
+
   setUp(() {
     apiClient = ApiClient(baseUrl: 'http://localhost:8080');
     dioAdapter = DioAdapter(dio: apiClient.dio);
     fakeLocation = FakeLocationService();
+    nearbyPayload = {'drivers': <dynamic>[]};
     container = ProviderContainer(
       overrides: [
         apiClientProvider.overrideWithValue(apiClient),
@@ -144,7 +149,7 @@ void main() {
     // request in a test is the one under assertion.
     dioAdapter.onGet(
       ApiEndpoints.nearbyDrivers,
-      (server) => server.reply(200, {'drivers': <dynamic>[]}),
+      (server) => server.replyCallback(200, (_) => nearbyPayload),
     );
   });
 
@@ -1234,6 +1239,160 @@ void main() {
     kind: kind,
   );
 
+  testWidgets('a short web-sized surface gets a content-driven max above 0.9', (
+    WidgetTester tester,
+  ) async {
+    await pumpHome(
+      tester,
+      pickup: pickupPlace,
+      destination: destinationPlace,
+      surface: const Size(800, 300),
+    );
+
+    await tester.drag(
+      find.byType(SingleChildScrollView),
+      const Offset(0, -400),
+    );
+    await tester.pumpAndSettle();
+
+    // RED against the old hard cap at 0.9: the form cannot fit in it.
+    expect(sheetWidget(tester).maxChildSize, greaterThan(0.9));
+  });
+
+  testWidgets(
+    'Request Trip is pinned inside the viewport at max on an overflowing form',
+    (WidgetTester tester) async {
+      dioAdapter.onGet(
+        ApiEndpoints.navigationRoute,
+        (server) => server.reply(200, routeBody(estimate: false)),
+      );
+      const surface = Size(1280, 300);
+      await pumpHome(
+        tester,
+        pickup: pickupPlace,
+        destination: destinationPlace,
+        surface: surface,
+      );
+
+      await tester.drag(
+        find.byType(SingleChildScrollView),
+        const Offset(0, -500),
+      );
+      await tester.pumpAndSettle();
+
+      // No inner scroll after reaching max: the pinned footer is inside.
+      final button = tester.getRect(
+        find.widgetWithText(ElevatedButton, 'Request Trip'),
+      );
+      expect(button.top, greaterThanOrEqualTo(0));
+      expect(button.left, greaterThanOrEqualTo(0));
+      expect(button.right, lessThanOrEqualTo(surface.width));
+      expect(button.bottom, lessThanOrEqualTo(surface.height));
+    },
+  );
+
+  testWidgets('the scroll body still reaches the route info and fields', (
+    WidgetTester tester,
+  ) async {
+    dioAdapter.onGet(
+      ApiEndpoints.navigationRoute,
+      (server) => server.reply(200, routeBody(estimate: false)),
+    );
+    const surface = Size(1280, 300);
+    await pumpHome(
+      tester,
+      pickup: pickupPlace,
+      destination: destinationPlace,
+      surface: surface,
+    );
+
+    await tester.drag(
+      find.byType(SingleChildScrollView),
+      const Offset(0, -500),
+    );
+    await tester.pumpAndSettle();
+
+    final footer = tester.getRect(
+      find.widgetWithText(ElevatedButton, 'Request Trip'),
+    );
+
+    await tester.ensureVisible(find.text('Pickup Point'));
+    await tester.pumpAndSettle();
+    expect(find.text('Pickup Point'), findsOneWidget);
+
+    await tester.ensureVisible(find.textContaining('km  •  ~'));
+    await tester.pumpAndSettle();
+    expect(find.textContaining('km  •  ~'), findsOneWidget);
+
+    // The pinned action never scrolls away with the body.
+    expect(
+      tester.getRect(find.widgetWithText(ElevatedButton, 'Request Trip')),
+      footer,
+    );
+  });
+
+  testWidgets('the sheet padding clears the bottom safe area exactly once', (
+    WidgetTester tester,
+  ) async {
+    tester.view.padding = const FakeViewPadding(bottom: 34);
+    addTearDown(tester.view.resetPadding);
+
+    await pumpHome(
+      tester,
+      pickup: pickupPlace,
+      destination: destinationPlace,
+      surface: const Size(800, 700),
+    );
+
+    final scroll = tester.widget<SingleChildScrollView>(
+      find.byType(SingleChildScrollView),
+    );
+    expect((scroll.padding as EdgeInsets).bottom, AppSpacing.lg);
+
+    final footerSafeArea = find.byWidgetPredicate(
+      (widget) => widget is SafeArea && widget.top == false,
+    );
+    expect(footerSafeArea, findsOneWidget);
+    final safeRect = tester.getRect(footerSafeArea);
+    final gutter = find.descendant(
+      of: footerSafeArea,
+      matching: find.byWidgetPredicate(
+        (widget) =>
+            widget is Padding &&
+            widget.padding ==
+                const EdgeInsets.fromLTRB(
+                  AppSpacing.lg,
+                  0,
+                  AppSpacing.lg,
+                  AppSpacing.lg,
+                ),
+      ),
+    );
+    expect(gutter, findsOneWidget);
+    // The SafeArea owns the inset; the scroll body must not add it.
+    expect(safeRect.bottom - tester.getRect(gutter).bottom, 34);
+  });
+
+  testWidgets('the nearby chip keeps its tokenized vertical margin', (
+    WidgetTester tester,
+  ) async {
+    nearbyPayload = {
+      'drivers': [
+        {'driver_id': 'd1', 'lat': 9.93, 'lng': -84.08},
+        {'driver_id': 'd2', 'lat': 9.94, 'lng': -84.09},
+      ],
+    };
+    await pumpHome(tester, pickup: pickupPlace, surface: const Size(800, 700));
+    await tester.pump(const Duration(milliseconds: 50));
+
+    expect(find.text('2 drivers nearby'), findsOneWidget);
+    final handleBottom = tester
+        .getRect(find.byKey(const ValueKey<String>('home-sheet-handle')))
+        .bottom;
+    final chipTop = tester.getRect(find.byType(AppStatusChip)).top;
+    expect(chipTop - handleBottom, greaterThanOrEqualTo(AppSpacing.xs));
+  });
+
   testWidgets(
     'scrolling the panel up reaches the content-driven max and shrinks the map',
     (WidgetTester tester) async {
@@ -1378,6 +1537,156 @@ void main() {
     expect(handle().properties.value, 'Expanded');
     expect(sheetSize(tester), closeTo(sheet.initialChildSize, 0.01));
   });
+
+  testWidgets(
+    'at min the footer is hidden and the handle stays reachable',
+    (WidgetTester tester) async {
+      const surface = Size(800, 360);
+      await pumpHome(
+        tester,
+        pickup: pickupPlace,
+        destination: destinationPlace,
+        surface: surface,
+      );
+
+      Semantics collapseHandle() => tester
+          .widgetList<Semantics>(find.byType(Semantics))
+          .firstWhere(
+            (widget) =>
+                widget.properties.label == 'Drag to resize booking panel',
+          );
+
+      // At the opening snap the pinned action is visible and inside the
+      // viewport.
+      expect(find.text('Request Trip'), findsOneWidget);
+      final openingButton = tester.getRect(
+        find.widgetWithText(ElevatedButton, 'Request Trip'),
+      );
+      expect(openingButton.top, greaterThanOrEqualTo(0));
+      expect(openingButton.bottom, lessThanOrEqualTo(surface.height));
+
+      collapseHandle().properties.onTap!();
+      await tester.pumpAndSettle();
+
+      expect(sheetSize(tester), closeTo(sheetWidget(tester).minChildSize, 0.01));
+      // The footer must not render (and must not overflow) at the handle-only
+      // min.
+      expect(find.widgetWithText(ElevatedButton, 'Request Trip'), findsNothing);
+
+      const viewport = Rect.fromLTWH(0, 0, 800, 360);
+      final handleFinder = find.byKey(
+        const ValueKey<String>('home-sheet-handle'),
+      );
+      final handle = tester.getRect(handleFinder);
+      expect(handle.overlaps(viewport), isTrue);
+      // The visible bar (not just the clipped 48 dp target) is on screen and
+      // its center is hittable.
+      final bar = tester.getRect(
+        find.descendant(of: handleFinder, matching: find.byType(Container)),
+      );
+      // The painted 4 dp capsule (the Container box also includes its bottom
+      // margin) is fully on screen, and its center sits inside the 48 dp target.
+      final paintedBar = Rect.fromLTWH(bar.left, bar.top, bar.width, 4);
+      expect(viewport.contains(paintedBar.center), isTrue);
+      expect(handle.contains(paintedBar.center), isTrue);
+
+      // Back at the opening snap the footer returns.
+      collapseHandle().properties.onTap!();
+      await tester.pumpAndSettle();
+      expect(find.text('Request Trip'), findsOneWidget);
+      final reopened = tester.getRect(
+        find.widgetWithText(ElevatedButton, 'Request Trip'),
+      );
+      expect(reopened.top, greaterThanOrEqualTo(0));
+      expect(reopened.bottom, lessThanOrEqualTo(surface.height));
+    },
+  );
+
+  testWidgets(
+    'a short surface with a bottom inset opens on the action and hides it at min',
+    (WidgetTester tester) async {
+      tester.view.padding = const FakeViewPadding(bottom: 34);
+      addTearDown(tester.view.resetPadding);
+      const surface = Size(800, 360);
+      await pumpHome(
+        tester,
+        pickup: pickupPlace,
+        destination: destinationPlace,
+        surface: surface,
+      );
+
+      Semantics handle() => tester
+          .widgetList<Semantics>(find.byType(Semantics))
+          .firstWhere(
+            (widget) =>
+                widget.properties.label == 'Drag to resize booking panel',
+          );
+
+      const viewport = Rect.fromLTWH(0, 0, 800, 360);
+      final button = find.widgetWithText(ElevatedButton, 'Request Trip');
+      expect(button, findsOneWidget);
+      final buttonRect = tester.getRect(button);
+      expect(viewport.contains(buttonRect.topLeft), isTrue);
+      expect(viewport.contains(buttonRect.bottomRight), isTrue);
+      expect(tester.takeException(), isNull);
+
+      // The opening must include the safe-area-aware footer fit, so the panel
+      // does not overflow on the first frame.
+      expect(sheetSize(tester), greaterThanOrEqualTo(98 / surface.height));
+
+      handle().properties.onTap!();
+      await tester.pumpAndSettle();
+      expect(find.widgetWithText(ElevatedButton, 'Request Trip'), findsNothing);
+      expect(tester.takeException(), isNull);
+    },
+  );
+
+  testWidgets(
+    'a real mouse drag up from the min grows the panel and shows the footer',
+    (WidgetTester tester) async {
+      debugDefaultTargetPlatformOverride = TargetPlatform.linux;
+      addTearDown(() => debugDefaultTargetPlatformOverride = null);
+      tester.view.padding = const FakeViewPadding(bottom: 34);
+      addTearDown(tester.view.resetPadding);
+      const surface = Size(800, 360);
+      await pumpHome(
+        tester,
+        pickup: pickupPlace,
+        destination: destinationPlace,
+        surface: surface,
+      );
+
+      Semantics handle() => tester
+          .widgetList<Semantics>(find.byType(Semantics))
+          .firstWhere(
+            (widget) =>
+                widget.properties.label == 'Drag to resize booking panel',
+          );
+
+      // Reach the handle-only min through the production accessible action.
+      handle().properties.onTap!();
+      await tester.pumpAndSettle();
+      final min = sheetWidget(tester).minChildSize;
+      expect(sheetSize(tester), closeTo(min, 0.01));
+      expect(find.widgetWithText(ElevatedButton, 'Request Trip'), findsNothing);
+
+      // The actual desktop/web path: a mouse pointer on the grab handle.
+      await tester.drag(
+        find.byKey(const ValueKey<String>('home-sheet-handle')),
+        const Offset(0, -120),
+        kind: PointerDeviceKind.mouse,
+      );
+      await tester.pumpAndSettle();
+
+      expect(sheetSize(tester), greaterThan(min + 0.01));
+      expect(
+        find.widgetWithText(ElevatedButton, 'Request Trip'),
+        findsOneWidget,
+      );
+      expect(tester.takeException(), isNull);
+      debugDefaultTargetPlatformOverride = null;
+    },
+  );
 
   testWidgets('a mouse drag up on the handle reaches max and shrinks the map', (
     WidgetTester tester,
@@ -1783,46 +2092,44 @@ void main() {
     },
   );
 
-  testWidgets(
-    'a locate permission denial tells the truth and moves nothing', (
-      WidgetTester tester,
-    ) async {
-      fakeLocation
-        ..availability = LocationAvailability.denied
-        ..position = testPosition(9.92, -84.08);
-      dioAdapter.onGet(
-        ApiEndpoints.navigationRoute,
-        (server) => server.replyCallback(200, legRouteBody),
-      );
+  testWidgets('a locate permission denial tells the truth and moves nothing', (
+    WidgetTester tester,
+  ) async {
+    fakeLocation
+      ..availability = LocationAvailability.denied
+      ..position = testPosition(9.92, -84.08);
+    dioAdapter.onGet(
+      ApiEndpoints.navigationRoute,
+      (server) => server.replyCallback(200, legRouteBody),
+    );
 
-      await pumpHome(
-        tester,
-        pickup: pickupPlace,
-        destination: destinationPlace,
-        withScaffold: true,
-      );
-      await tester.pump();
-      final before = mapCamera(tester).center;
-      final startupFetches = fakeLocation.getCurrentPositionCalls;
+    await pumpHome(
+      tester,
+      pickup: pickupPlace,
+      destination: destinationPlace,
+      withScaffold: true,
+    );
+    await tester.pump();
+    final before = mapCamera(tester).center;
+    final startupFetches = fakeLocation.getCurrentPositionCalls;
 
-      await tester.tap(locateButton());
-      await tester.pump();
-      await tester.pump();
+    await tester.tap(locateButton());
+    await tester.pump();
+    await tester.pump();
 
-      expect(
-        find.text('Location permission is required to request rides'),
-        findsOneWidget,
-      );
-      expect(
-        fakeLocation.getCurrentPositionCalls,
-        startupFetches,
-        reason: 'a non-granted press never fetches a fix',
-      );
-      expect(find.byTooltip('Current location'), findsOneWidget);
-      expect(mapCamera(tester).center.latitude, closeTo(before.latitude, 1e-9));
-      expect(mapCamera(tester).center.longitude, closeTo(before.longitude, 1e-9));
-    },
-  );
+    expect(
+      find.text('Location permission is required to request rides'),
+      findsOneWidget,
+    );
+    expect(
+      fakeLocation.getCurrentPositionCalls,
+      startupFetches,
+      reason: 'a non-granted press never fetches a fix',
+    );
+    expect(find.byTooltip('Current location'), findsOneWidget);
+    expect(mapCamera(tester).center.latitude, closeTo(before.latitude, 1e-9));
+    expect(mapCamera(tester).center.longitude, closeTo(before.longitude, 1e-9));
+  });
 
   testWidgets(
     'a stop added re-fits the material route and the next tap locates',

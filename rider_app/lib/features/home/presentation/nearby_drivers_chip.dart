@@ -14,9 +14,15 @@ class NearbyDriversChip extends ConsumerWidget {
     final drivers = ref.watch(nearbyDriversProvider(center));
     final count = drivers.valueOrNull?.length ?? 0;
     if (count == 0) return const SizedBox.shrink();
-    return AppStatusChip(
-      icon: Icons.local_taxi,
-      label: '$count ${count == 1 ? 'driver' : 'drivers'} nearby',
+    return Padding(
+      padding: const EdgeInsets.only(top: AppSpacing.xs, bottom: AppSpacing.sm),
+      child: Align(
+        alignment: Alignment.centerLeft,
+        child: AppStatusChip(
+          icon: Icons.local_taxi,
+          label: '$count ${count == 1 ? 'driver' : 'drivers'} nearby',
+        ),
+      ),
     );
   }
 }

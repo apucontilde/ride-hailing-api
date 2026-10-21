@@ -87,12 +87,31 @@ class _HomeScreenState extends ConsumerState<HomeScreen>
   /// panel fractions and the map's layout box are relative to it.
   double _availableHeight = 0;
 
+  /// The ceiling for the content-driven max snap point. The panel grows to
+  /// whatever the measured content needs, up to the full viewport.
+  static const double _kSheetMaxFraction = 1.0;
+
   /// The content-driven max snap point, measured from the booking form.
-  double _sheetMax = 0.9;
+  double _sheetMax = _kSheetMaxFraction;
 
   /// Identifies the booking-form content so [_scheduleSheetMaxMeasure] can read
   /// its intrinsic height.
   final GlobalKey _sheetContentKey = GlobalKey();
+
+  /// Identifies the pinned action footer so the measured fit includes it.
+  final GlobalKey _sheetFooterKey = GlobalKey();
+
+  /// The measured footer height, used to keep the handle-only minimum large
+  /// enough that the pinned action never overflows (it is not expected at the
+  /// min snap, but it must not break layout there either). Seeded with the
+  /// action's 48 dp button plus its 16 dp bottom gutter so even the first frame
+  /// on a very short surface is safe.
+  double _sheetFooterHeight = 64;
+
+  /// Whether the first safe-area-aware footer seed has been applied. The seed
+  /// includes the bottom inset so the very first frame on a short surface can
+  /// already fit the primary action.
+  bool _footerSeeded = false;
 
   @override
   void initState() {
@@ -134,6 +153,16 @@ class _HomeScreenState extends ConsumerState<HomeScreen>
     }
 
     _initLocation();
+  }
+
+  @override
+  void didChangeDependencies() {
+    super.didChangeDependencies();
+    if (!_footerSeeded) {
+      _footerSeeded = true;
+      // The button (48) + bottom gutter (16) + the footer's SafeArea inset.
+      _sheetFooterHeight = 64 + MediaQuery.paddingOf(context).bottom;
+    }
   }
 
   @override
@@ -405,10 +434,25 @@ class _HomeScreenState extends ConsumerState<HomeScreen>
     _fitItinerary();
   }
 
+  /// The opening snap: at least the footer fit, so the primary action is
+  /// visible from the first frame on short surfaces. Normal screens keep the
+  /// stored 0.25 opening because the footer fits inside it.
+  double _openingSize(double availableHeight) {
+    if (availableHeight <= 0) return _initialSize;
+    final minSize = _minSheetSize(availableHeight);
+    // A footer fit alone would be exactly the height of the footer, which the
+    // strict visibility gate below cannot distinguish from the handle-only min.
+    // One pixel of body keeps the two states distinct on short surfaces.
+    final footerFit = (_sheetFooterHeight + 1) / availableHeight;
+    final opening = _initialSize > footerFit ? _initialSize : footerFit;
+    return opening.clamp(minSize, _kSheetMaxFraction).toDouble();
+  }
+
   /// The panel's current size as a fraction, falling back to the opening size
   /// before the sheet has attached.
-  double get _panelSize =>
-      _sheetController.isAttached ? _sheetController.size : _initialSize;
+  double get _panelSize => _sheetController.isAttached
+      ? _sheetController.size
+      : _openingSize(_availableHeight);
 
   /// The panel's current height in logical pixels.
   double _panelPixels(double availableHeight) => availableHeight * _panelSize;
@@ -418,12 +462,20 @@ class _HomeScreenState extends ConsumerState<HomeScreen>
       (availableHeight * (1 - _panelSize)).clamp(0.0, availableHeight);
 
   /// The handle-only minimum: the 48 dp handle touch target plus the sheet's
-  /// top padding, clamped to a sane floor on very tall surfaces.
+  /// top padding, clamped to a sane floor on very tall surfaces. The pinned
+  /// footer is not part of the min: it is hidden at the min snap, so it cannot
+  /// overflow there.
   double _minSheetSize(double availableHeight) {
     if (availableHeight <= 0) return 0.06;
     const handlePx = 64.0;
-    return (handlePx / availableHeight).clamp(0.06, 0.10);
+    return (handlePx / availableHeight).clamp(0.06, 0.5);
   }
+
+  /// Whether the pinned action has room to render. At (or near) the handle-only
+  /// min it would overflow the sheet, so it is hidden; the opening and max
+  /// snaps show it.
+  bool _sheetFooterVisible(double availableHeight) =>
+      _panelSize * availableHeight > _sheetFooterHeight;
 
   /// Remembers the chosen panel size for the session so returning to Home
   /// restores it. Deferred to a frame callback: the controller can notify during
@@ -444,8 +496,8 @@ class _HomeScreenState extends ConsumerState<HomeScreen>
   void _togglePanelSize() {
     if (!_sheetController.isAttached) return;
     final minSize = _minSheetSize(_availableHeight);
-    final target =
-        _panelSize > (minSize + _initialSize) / 2 ? minSize : _initialSize;
+    final opening = _openingSize(_availableHeight);
+    final target = _panelSize > (minSize + opening) / 2 ? minSize : opening;
     _sheetController.animateTo(
       target,
       duration: AppMotion.medium,
@@ -466,7 +518,9 @@ class _HomeScreenState extends ConsumerState<HomeScreen>
       return;
     }
     final min = _minSheetSize(_availableHeight);
-    final max = _sheetMax.clamp(_initialSize, 0.9).toDouble();
+    final max = _sheetMax
+        .clamp(_openingSize(_availableHeight), _kSheetMaxFraction)
+        .toDouble();
     // Dragging up has a negative `dy`, so the panel grows.
     final next = (dragSize - details.delta.dy / _availableHeight)
         .clamp(min, max)
@@ -492,8 +546,10 @@ class _HomeScreenState extends ConsumerState<HomeScreen>
       return;
     }
     final min = _minSheetSize(_availableHeight);
-    final max = _sheetMax.clamp(_initialSize, 0.9).toDouble();
-    final initial = _initialSize.clamp(min, max).toDouble();
+    final max = _sheetMax
+        .clamp(_openingSize(_availableHeight), _kSheetMaxFraction)
+        .toDouble();
+    final initial = _openingSize(_availableHeight).clamp(min, max).toDouble();
     final size = _sheetController.size;
     final snaps = <double>[min, initial, max]..sort();
     double target;
@@ -514,17 +570,47 @@ class _HomeScreenState extends ConsumerState<HomeScreen>
     _sheetDragSize = null;
   }
 
-  /// Measures the booking form (inside a scroll view, so the child gets an
-  /// unbounded main axis) and sets the max snap point to fit it, capped at 0.9.
+  /// The scroll body's padding. The bottom safe area is owned by the pinned
+  /// footer's `SafeArea(top: false)`, so it is deliberately not added here (the
+  /// keyboard inset still is).
+  EdgeInsets _sheetScrollPadding(BuildContext context) => EdgeInsets.fromLTRB(
+    AppSpacing.lg,
+    AppSpacing.lg,
+    AppSpacing.lg,
+    AppSpacing.lg + MediaQuery.viewInsetsOf(context).bottom,
+  );
+
+  /// Measures the booking form and the pinned action footer (both inside a
+  /// scroll view / fixed footer, so they are read from their render boxes) and
+  /// sets the max snap point to fit them, capped at [_kSheetMaxFraction].
   void _scheduleSheetMaxMeasure() {
     WidgetsBinding.instance.addPostFrameCallback((_) {
       if (!mounted || _availableHeight <= 0) return;
       final contentContext = _sheetContentKey.currentContext;
-      final box = contentContext?.findRenderObject() as RenderBox?;
-      if (box == null || !box.hasSize) return;
-      final insets = MediaQuery.viewInsetsOf(contentContext!).bottom;
-      final contentHeight = box.size.height + AppSpacing.lg * 2 + insets;
-      final target = (contentHeight / _availableHeight).clamp(_initialSize, 0.9);
+      final contentBox = contentContext?.findRenderObject() as RenderBox?;
+      if (contentBox == null || !contentBox.hasSize || contentContext == null) {
+        return;
+      }
+      final footerBox =
+          _sheetFooterKey.currentContext?.findRenderObject() as RenderBox?;
+      final measuredFooter = footerBox != null && footerBox.hasSize
+          ? footerBox.size.height
+          : 0.0;
+      // The footer is hidden at the min snap, so keep the last real height for
+      // the content-fit measurement instead of shrinking the max to exclude it.
+      if (measuredFooter > 0 && (measuredFooter - _sheetFooterHeight).abs() > 0.5) {
+        setState(() => _sheetFooterHeight = measuredFooter);
+      }
+      final footerHeight = measuredFooter > 0
+          ? measuredFooter
+          : _sheetFooterHeight;
+      final totalHeight =
+          contentBox.size.height +
+          footerHeight +
+          _sheetScrollPadding(contentContext).vertical;
+      final target = (totalHeight / _availableHeight)
+          .clamp(_openingSize(_availableHeight), _kSheetMaxFraction)
+          .toDouble();
       if ((target - _sheetMax).abs() > 0.001) {
         setState(() => _sheetMax = target);
       }
@@ -534,8 +620,9 @@ class _HomeScreenState extends ConsumerState<HomeScreen>
   @override
   Widget build(BuildContext context) {
     final routePlan = _routePlan();
-    final routeAsync =
-        routePlan != null ? ref.watch(multiLegRouteProvider(routePlan)) : null;
+    final routeAsync = routePlan != null
+        ? ref.watch(multiLegRouteProvider(routePlan))
+        : null;
     // One derivation feeds both the map and the info row, so they can never
     // disagree about what is drawn (the old `when(error:)` drew a straight line
     // while the row still showed the stale distance).
@@ -577,82 +664,88 @@ class _HomeScreenState extends ConsumerState<HomeScreen>
                     initialZoom: 15.0,
                   ),
                   children: [
-            ?tile,
-            // `[ontrip]` parity: only the API's own geometry is ever drawn. A
-            // ready route is solid blue; an API-flagged estimate is grey +
-            // dashed so it cannot read as road following; a failure draws
-            // nothing at all (the info row is the only surface).
-            if (preview.polyline.length >= 2)
-              PolylineLayer(
-                polylines: [
-                  Polyline(
-                    points: preview.polyline,
-                    color: preview.hasRoadRoute
-                        ? AppColors.routeReady
-                        : AppColors.routeEstimate,
-                    strokeWidth: 4.0,
-                    pattern: preview.hasRoadRoute
-                        ? const StrokePattern.solid()
-                        : StrokePattern.dashed(segments: const [12, 8]),
-                  ),
-                ],
+                    ?tile,
+                    // `[ontrip]` parity: only the API's own geometry is ever drawn. A
+                    // ready route is solid blue; an API-flagged estimate is grey +
+                    // dashed so it cannot read as road following; a failure draws
+                    // nothing at all (the info row is the only surface).
+                    if (preview.polyline.length >= 2)
+                      PolylineLayer(
+                        polylines: [
+                          Polyline(
+                            points: preview.polyline,
+                            color: preview.hasRoadRoute
+                                ? AppColors.routeReady
+                                : AppColors.routeEstimate,
+                            strokeWidth: 4.0,
+                            pattern: preview.hasRoadRoute
+                                ? const StrokePattern.solid()
+                                : StrokePattern.dashed(segments: const [12, 8]),
+                          ),
+                        ],
+                      ),
+                    if (_currentPosition != null ||
+                        _pickupLocation != null ||
+                        _stops.isNotEmpty ||
+                        _destination != null)
+                      MarkerLayer(
+                        markers: [
+                          if (_currentPosition != null)
+                            Marker(
+                              point: _currentPosition!,
+                              width: 40,
+                              height: 40,
+                              child: const Icon(
+                                Icons.my_location,
+                                color: AppColors.info,
+                                size: 40,
+                              ),
+                            ),
+                          if (_pickupLocation != null)
+                            Marker(
+                              point: LatLng(
+                                _pickupLocation!.lat,
+                                _pickupLocation!.lng,
+                              ),
+                              width: 40,
+                              height: 40,
+                              child: const Icon(
+                                Icons.location_on,
+                                color: AppColors.success,
+                                size: 40,
+                              ),
+                            ),
+                          for (final stop in _stops)
+                            Marker(
+                              point: LatLng(stop.lat, stop.lng),
+                              width: 40,
+                              height: 40,
+                              child: const Icon(
+                                Icons.trip_origin,
+                                color: AppColors.warning,
+                                size: 32,
+                              ),
+                            ),
+                          if (_destination != null)
+                            Marker(
+                              point: LatLng(
+                                _destination!.lat,
+                                _destination!.lng,
+                              ),
+                              width: 40,
+                              height: 40,
+                              child: const Icon(
+                                Icons.location_on,
+                                color: AppColors.danger,
+                                size: 40,
+                              ),
+                            ),
+                        ],
+                      ),
+                    MapTileAttribution(config: tileConfig),
+                  ],
+                ),
               ),
-            if (_currentPosition != null ||
-                _pickupLocation != null ||
-                _stops.isNotEmpty ||
-                _destination != null)
-              MarkerLayer(
-                markers: [
-                  if (_currentPosition != null)
-                    Marker(
-                      point: _currentPosition!,
-                      width: 40,
-                      height: 40,
-                      child: const Icon(
-                        Icons.my_location,
-                        color: AppColors.info,
-                        size: 40,
-                      ),
-                    ),
-                  if (_pickupLocation != null)
-                    Marker(
-                      point: LatLng(_pickupLocation!.lat, _pickupLocation!.lng),
-                      width: 40,
-                      height: 40,
-                      child: const Icon(
-                        Icons.location_on,
-                        color: AppColors.success,
-                        size: 40,
-                      ),
-                    ),
-                  for (final stop in _stops)
-                    Marker(
-                      point: LatLng(stop.lat, stop.lng),
-                      width: 40,
-                      height: 40,
-                      child: const Icon(
-                        Icons.trip_origin,
-                        color: AppColors.warning,
-                        size: 32,
-                      ),
-                    ),
-                  if (_destination != null)
-                    Marker(
-                      point: LatLng(_destination!.lat, _destination!.lng),
-                      width: 40,
-                      height: 40,
-                      child: const Icon(
-                        Icons.location_on,
-                        color: AppColors.danger,
-                        size: 40,
-                      ),
-                    ),
-                ],
-              ),
-            MapTileAttribution(config: tileConfig),
-          ],
-        ),
-      ),
             ),
             // The inset is owned by the `SafeArea` alone: the old `Positioned`
             // added `MediaQuery.padding.top` *and* the `SafeArea` added it again,
@@ -699,8 +792,11 @@ class _HomeScreenState extends ConsumerState<HomeScreen>
 
   Widget _buildBottomSheet(HomeRoutePreview preview, double availableHeight) {
     final minSize = _minSheetSize(availableHeight);
-    final maxSize = _sheetMax.clamp(_initialSize, 0.9);
-    final initialSize = _initialSize.clamp(minSize, maxSize);
+    final opening = _openingSize(availableHeight);
+    final maxSize = _sheetMax
+        .clamp(opening, _kSheetMaxFraction)
+        .clamp(minSize, _kSheetMaxFraction);
+    final initialSize = opening.clamp(minSize, maxSize).toDouble();
     return DraggableScrollableSheet(
       controller: _sheetController,
       snap: true,
@@ -711,113 +807,149 @@ class _HomeScreenState extends ConsumerState<HomeScreen>
       // The sheet implies `min` and `max`; `initial` is the middle snap point.
       snapSizes: [initialSize],
       builder: (context, scrollController) {
-        // The form is measured after layout; its intrinsic height sets the max
-        // snap point so expanding always fits the whole booking form.
+        // The form is measured after layout; its intrinsic height plus the
+        // pinned footer sets the max snap point so expanding fits both.
         _scheduleSheetMaxMeasure();
         return AppBottomSheet(
           borderRadius: const BorderRadius.vertical(
             top: Radius.circular(AppRadii.lg),
           ),
-          child: SingleChildScrollView(
-            controller: scrollController,
-            padding: EdgeInsets.fromLTRB(
-              AppSpacing.lg,
-              AppSpacing.lg,
-              AppSpacing.lg,
-              AppSpacing.lg + MediaQuery.viewInsetsOf(context).bottom,
-            ),
-            child: Column(
-              key: _sheetContentKey,
-              mainAxisSize: MainAxisSize.min,
-              crossAxisAlignment: CrossAxisAlignment.stretch,
-              children: [
-                _buildSheetHandle(),
-                _buildNearbyDriversChip(),
-              if (_showLocationNotice) ...[
-                _buildLocationNotice(),
-                const SizedBox(height: 12),
-              ],
-              _buildLocationField(
-                icon: Icons.circle,
-                iconColor: AppColors.success,
-                hint: 'Pickup location',
-                value:
-                    _pickupLocation?.name ??
-                    (_currentPosition != null ? 'Current location' : null),
-                semanticsLabel: 'Pickup location',
-                trailing: (_pickupLocation != null && _currentPosition != null)
-                    ? TextButton(
-                        onPressed: _clearManualPickup,
-                        child: const Text('Use current location'),
-                      )
-                    : null,
-                onTap: () async {
-                  final bias = _searchBias();
-                  final place = await context.push<Place>(
-                    '/location-search',
-                    extra: {
-                      'hint': _currentPosition != null
-                          ? 'Pickup location'
-                          : 'Enter pickup location',
-                      'lat': bias.latitude,
-                      'lng': bias.longitude,
-                    },
-                  );
-                  if (place != null && mounted) {
-                    setState(() => _pickupLocation = place);
-                    _fitItinerary();
-                  }
-                },
-              ),
-              const SizedBox(height: 12),
-              _buildLocationField(
-                icon: Icons.square,
-                iconColor: AppColors.danger,
-                hint: 'Where to?',
-                value: _destination?.name,
-                onTap: () async {
-                  // The destination field always opens the search. With no
-                  // pickup and no device fix the `_searchBias()` center only
-                  // biases the request — it is never written into
-                  // `_pickupLocation` or the booking.
-                  final hasOrigin =
-                      _pickupLocation != null || _currentPosition != null;
-                  final bias = _searchBias();
-                  final place = await context.push<Place>(
-                    '/location-search',
-                    extra: {
-                      'hint': hasOrigin ? 'Where to?' : 'Enter destination',
-                      'lat': bias.latitude,
-                      'lng': bias.longitude,
-                    },
-                  );
-                  if (place != null && mounted) {
-                    setState(() => _destination = place);
-                    _fitItinerary();
-                  }
-                },
-              ),
-              // A destination is enough to start an itinerary: stops can be
-              // searched with a bias even before an origin exists (the booking
-              // action still requires a pickup/fix).
-              if (_destination != null) ...[
-                const SizedBox(height: 8),
-                StopList(
-                  stops: _stops,
-                  onAdd: _addStop,
-                  onRemove: _removeStop,
-                  onReorder: _reorderStops,
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            children: [
+              Expanded(
+                child: SingleChildScrollView(
+                  controller: scrollController,
+                  padding: _sheetScrollPadding(context),
+                  child: Column(
+                    key: _sheetContentKey,
+                    mainAxisSize: MainAxisSize.min,
+                    crossAxisAlignment: CrossAxisAlignment.stretch,
+                    children: [
+                      _buildSheetHandle(),
+                      _buildNearbyDriversChip(),
+                      if (_showLocationNotice) ...[
+                        _buildLocationNotice(),
+                        const SizedBox(height: 12),
+                      ],
+                      _buildLocationField(
+                        icon: Icons.circle,
+                        iconColor: AppColors.success,
+                        hint: 'Pickup location',
+                        value:
+                            _pickupLocation?.name ??
+                            (_currentPosition != null
+                                ? 'Current location'
+                                : null),
+                        semanticsLabel: 'Pickup location',
+                        trailing:
+                            (_pickupLocation != null &&
+                                _currentPosition != null)
+                            ? TextButton(
+                                onPressed: _clearManualPickup,
+                                child: const Text('Use current location'),
+                              )
+                            : null,
+                        onTap: () async {
+                          final bias = _searchBias();
+                          final place = await context.push<Place>(
+                            '/location-search',
+                            extra: {
+                              'hint': _currentPosition != null
+                                  ? 'Pickup location'
+                                  : 'Enter pickup location',
+                              'lat': bias.latitude,
+                              'lng': bias.longitude,
+                            },
+                          );
+                          if (place != null && mounted) {
+                            setState(() => _pickupLocation = place);
+                            _fitItinerary();
+                          }
+                        },
+                      ),
+                      const SizedBox(height: 12),
+                      _buildLocationField(
+                        icon: Icons.square,
+                        iconColor: AppColors.danger,
+                        hint: 'Where to?',
+                        value: _destination?.name,
+                        onTap: () async {
+                          // The destination field always opens the search. With
+                          // no pickup and no device fix the `_searchBias()`
+                          // center only biases the request — it is never
+                          // written into `_pickupLocation` or the booking.
+                          final hasOrigin =
+                              _pickupLocation != null ||
+                              _currentPosition != null;
+                          final bias = _searchBias();
+                          final place = await context.push<Place>(
+                            '/location-search',
+                            extra: {
+                              'hint': hasOrigin
+                                  ? 'Where to?'
+                                  : 'Enter destination',
+                              'lat': bias.latitude,
+                              'lng': bias.longitude,
+                            },
+                          );
+                          if (place != null && mounted) {
+                            setState(() => _destination = place);
+                            _fitItinerary();
+                          }
+                        },
+                      ),
+                      // A destination is enough to start an itinerary: stops
+                      // can be searched with a bias even before an origin
+                      // exists (the booking action still requires a
+                      // pickup/fix).
+                      if (_destination != null) ...[
+                        const SizedBox(height: 8),
+                        StopList(
+                          stops: _stops,
+                          onAdd: _addStop,
+                          onRemove: _removeStop,
+                          onReorder: _reorderStops,
+                        ),
+                      ],
+                      const SizedBox(height: 16),
+                      _buildRouteInfo(preview),
+                      const SizedBox(height: 8),
+                    ],
+                  ),
                 ),
-              ],
-              const SizedBox(height: 16),
-              _buildRouteInfo(preview),
-              const SizedBox(height: 8),
-              _buildRequestTripButton(),
+              ),
+              AnimatedBuilder(
+                animation: _sheetController,
+                builder: (context, child) {
+                  if (!_sheetFooterVisible(availableHeight)) {
+                    return const SizedBox.shrink();
+                  }
+                  return _buildSheetFooter();
+                },
+              ),
             ],
           ),
-        ),
         );
       },
+    );
+  }
+
+  /// The pinned primary action. Its `SafeArea` owns the bottom inset, so the
+  /// scroll body must not add it again.
+  Widget _buildSheetFooter() {
+    return SafeArea(
+      key: _sheetFooterKey,
+      top: false,
+      child: Padding(
+        padding: const EdgeInsets.fromLTRB(
+          AppSpacing.lg,
+          0,
+          AppSpacing.lg,
+          AppSpacing.lg,
+        ),
+        child: _buildRequestTripButton(),
+      ),
     );
   }
 
@@ -871,10 +1003,7 @@ class _HomeScreenState extends ConsumerState<HomeScreen>
         ? LatLng(_pickupLocation!.lat, _pickupLocation!.lng)
         : _currentPosition;
     if (center == null) return const SizedBox.shrink();
-    return Align(
-      alignment: Alignment.centerLeft,
-      child: NearbyDriversChip(center: center),
-    );
+    return NearbyDriversChip(center: center);
   }
 
   Widget _buildLocationField({
@@ -975,8 +1104,9 @@ class _HomeScreenState extends ConsumerState<HomeScreen>
                   )
                 else if (status == LocationAvailability.servicesDisabled)
                   TextButton(
-                    onPressed: () =>
-                        ref.read(locationServiceProvider).openLocationSettings(),
+                    onPressed: () => ref
+                        .read(locationServiceProvider)
+                        .openLocationSettings(),
                     child: const Text('Open location settings'),
                   ),
                 TextButton(
