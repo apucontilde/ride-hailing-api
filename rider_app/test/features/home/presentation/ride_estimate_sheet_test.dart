@@ -15,6 +15,81 @@ Widget _sheet(List<RideEstimate> estimates) => MaterialApp(
   ),
 );
 
+/// Opens the sheet through the production `showModalBottomSheet` path at a
+/// short/viewport-limited surface.
+Future<void> _pumpModal(
+  WidgetTester tester,
+  List<RideEstimate> estimates, {
+  Size surface = const Size(400, 480),
+}) async {
+  tester.view.physicalSize = surface;
+  tester.view.devicePixelRatio = 1.0;
+  addTearDown(tester.view.resetPhysicalSize);
+  addTearDown(tester.view.resetDevicePixelRatio);
+
+  await tester.pumpWidget(
+    MaterialApp(
+      home: Scaffold(
+        body: Builder(
+          builder: (context) => Center(
+            child: ElevatedButton(
+              onPressed: () => showModalBottomSheet<String>(
+                context: context,
+                isScrollControlled: true,
+                builder: (_) => RideEstimateSheet(
+                  estimates: estimates,
+                  pickupLat: 0,
+                  pickupLng: 0,
+                  dropoffLat: 0,
+                  dropoffLng: 0,
+                ),
+              ),
+              child: const Text('Open sheet'),
+            ),
+          ),
+        ),
+      ),
+    ),
+  );
+  await tester.tap(find.text('Open sheet'));
+  await tester.pumpAndSettle();
+}
+
+const _fourEstimates = [
+  RideEstimate(
+    vehicleType: 'sedan',
+    baseFare: 2.50,
+    distanceFare: 3.10,
+    timeFare: 0.90,
+    total: 6.50,
+    currency: '\$',
+  ),
+  RideEstimate(
+    vehicleType: 'suv',
+    baseFare: 3.50,
+    distanceFare: 4.00,
+    timeFare: 1.00,
+    total: 8.50,
+    currency: '\$',
+  ),
+  RideEstimate(
+    vehicleType: 'premium',
+    baseFare: 5.00,
+    distanceFare: 6.00,
+    timeFare: 1.50,
+    total: 12.50,
+    currency: '\$',
+  ),
+  RideEstimate(
+    vehicleType: 'van',
+    baseFare: 6.00,
+    distanceFare: 7.00,
+    timeFare: 2.00,
+    total: 15.00,
+    currency: '\$',
+  ),
+];
+
 void main() {
   testWidgets(
     'shows vehicle options and the computed total as the option price',
@@ -260,5 +335,67 @@ void main() {
 
     expect(find.textContaining('Estimated fare'), findsNothing);
     expect(find.text('Trip legs'), findsNothing);
+  });
+
+  testWidgets('Confirm Ride is pinned and reachable on a 400x480 surface', (
+    WidgetTester tester,
+  ) async {
+    await _pumpModal(tester, _fourEstimates);
+
+    expect(find.text('Confirm Ride'), findsOneWidget);
+    final confirm = tester.getRect(find.text('Confirm Ride'));
+    expect(confirm.top, greaterThanOrEqualTo(0));
+    expect(confirm.left, greaterThanOrEqualTo(0));
+    expect(confirm.right, lessThanOrEqualTo(400));
+    expect(confirm.bottom, lessThanOrEqualTo(480));
+    expect(
+      find.byKey(const ValueKey<String>('rider-sheet-scroll')),
+      findsOneWidget,
+    );
+  });
+
+  testWidgets('a one-option modal shrink-wraps below the 85% ceiling', (
+    WidgetTester tester,
+  ) async {
+    await _pumpModal(tester, [
+      const RideEstimate(vehicleType: 'sedan', total: 6.50, currency: '\$'),
+    ]);
+
+    // 400x480 surface, 85% ceiling = 408 px. A single short option must not
+    // fill the whole constraint.
+    final height = tester.getSize(find.byType(RideEstimateSheet)).height;
+    expect(height, lessThan(480 * 0.85));
+    expect(find.text('Confirm Ride'), findsOneWidget);
+  });
+
+  testWidgets('the estimate list scrolls to the last option', (
+    WidgetTester tester,
+  ) async {
+    await _pumpModal(tester, _fourEstimates);
+
+    final lastOption = find.text('van');
+    expect(lastOption, findsOneWidget);
+    final before = tester.getTopLeft(lastOption).dy;
+    final confirmBefore = tester.getRect(find.text('Confirm Ride'));
+    final scrollable = find.byKey(
+      const ValueKey<String>('rider-sheet-scroll'),
+    );
+    final position = tester.state<ScrollableState>(
+      find.descendant(of: scrollable, matching: find.byType(Scrollable)),
+    ).position;
+    final offsetBefore = position.pixels;
+
+    await tester.drag(scrollable, const Offset(0, -160));
+    await tester.pumpAndSettle();
+
+    expect(tester.getTopLeft(lastOption).dy, lessThan(before));
+    expect(position.pixels, greaterThan(offsetBefore));
+    // The pinned action stayed put while the long list scrolled.
+    expect(find.text('Confirm Ride'), findsOneWidget);
+    expect(tester.getRect(find.text('Confirm Ride')), confirmBefore);
+    expect(
+      tester.getRect(find.text('Confirm Ride')).bottom,
+      lessThanOrEqualTo(480),
+    );
   });
 }

@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:ride_hailing_shared/ride_hailing_shared.dart';
 import '../model/ride_estimate.dart';
+import 'rider_sheet.dart';
 
 class RideEstimateSheet extends StatefulWidget {
   final List<RideEstimate> estimates;
@@ -35,26 +36,13 @@ class _RideEstimateSheetState extends State<RideEstimateSheet> {
 
   @override
   Widget build(BuildContext context) {
-    return Column(
-      mainAxisSize: MainAxisSize.min,
-      children: [
-        Padding(
-          padding: const EdgeInsets.fromLTRB(
-            AppSpacing.lg,
-            AppSpacing.lg,
-            AppSpacing.lg,
-            AppSpacing.sm,
-          ),
-          child: AppSectionHeader(
-            title: 'Choose a ride',
-            trailing: TextButton(
-              onPressed: () => Navigator.of(context).pop(),
-              child: const Text('Cancel'),
-            ),
-          ),
-        ),
-        ...widget.estimates.map(_buildOption),
-        Padding(
+    return ConstrainedBox(
+      constraints: BoxConstraints(
+        maxHeight: MediaQuery.sizeOf(context).height * 0.85,
+      ),
+      child: RiderSheetScrollBody(
+        padding: EdgeInsets.zero,
+        footer: Padding(
           padding: const EdgeInsets.all(AppSpacing.lg),
           child: AppButton(
             label: 'Confirm Ride',
@@ -63,7 +51,29 @@ class _RideEstimateSheetState extends State<RideEstimateSheet> {
                 : null,
           ),
         ),
-      ],
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: [
+            Padding(
+              padding: const EdgeInsets.fromLTRB(
+                AppSpacing.lg,
+                AppSpacing.lg,
+                AppSpacing.lg,
+                AppSpacing.sm,
+              ),
+              child: AppSectionHeader(
+                title: 'Choose a ride',
+                trailing: TextButton(
+                  onPressed: () => Navigator.of(context).pop(),
+                  child: const Text('Cancel'),
+                ),
+              ),
+            ),
+            ...widget.estimates.map(_buildOption),
+          ],
+        ),
+      ),
     );
   }
 
@@ -102,10 +112,7 @@ class _RideEstimateSheetState extends State<RideEstimateSheet> {
                   child: Column(
                     crossAxisAlignment: CrossAxisAlignment.start,
                     children: [
-                      Text(
-                        estimate.displayName,
-                        style: AppTextStyles.subtitle,
-                      ),
+                      Text(estimate.displayName, style: AppTextStyles.subtitle),
                       Text(
                         '${estimate.capacity} passengers',
                         style: AppTextStyles.label.copyWith(
@@ -126,10 +133,7 @@ class _RideEstimateSheetState extends State<RideEstimateSheet> {
                 Text(estimate.formattedTotal, style: AppTextStyles.fare),
               ],
             ),
-            if (selected) ...[
-              const Divider(height: 20),
-              _breakdown(estimate),
-            ],
+            if (selected) ...[const Divider(height: 20), _breakdown(estimate)],
           ],
         ),
       ),
@@ -152,10 +156,11 @@ class _RideEstimateSheetState extends State<RideEstimateSheet> {
         _fareRow(
           'Conditions multiplier',
           '×${estimate.surgeMultiplier.toStringAsFixed(2)}',
-          note: estimate.demandMultiplier != 1.0 ||
+          note:
+              estimate.demandMultiplier != 1.0 ||
                   estimate.supplyMultiplier != 1.0
               ? 'demand ${estimate.demandMultiplier.toStringAsFixed(2)} '
-                  '× supply ${estimate.supplyMultiplier.toStringAsFixed(2)}'
+                    '× supply ${estimate.supplyMultiplier.toStringAsFixed(2)}'
               : null,
         ),
         if (estimate.hasMultipleLegs) ...[
@@ -185,8 +190,12 @@ class _RideEstimateSheetState extends State<RideEstimateSheet> {
     return '$km km · ~$minutes min';
   }
 
-  Widget _fareRow(String label, String value,
-      {String? note, bool emphasise = false}) {
+  Widget _fareRow(
+    String label,
+    String value, {
+    String? note,
+    bool emphasise = false,
+  }) {
     final style = emphasise
         ? AppTextStyles.fare.copyWith(fontSize: 15)
         : AppTextStyles.label.copyWith(

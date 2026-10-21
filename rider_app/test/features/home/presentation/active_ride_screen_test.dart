@@ -171,7 +171,12 @@ const Map<String, dynamic> _defaultEstimate = {
   'currency': '\$',
   'is_estimate': false,
   'legs': [
-    {'distance_m': 1500, 'duration_s': 240, 'distance_fare': 2.0, 'time_fare': 1.0},
+    {
+      'distance_m': 1500,
+      'duration_s': 240,
+      'distance_fare': 2.0,
+      'time_fare': 1.0,
+    },
   ],
 };
 
@@ -255,7 +260,9 @@ void main() {
       (server) => server.reply(
         estimateStatus,
         estimateStatus == 200
-            ? {'estimates': estimates ?? [_defaultEstimate]}
+            ? {
+                'estimates': estimates ?? [_defaultEstimate],
+              }
             : {
                 'error': {
                   'code': 'INTERNAL',
@@ -504,6 +511,134 @@ void main() {
     await settleAndDispose(tester);
   });
 
+  testWidgets('the active-trip panel is movable and scrollable', (
+    WidgetTester tester,
+  ) async {
+    tester.view.physicalSize = const Size(400, 520);
+    tester.view.devicePixelRatio = 1.0;
+    addTearDown(tester.view.resetPhysicalSize);
+    addTearDown(tester.view.resetDevicePixelRatio);
+    fixture();
+    emit(acceptedEvent());
+
+    await tester.pumpWidget(buildRouter());
+    await tester.pump();
+
+    // RED on the old plain `AppBottomSheet` + `Column` panel.
+    expect(find.byType(DraggableScrollableSheet), findsOneWidget);
+    expect(
+      find.byKey(const ValueKey<String>('rider-sheet-scroll')),
+      findsOneWidget,
+    );
+
+    await settleAndDispose(tester);
+  });
+
+  testWidgets(
+    'on a short surface the clipped top of the driver panel scrolls into view',
+    (WidgetTester tester) async {
+      tester.view.physicalSize = const Size(400, 360);
+      tester.view.devicePixelRatio = 1.0;
+      addTearDown(tester.view.resetPhysicalSize);
+      addTearDown(tester.view.resetDevicePixelRatio);
+      fixture();
+      emit(acceptedEvent());
+      emit(driverLocationEvent(9.93, -84.09));
+
+      await tester.pumpWidget(buildRouter());
+      await tester.pump();
+      await pumpRoute(tester);
+
+      final scroll = find.byKey(const ValueKey<String>('rider-sheet-scroll'));
+      expect(scroll, findsOneWidget);
+      const viewport = Rect.fromLTWH(0, 0, 400, 360);
+      final cancelBefore = tester.getRect(find.text('Cancel Ride'));
+      expect(viewport.contains(cancelBefore.center), isTrue);
+
+      // Scroll the body down, then bring the handle and driver row back to the
+      // top: the panel's top is reachable, not clipped away.
+      await tester.drag(scroll, const Offset(0, -240));
+      await tester.pump();
+
+      await tester.ensureVisible(find.text('Maria'));
+      await tester.pumpAndSettle();
+      expect(viewport.contains(tester.getCenter(find.text('Maria'))), isTrue);
+
+      await tester.ensureVisible(find.byType(AppSheetHandle));
+      await tester.pumpAndSettle();
+      expect(
+        viewport.contains(tester.getCenter(find.byType(AppSheetHandle))),
+        isTrue,
+      );
+      // The pinned action never moved.
+      expect(tester.getRect(find.text('Cancel Ride')), cancelBefore);
+
+      await settleAndDispose(tester);
+    },
+  );
+
+  testWidgets(
+    'the active-trip min hides the footer without overflowing',
+    (WidgetTester tester) async {
+      const surface = Size(400, 360);
+      tester.view.physicalSize = surface;
+      tester.view.devicePixelRatio = 1.0;
+      addTearDown(tester.view.resetPhysicalSize);
+      addTearDown(tester.view.resetDevicePixelRatio);
+      fixture();
+      emit(acceptedEvent());
+      emit(driverLocationEvent(9.93, -84.09));
+
+      await tester.pumpWidget(buildRouter());
+      await tester.pump();
+      await pumpRoute(tester);
+
+      final scroll = find.byKey(const ValueKey<String>('rider-sheet-scroll'));
+      expect(scroll, findsOneWidget);
+
+      // Collapse to the handle-only min.
+      await tester.drag(scroll, const Offset(0, 400));
+      await tester.pumpAndSettle();
+
+      expect(tester.takeException(), isNull);
+      final sheet = tester.widget<DraggableScrollableSheet>(
+        find.byType(DraggableScrollableSheet),
+      );
+      expect(sheet.snapSizes, isNotNull);
+      expect(
+        tester
+            .widget<FractionallySizedBox>(
+              find.descendant(
+                of: find.byType(DraggableScrollableSheet),
+                matching: find.byType(FractionallySizedBox),
+              ),
+            )
+            .heightFactor,
+        closeTo(sheet.minChildSize, 0.01),
+      );
+      expect(find.text('Cancel Ride'), findsNothing);
+
+      const viewport = Rect.fromLTWH(0, 0, 400, 360);
+      final bar = tester.getRect(
+        find.descendant(
+          of: find.byType(AppSheetHandle),
+          matching: find.byType(Container),
+        ),
+      );
+      final paintedBar = Rect.fromLTWH(bar.left, bar.top, bar.width, 4);
+      expect(viewport.contains(paintedBar.center), isTrue);
+
+      // Expand back: the measured opening snap (here the max, because the
+      // content overflows the viewport) shows the pinned action again.
+      await tester.drag(scroll, const Offset(0, -400));
+      await tester.pumpAndSettle();
+      expect(find.text('Cancel Ride'), findsOneWidget);
+      expect(tester.takeException(), isNull);
+
+      await settleAndDispose(tester);
+    },
+  );
+
   testWidgets(
     'pressed cancel shows confirmation and posts the cancel request',
     (WidgetTester tester) async {
@@ -618,59 +753,63 @@ void main() {
     await settleAndDispose(tester);
   });
 
-  testWidgets('a second cancel tap while the POST is in flight posts exactly once',
-      (WidgetTester tester) async {
-    fixture();
-    final gate = Completer<void>();
-    var cancelPosts = 0;
-    dioAdapter.onPost(
-      '/api/v1/rides/ride-1/cancel',
-      (server) => server.replyCallbackAsync(200, (_) async {
-        cancelPosts++;
-        await gate.future;
-        return {'ride': {'id': 'ride-1', 'status': 'cancelled'}};
-      }),
-    );
-    emit(acceptedEvent());
+  testWidgets(
+    'a second cancel tap while the POST is in flight posts exactly once',
+    (WidgetTester tester) async {
+      fixture();
+      final gate = Completer<void>();
+      var cancelPosts = 0;
+      dioAdapter.onPost(
+        '/api/v1/rides/ride-1/cancel',
+        (server) => server.replyCallbackAsync(200, (_) async {
+          cancelPosts++;
+          await gate.future;
+          return {
+            'ride': {'id': 'ride-1', 'status': 'cancelled'},
+          };
+        }),
+      );
+      emit(acceptedEvent());
 
-    await tester.pumpWidget(buildRouter());
-    await tester.pump();
+      await tester.pumpWidget(buildRouter());
+      await tester.pump();
 
-    // Two taps in the same frame: the first installs the guard synchronously
-    // before the `showDialog` await, so the second cannot stack a dialog.
-    await tester.tap(find.text('Cancel Ride'));
-    await tester.tap(find.text('Cancel Ride'));
-    await tester.pump();
+      // Two taps in the same frame: the first installs the guard synchronously
+      // before the `showDialog` await, so the second cannot stack a dialog.
+      await tester.tap(find.text('Cancel Ride'));
+      await tester.tap(find.text('Cancel Ride'));
+      await tester.pump();
 
-    expect(
-      find.text('Cancel this ride?'),
-      findsOneWidget,
-      reason: 'only one confirmation dialog may ever appear',
-    );
+      expect(
+        find.text('Cancel this ride?'),
+        findsOneWidget,
+        reason: 'only one confirmation dialog may ever appear',
+      );
 
-    await tester.tap(find.text('Yes, Cancel'));
-    await tester.pump();
-    await tester.pump(const Duration(milliseconds: 10));
-    expect(cancelPosts, 1);
+      await tester.tap(find.text('Yes, Cancel'));
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 10));
+      expect(cancelPosts, 1);
 
-    // The POST is parked. Both entry points share the guard: the button is
-    // disabled, and the back arrow's `_cancelRide` early-returns.
-    await tester.tap(find.byType(AppBackButton));
-    await tester.pump();
-    expect(find.text('Cancel this ride?'), findsNothing);
-    expect(cancelPosts, 1);
+      // The POST is parked. Both entry points share the guard: the button is
+      // disabled, and the back arrow's `_cancelRide` early-returns.
+      await tester.tap(find.byType(AppBackButton));
+      await tester.pump();
+      expect(find.text('Cancel this ride?'), findsNothing);
+      expect(cancelPosts, 1);
 
-    gate.complete();
-    await tester.pump();
-    await tester.pump(const Duration(milliseconds: 10));
-    await tester.pump();
+      gate.complete();
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 10));
+      await tester.pump();
 
-    expect(cancelPosts, 1, reason: 'one confirmed cancel, one POST');
-    expect(find.text('Ride cancelled successfully'), findsOneWidget);
-    expect(find.text('Home'), findsOneWidget);
+      expect(cancelPosts, 1, reason: 'one confirmed cancel, one POST');
+      expect(find.text('Ride cancelled successfully'), findsOneWidget);
+      expect(find.text('Home'), findsOneWidget);
 
-    await settleAndDispose(tester);
-  });
+      await settleAndDispose(tester);
+    },
+  );
 
   testWidgets(
     'the Cancel Ride button is disabled while the cancel POST is in flight',
@@ -683,7 +822,9 @@ void main() {
         (server) => server.replyCallbackAsync(200, (_) async {
           cancelPosts++;
           await gate.future;
-          return {'ride': {'id': 'ride-1', 'status': 'cancelled'}};
+          return {
+            'ride': {'id': 'ride-1', 'status': 'cancelled'},
+          };
         }),
       );
       emit(acceptedEvent());
@@ -692,8 +833,8 @@ void main() {
       await tester.pump();
 
       AppButton cancelButton() => tester.widget<AppButton>(
-            find.widgetWithText(AppButton, 'Cancel Ride'),
-          );
+        find.widgetWithText(AppButton, 'Cancel Ride'),
+      );
       expect(cancelButton().onPressed, isNotNull);
 
       await tester.tap(find.text('Cancel Ride'));
@@ -731,7 +872,9 @@ void main() {
         (server) => server.replyCallbackAsync(200, (_) async {
           cancelPosts++;
           await gate.future;
-          return {'ride': {'id': 'ride-1', 'status': 'cancelled'}};
+          return {
+            'ride': {'id': 'ride-1', 'status': 'cancelled'},
+          };
         }),
       );
       emit(acceptedEvent());
@@ -777,8 +920,9 @@ void main() {
     },
   );
 
-  testWidgets('a 404 cancel goes home without a generic error',
-      (WidgetTester tester) async {
+  testWidgets('a 404 cancel goes home without a generic error', (
+    WidgetTester tester,
+  ) async {
     fixture();
     dioAdapter.onPost(
       '/api/v1/rides/ride-1/cancel',
@@ -851,8 +995,9 @@ void main() {
     },
   );
 
-  testWidgets('a 500 cancel shows a retryable error and does not navigate',
-      (WidgetTester tester) async {
+  testWidgets('a 500 cancel shows a retryable error and does not navigate', (
+    WidgetTester tester,
+  ) async {
     fixture();
     var cancelPosts = 0;
     dioAdapter.onPost(
@@ -883,8 +1028,9 @@ void main() {
     // Drop the error SnackBar (it floats over the sheet's Cancel button), then
     // a fresh tap must find the guard reset: one new dialog and exactly one
     // more POST.
-    ScaffoldMessenger.of(tester.element(find.byType(ActiveRideScreen)))
-        .removeCurrentSnackBar();
+    ScaffoldMessenger.of(
+      tester.element(find.byType(ActiveRideScreen)),
+    ).removeCurrentSnackBar();
     await tester.pump();
 
     await tester.tap(find.text('Cancel Ride'));
@@ -1315,6 +1461,7 @@ void main() {
 
     // The button only exists once there is a driver position to report on.
     expect(find.text('View receipt'), findsOneWidget);
+    await tester.ensureVisible(find.text('View receipt'));
     await tester.tap(find.text('View receipt'));
     await tester.pumpAndSettle();
 
@@ -1539,6 +1686,7 @@ void main() {
       const ValueKey<String>('change-destination-button'),
     );
     expect(button, findsOneWidget, reason: 'accepted rides are changeable');
+    await tester.ensureVisible(button);
     await tester.tap(button);
     await tester.pump();
     await tester.pump();
@@ -1615,6 +1763,9 @@ void main() {
       );
       await tester.pump();
 
+      await tester.ensureVisible(
+        find.byKey(const ValueKey<String>('change-destination-button')),
+      );
       await tester.tap(
         find.byKey(const ValueKey<String>('change-destination-button')),
       );
@@ -1887,26 +2038,28 @@ void main() {
   testWidgets('the active map marks intermediate stops and the destination', (
     WidgetTester tester,
   ) async {
-    fixture(stops: [
-      {
-        'id': 'stop-1',
-        'ride_id': 'ride-1',
-        'sequence': 1,
-        'kind': 'stop',
-        'lat': 9.93,
-        'lng': -84.095,
-        'address': 'Stop 1',
-      },
-      {
-        'id': 'stop-2',
-        'ride_id': 'ride-1',
-        'sequence': 2,
-        'kind': 'destination',
-        'lat': 9.94,
-        'lng': -84.10,
-        'address': 'Airport Rd',
-      },
-    ]);
+    fixture(
+      stops: [
+        {
+          'id': 'stop-1',
+          'ride_id': 'ride-1',
+          'sequence': 1,
+          'kind': 'stop',
+          'lat': 9.93,
+          'lng': -84.095,
+          'address': 'Stop 1',
+        },
+        {
+          'id': 'stop-2',
+          'ride_id': 'ride-1',
+          'sequence': 2,
+          'kind': 'destination',
+          'lat': 9.94,
+          'lng': -84.10,
+          'address': 'Airport Rd',
+        },
+      ],
+    );
     emit(acceptedEvent());
     emit(driverLocationEvent(9.93, -84.09));
 
@@ -1915,13 +2068,14 @@ void main() {
 
     final layer = tester.widget<MarkerLayer>(find.byType(MarkerLayer));
     final stops = layer.markers
-        .where((m) =>
-            m.child is Icon &&
-            (m.child as Icon).icon == Icons.trip_origin)
+        .where(
+          (m) => m.child is Icon && (m.child as Icon).icon == Icons.trip_origin,
+        )
         .toList();
     final destinations = layer.markers
-        .where((m) =>
-            m.child is Icon && (m.child as Icon).icon == Icons.location_on)
+        .where(
+          (m) => m.child is Icon && (m.child as Icon).icon == Icons.location_on,
+        )
         .toList();
 
     expect(stops, hasLength(1));
@@ -1958,63 +2112,67 @@ void main() {
   // [ontrip] R-1 — change-destination confirmation only mutates on Confirm.
   // ---------------------------------------------------------------------------
 
-  testWidgets('cancelling the change-destination confirmation leaves the ride', (
-    WidgetTester tester,
-  ) async {
-    fixture();
-    const newDestination = Place(
-      id: 'new-dest',
-      name: 'New Destination',
-      address: 'New Rd',
-      lat: 9.97,
-      lng: -84.14,
-    );
-    final putBodies = <Map<String, dynamic>>[];
-    dioAdapter.onPut(
-      '/api/v1/rides/ride-1/destination',
-      (server) => server.replyCallback(200, (options) {
-        putBodies.add(Map<String, dynamic>.from(options.data as Map));
-        return {'ride': rideJson(status: 'in_progress')};
-      }),
-      data: Matchers.any,
-    );
-    emit(acceptedEvent());
+  testWidgets(
+    'cancelling the change-destination confirmation leaves the ride',
+    (WidgetTester tester) async {
+      fixture();
+      const newDestination = Place(
+        id: 'new-dest',
+        name: 'New Destination',
+        address: 'New Rd',
+        lat: 9.97,
+        lng: -84.14,
+      );
+      final putBodies = <Map<String, dynamic>>[];
+      dioAdapter.onPut(
+        '/api/v1/rides/ride-1/destination',
+        (server) => server.replyCallback(200, (options) {
+          putBodies.add(Map<String, dynamic>.from(options.data as Map));
+          return {'ride': rideJson(status: 'in_progress')};
+        }),
+        data: Matchers.any,
+      );
+      emit(acceptedEvent());
 
-    await tester.pumpWidget(
-      buildRouter(changeDestinationResult: newDestination),
-    );
-    await tester.pump();
+      await tester.pumpWidget(
+        buildRouter(changeDestinationResult: newDestination),
+      );
+      await tester.pump();
 
-    await tester.tap(
-      find.byKey(const ValueKey<String>('change-destination-button')),
-    );
-    await tester.pump();
-    await tester.pump();
-    await tester.pump(const Duration(milliseconds: 10));
-    await tester.pump();
+      await tester.ensureVisible(
+        find.byKey(const ValueKey<String>('change-destination-button')),
+      );
+      await tester.tap(
+        find.byKey(const ValueKey<String>('change-destination-button')),
+      );
+      await tester.pump();
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 10));
+      await tester.pump();
 
-    expect(
-      find.byKey(const ValueKey<String>('change-destination-dialog')),
-      findsOneWidget,
-    );
+      expect(
+        find.byKey(const ValueKey<String>('change-destination-dialog')),
+        findsOneWidget,
+      );
 
-    await tester.tap(
-      find.byKey(const ValueKey<String>('change-destination-cancel')),
-    );
-    await tester.pump();
-    await tester.pump(const Duration(milliseconds: 10));
-    await tester.pump();
+      await tester.tap(
+        find.byKey(const ValueKey<String>('change-destination-cancel')),
+      );
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 10));
+      await tester.pump();
 
-    expect(putBodies, isEmpty, reason: 'Cancel must not mutate the ride');
-    expect(
-      find.byKey(const ValueKey<String>('change-destination-dialog')),
-      findsNothing,
-    );
-    // Still on the trip.
-    expect(find.text('Cancel Ride'), findsOneWidget);
+      expect(putBodies, isEmpty, reason: 'Cancel must not mutate the ride');
+      expect(
+        find.byKey(const ValueKey<String>('change-destination-dialog')),
+        findsNothing,
+      );
+      // Still on the trip.
+      expect(find.text('Cancel Ride'), findsOneWidget);
 
-    await settleAndDispose(tester);
-  });
+      await settleAndDispose(tester);
+    },
+  );
 
   testWidgets('an estimate outage still offers Confirm and then PUTs', (
     WidgetTester tester,
@@ -2043,6 +2201,9 @@ void main() {
     );
     await tester.pump();
 
+    await tester.ensureVisible(
+      find.byKey(const ValueKey<String>('change-destination-button')),
+    );
     await tester.tap(
       find.byKey(const ValueKey<String>('change-destination-button')),
     );
@@ -2198,6 +2359,43 @@ void main() {
     final sheet = tester.getRect(find.byType(AppBottomSheet));
     expect(button.right, closeTo(800 - 16, 0.1));
     expect(button.bottom, lessThanOrEqualTo(sheet.top));
+    // The offset is driven by the sheet controller: the button rides 12 px
+    // above the sheet's current top.
+    expect(sheet.top - button.bottom, closeTo(12, 0.5));
+
+    await settleAndDispose(tester);
+  });
+
+  testWidgets('the locate button hides when the sheet covers the viewport', (
+    WidgetTester tester,
+  ) async {
+    fixture();
+    emit(acceptedEvent());
+
+    await tester.pumpWidget(buildRouter());
+    await pumpRoute(tester);
+    await tester.pump();
+
+    // At the opening the control is visible above the panel (the existing
+    // placement test pins its exact offset).
+    expect(locateButton(), findsOneWidget);
+
+    final scroll = find.byKey(const ValueKey<String>('rider-sheet-scroll'));
+    await tester.drag(scroll, const Offset(0, -2000));
+    await tester.pumpAndSettle();
+
+    final size = tester
+        .widget<FractionallySizedBox>(
+          find.descendant(
+            of: find.byType(DraggableScrollableSheet),
+            matching: find.byType(FractionallySizedBox),
+          ),
+        )
+        .heightFactor!;
+    expect(size, closeTo(1, 0.01));
+    // A translated control at full-screen would sit above the viewport, so it
+    // must not be rendered as an unreachable tap target.
+    expect(locateButton(), findsNothing);
 
     await settleAndDispose(tester);
   });

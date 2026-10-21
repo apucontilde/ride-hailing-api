@@ -22,17 +22,19 @@ import '../data/trip_eta.dart';
 import '../data/trip_return.dart';
 import '../data/trip_route_provider.dart';
 import 'rating_prompt_dialog.dart';
+import 'rider_sheet.dart';
 
 /// One-shot device fix for the locate button's non-driving-status fallback.
 /// Widget tests override it so they never touch the geolocator platform
 /// channel.
-final riderCurrentPositionProvider =
-    Provider<Future<LatLng?> Function()>((ref) => () async {
-  final position = await LocationHelper.getCurrentPosition();
-  return position == null
-      ? null
-      : LatLng(position.latitude, position.longitude);
-});
+final riderCurrentPositionProvider = Provider<Future<LatLng?> Function()>(
+  (ref) => () async {
+    final position = await LocationHelper.getCurrentPosition();
+    return position == null
+        ? null
+        : LatLng(position.latitude, position.longitude);
+  },
+);
 
 class ActiveRideScreen extends ConsumerStatefulWidget {
   const ActiveRideScreen({super.key});
@@ -53,9 +55,14 @@ class _ActiveRideScreenState extends ConsumerState<ActiveRideScreen>
   /// Measures the driver-info sheet so a route fit can keep the polyline above
   /// it. It is set on the sheet returned by [_buildDriverInfoSheet].
   final GlobalKey _sheetKey = GlobalKey();
+
+  /// Drives the movable driver panel so the locate button can ride above it.
+  final DraggableScrollableController _sheetController =
+      DraggableScrollableController();
   LatLng? _riderPosition;
   StreamSubscription<dynamic>? _positionSubscription;
   LocationPingService? _pingService;
+
   /// Read once in `initState` for the same reason as `_pingService`: `ref` is
   /// unusable from `dispose()`, and the tracking tick must be cancelled there.
   late final DriverTrackingNotifier _tracker;
@@ -138,16 +145,15 @@ class _ActiveRideScreenState extends ConsumerState<ActiveRideScreen>
 
   void _initRiderLocation() {
     try {
-      _positionSubscription = LocationHelper.getPositionStream().listen(
-        (position) {
-          if (mounted) {
-            setState(() {
-              _riderPosition = LatLng(position.latitude, position.longitude);
-            });
-          }
-        },
-        onError: (Object error, StackTrace stackTrace) {},
-      );
+      _positionSubscription = LocationHelper.getPositionStream().listen((
+        position,
+      ) {
+        if (mounted) {
+          setState(() {
+            _riderPosition = LatLng(position.latitude, position.longitude);
+          });
+        }
+      }, onError: (Object error, StackTrace stackTrace) {});
     } catch (_) {}
   }
 
@@ -163,6 +169,7 @@ class _ActiveRideScreenState extends ConsumerState<ActiveRideScreen>
     _tripRoute.stop();
     // `[ontrip]` R1: nor the driver-ETA compute tick.
     _driverEta.stop();
+    _sheetController.dispose();
     super.dispose();
   }
 
@@ -176,8 +183,9 @@ class _ActiveRideScreenState extends ConsumerState<ActiveRideScreen>
     final rideId = ref.read(rideStatusProvider).rideId;
     if (rideId == null || _detailRequestedFor == rideId) return;
     _detailRequestedFor = rideId;
-    final detail =
-        await ref.read(rideDetailProvider.notifier).fetchRide(rideId);
+    final detail = await ref
+        .read(rideDetailProvider.notifier)
+        .fetchRide(rideId);
     if (!mounted || detail == null) return;
     ref.read(rideStatusProvider.notifier).applyRideDetail(detail);
   }
@@ -227,8 +235,9 @@ class _ActiveRideScreenState extends ConsumerState<ActiveRideScreen>
       );
       if (confirmed != true || !mounted) return;
 
-      final outcome =
-          await ref.read(rideCreationProvider.notifier).cancelRide(rideId);
+      final outcome = await ref
+          .read(rideCreationProvider.notifier)
+          .cancelRide(rideId);
       if (!mounted) return;
 
       switch (outcome) {
@@ -241,20 +250,22 @@ class _ActiveRideScreenState extends ConsumerState<ActiveRideScreen>
           _goHomeAfterCancel();
           break;
         case CancelOutcome.conflict:
-          final conflictMessage = ref.read(rideCreationProvider).cancelError ??
+          final conflictMessage =
+              ref.read(rideCreationProvider).cancelError ??
               'Ride can no longer be cancelled';
-          ScaffoldMessenger.of(context).showSnackBar(
-            SnackBar(content: Text(conflictMessage)),
-          );
+          ScaffoldMessenger.of(
+            context,
+          ).showSnackBar(SnackBar(content: Text(conflictMessage)));
           break;
         case CancelOutcome.failed:
           // Today's 400, 422, 5xx and transport failures stay retryable by a
           // fresh tap once the guard resets below.
-          final failureMessage = ref.read(rideCreationProvider).cancelError ??
+          final failureMessage =
+              ref.read(rideCreationProvider).cancelError ??
               'Failed to cancel ride';
-          ScaffoldMessenger.of(context).showSnackBar(
-            SnackBar(content: Text(failureMessage)),
-          );
+          ScaffoldMessenger.of(
+            context,
+          ).showSnackBar(SnackBar(content: Text(failureMessage)));
           break;
       }
     } finally {
@@ -289,11 +300,7 @@ class _ActiveRideScreenState extends ConsumerState<ActiveRideScreen>
     final bias = _searchBias();
     final place = await context.push<Place>(
       '/location-search',
-      extra: {
-        'hint': 'Where to?',
-        'lat': bias.latitude,
-        'lng': bias.longitude,
-      },
+      extra: {'hint': 'Where to?', 'lat': bias.latitude, 'lng': bias.longitude},
     );
     if (place == null || !mounted) return;
 
@@ -316,7 +323,7 @@ class _ActiveRideScreenState extends ConsumerState<ActiveRideScreen>
     final message = changed
         ? 'Destination updated'
         : ref.read(changeDestinationProvider).error ??
-            'Failed to change destination';
+              'Failed to change destination';
     ScaffoldMessenger.of(
       context,
     ).showSnackBar(SnackBar(content: Text(message)));
@@ -372,7 +379,10 @@ class _ActiveRideScreenState extends ConsumerState<ActiveRideScreen>
 
   /// The booked vehicle's estimate, or the first/only one when the booked type
   /// is unknown.
-  RideEstimate? _pickEstimate(List<RideEstimate> estimates, String? vehicleType) {
+  RideEstimate? _pickEstimate(
+    List<RideEstimate> estimates,
+    String? vehicleType,
+  ) {
     if (estimates.isEmpty) return null;
     if (vehicleType != null && vehicleType.isNotEmpty) {
       for (final estimate in estimates) {
@@ -382,10 +392,7 @@ class _ActiveRideScreenState extends ConsumerState<ActiveRideScreen>
     return estimates.first;
   }
 
-  Future<bool?> _confirmChangeDestination(
-    Place place,
-    RideEstimate? estimate,
-  ) {
+  Future<bool?> _confirmChangeDestination(Place place, RideEstimate? estimate) {
     return showDialog<bool>(
       context: context,
       builder: (dialogContext) {
@@ -486,8 +493,10 @@ class _ActiveRideScreenState extends ConsumerState<ActiveRideScreen>
   void _centerOnDriver(DriverLocation location) {
     if (!_mapReady) return;
     try {
-      _mapController.move(LatLng(location.lat, location.lng),
-          _mapController.camera.zoom);
+      _mapController.move(
+        LatLng(location.lat, location.lng),
+        _mapController.camera.zoom,
+      );
     } catch (_) {
       // The map camera is not ready yet; the next fix re-centers.
     }
@@ -516,11 +525,7 @@ class _ActiveRideScreenState extends ConsumerState<ActiveRideScreen>
     LatLng? driver,
   ) {
     if (route.polyline.length >= 2) return route.polyline;
-    return <LatLng>[
-      ..._itineraryPins(route),
-      ?rider,
-      ?driver,
-    ];
+    return <LatLng>[..._itineraryPins(route), ?rider, ?driver];
   }
 
   /// Whether there is a route or an itinerary worth fitting. Moving markers
@@ -550,11 +555,7 @@ class _ActiveRideScreenState extends ConsumerState<ActiveRideScreen>
 
   /// Fits the trip route (polyline, else pins) over the sheet. `false` before
   /// the map is attached so the button keeps the fit step pending.
-  bool _fitTripRoute(
-    TripRouteState route,
-    LatLng? rider,
-    LatLng? driver,
-  ) {
+  bool _fitTripRoute(TripRouteState route, LatLng? rider, LatLng? driver) {
     if (!_mapReady) return false;
     return fitMapCamera(
       _mapController,
@@ -594,8 +595,9 @@ class _ActiveRideScreenState extends ConsumerState<ActiveRideScreen>
     final message = _locatesDriver(status)
         ? 'Waiting for driver location…'
         : 'Waiting for your location…';
-    ScaffoldMessenger.of(context)
-        .showSnackBar(SnackBar(content: Text(message)));
+    ScaffoldMessenger.of(
+      context,
+    ).showSnackBar(SnackBar(content: Text(message)));
   }
 
   /// LC-3 item 3/4 — the completion flow: real receipt, then the rating prompt.
@@ -609,8 +611,8 @@ class _ActiveRideScreenState extends ConsumerState<ActiveRideScreen>
     final fare = rideId == null
         ? next.fare
         : await ref
-            .read(rideDetailProvider.notifier)
-            .resolveFare(rideId, wsFare: next.fare);
+              .read(rideDetailProvider.notifier)
+              .resolveFare(rideId, wsFare: next.fare);
     if (!mounted) return;
 
     await _showReceiptDialog(fare, fromWs: next.fare != null);
@@ -638,8 +640,11 @@ class _ActiveRideScreenState extends ConsumerState<ActiveRideScreen>
                     _fareRow('Base fare', fare.baseFare),
                     _fareRow('Distance fare', fare.distanceFare),
                     _fareRow('Time fare', fare.timeFare),
-                    _fareRow('Surge multiplier', null,
-                        suffix: '×${fare.surgeMultiplier.toStringAsFixed(2)}'),
+                    _fareRow(
+                      'Surge multiplier',
+                      null,
+                      suffix: '×${fare.surgeMultiplier.toStringAsFixed(2)}',
+                    ),
                     const Divider(),
                     _fareRow('Total', fare.total, emphasise: true),
                     const SizedBox(height: 12),
@@ -664,18 +669,19 @@ class _ActiveRideScreenState extends ConsumerState<ActiveRideScreen>
     );
   }
 
-  Widget _fareRow(String label, double? amount,
-      {String? suffix, bool emphasise = false}) {
+  Widget _fareRow(
+    String label,
+    double? amount, {
+    String? suffix,
+    bool emphasise = false,
+  }) {
     final style = emphasise ? AppTextStyles.fare : AppTextStyles.body;
     return Padding(
       padding: const EdgeInsets.symmetric(vertical: 2),
       child: Row(
         children: [
           Expanded(child: Text(label, style: style)),
-          Text(
-            suffix ?? _formatFare(amount ?? 0),
-            style: style,
-          ),
+          Text(suffix ?? _formatFare(amount ?? 0), style: style),
         ],
       ),
     );
@@ -746,8 +752,8 @@ class _ActiveRideScreenState extends ConsumerState<ActiveRideScreen>
     final fare = rideId == null
         ? state.fare
         : await ref
-            .read(rideDetailProvider.notifier)
-            .resolveFare(rideId, wsFare: state.fare);
+              .read(rideDetailProvider.notifier)
+              .resolveFare(rideId, wsFare: state.fare);
     if (!mounted) return;
     await _showReceiptDialog(fare, fromWs: state.fare != null);
   }
@@ -764,8 +770,7 @@ class _ActiveRideScreenState extends ConsumerState<ActiveRideScreen>
     // `driver_id` with no nested `driver` object.
     ref.listen<String?>(
       rideStatusProvider.select((state) => state.effectiveDriverId),
-      (previous, next) =>
-          _tracker.attach(next),
+      (previous, next) => _tracker.attach(next),
     );
 
     // Every fix — WS or polled HTTP — restarts the silence window and re-centers.
@@ -780,14 +785,14 @@ class _ActiveRideScreenState extends ConsumerState<ActiveRideScreen>
 
     // `[ontrip]`: a ride id that lands after mount (a create that finished
     // while the screen was already up) starts the route.
-    ref.listen<String?>(
-      rideStatusProvider.select((state) => state.rideId),
-      (previous, next) {
-        if (next == null || next == previous) return;
-        _tripRoute.start();
-        unawaited(_tripRoute.load(next));
-      },
-    );
+    ref.listen<String?>(rideStatusProvider.select((state) => state.rideId), (
+      previous,
+      next,
+    ) {
+      if (next == null || next == previous) return;
+      _tripRoute.start();
+      unawaited(_tripRoute.load(next));
+    });
 
     // `[ontrip]`: a destination/stops change is pushed as a fresh
     // `ride.updated` payload in `RideState.rideData`. The client re-reads the
@@ -899,14 +904,22 @@ class _ActiveRideScreenState extends ConsumerState<ActiveRideScreen>
                       point: _riderPosition!,
                       width: 40,
                       height: 40,
-                      child: const Icon(Icons.my_location, color: AppColors.info, size: 40),
+                      child: const Icon(
+                        Icons.my_location,
+                        color: AppColors.info,
+                        size: 40,
+                      ),
                     ),
                   if (driverPosition != null)
                     Marker(
                       point: driverPosition,
                       width: 40,
                       height: 40,
-                      child: const Icon(Icons.directions_car, color: Colors.black, size: 40),
+                      child: const Icon(
+                        Icons.directions_car,
+                        color: Colors.black,
+                        size: 40,
+                      ),
                     ),
                 ],
               ),
@@ -925,41 +938,62 @@ class _ActiveRideScreenState extends ConsumerState<ActiveRideScreen>
           Positioned(
             top: 8,
             left: 16,
-            child: SafeArea(
-              child: AppBackButton(onPressed: _handleBack),
+            child: SafeArea(child: AppBackButton(onPressed: _handleBack)),
+          ),
+          // The control rides immediately above the sheet's current top,
+          // right-aligned, so it never covers the driver panel. The offset is
+          // driven by the sheet controller (like Home's locate button).
+          Positioned(
+            key: const ValueKey<String>('active-locate-button'),
+            right: 16,
+            bottom: 12,
+            child: AnimatedBuilder(
+              animation: _sheetController,
+              builder: (context, child) {
+                final height = MediaQuery.sizeOf(context).height;
+                final sheetPixels = _sheetController.isAttached
+                    ? _sheetController.size * height
+                    : 220.0;
+                // At full-screen the translated control would sit above the
+                // viewport (or over the sheet itself), so hide it instead of
+                // leaving an unreachable tap target.
+                if (sheetPixels > height - 60) {
+                  return const SizedBox.shrink();
+                }
+                return Transform.translate(
+                  offset: Offset(0, -sheetPixels),
+                  child: child,
+                );
+              },
+              child: AppMapLocateButton(
+                routeKey: _tripRouteKey(tripRoute),
+                hasRoute: _canFitRoute(tripRoute),
+                onFitRoute: () =>
+                    _fitTripRoute(tripRoute, _riderPosition, driverPosition),
+                onCurrentLocation: () => _locateActiveTarget(rideState.status),
+                onLocationUnavailable: () =>
+                    _showLocationUnavailable(rideState.status),
+              ),
             ),
           ),
-          // The control sits immediately above the driver sheet, right-aligned,
-          // so it is part of the bottom stack and never covers the sheet.
-          Positioned(
-            bottom: 0,
-            left: 0,
-            right: 0,
-            child: Column(
-              mainAxisSize: MainAxisSize.min,
-              crossAxisAlignment: CrossAxisAlignment.stretch,
-              children: [
-                Padding(
-                  padding: const EdgeInsets.only(right: 16, bottom: 12),
-                  child: Align(
-                    alignment: Alignment.centerRight,
-                    child: AppMapLocateButton(
-                      routeKey: _tripRouteKey(tripRoute),
-                      hasRoute: _canFitRoute(tripRoute),
-                      onFitRoute: () => _fitTripRoute(
-                        tripRoute,
-                        _riderPosition,
-                        driverPosition,
-                      ),
-                      onCurrentLocation: () =>
-                          _locateActiveTarget(rideState.status),
-                      onLocationUnavailable: () =>
-                          _showLocationUnavailable(rideState.status),
-                    ),
-                  ),
+          // The driver panel is movable + scrollable; only `Cancel Ride` is
+          // pinned below the scroll body.
+          Positioned.fill(
+            key: const ValueKey<String>('active-driver-sheet'),
+            child: RiderDraggableSheet(
+              controller: _sheetController,
+              sheetKey: _sheetKey,
+              padding: const EdgeInsets.all(AppSpacing.lg),
+              footer: Padding(
+                padding: const EdgeInsets.fromLTRB(20, 0, 20, 20),
+                child: AppButton(
+                  label: 'Cancel Ride',
+                  variant: AppButtonVariant.danger,
+                  expand: true,
+                  onPressed: _cancelInFlight ? null : _cancelRide,
                 ),
-                _buildDriverInfoSheet(rideState, driverPosition),
-              ],
+              ),
+              child: _buildDriverInfoSheet(rideState, driverPosition),
             ),
           ),
         ],
@@ -982,7 +1016,12 @@ class _ActiveRideScreenState extends ConsumerState<ActiveRideScreen>
       borderRadius: BorderRadius.circular(AppRadii.md),
       color: estimate ? AppColors.estimateBanner : AppColors.errorBanner,
       child: Padding(
-        padding: const EdgeInsets.fromLTRB(AppSpacing.md, 10, AppSpacing.sm, 10),
+        padding: const EdgeInsets.fromLTRB(
+          AppSpacing.md,
+          10,
+          AppSpacing.sm,
+          10,
+        ),
         child: Row(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
@@ -1030,8 +1069,9 @@ class _ActiveRideScreenState extends ConsumerState<ActiveRideScreen>
     // LC-4: typed `RideState.driver` — the invented `driver_name`/`car_model`
     // string reads are gone.
     final driver = rideState.driver;
-    final driverName =
-        (driver?.firstName.isNotEmpty ?? false) ? driver!.firstName : 'Your driver';
+    final driverName = (driver?.firstName.isNotEmpty ?? false)
+        ? driver!.firstName
+        : 'Your driver';
     final photoUrl = driver?.photoUrl;
     final hasPhoto = photoUrl != null && photoUrl.isNotEmpty;
     final vehicleLine = _vehicleLine(driver?.vehicle);
@@ -1039,85 +1079,75 @@ class _ActiveRideScreenState extends ConsumerState<ActiveRideScreen>
     // ratings yet — a zero average is not a zero-star driver.
     final ratingLine = driver == null
         ? null
-        : (driver.rating <= 0 ? 'New driver' : driver.rating.toStringAsFixed(1));
+        : (driver.rating <= 0
+              ? 'New driver'
+              : driver.rating.toStringAsFixed(1));
     final statusText = _getStatusText(rideState.status);
 
-    return AppBottomSheet(
-      key: _sheetKey,
-      padding: const EdgeInsets.all(20),
-      child: Column(
-        mainAxisSize: MainAxisSize.min,
-        children: [
-            const AppSheetHandle(),
-            const SizedBox(height: 20),
-            Row(
-              children: [
-                CircleAvatar(
-                  radius: 30,
-                  backgroundColor: AppColors.muted,
-                  // LC-4: the typed `photo_url`. A photo that 404s (or is
-                  // unreachable) must not take the trip screen down — the
-                  // `Icon` child below is the fallback.
-                  backgroundImage:
-                      hasPhoto ? NetworkImage(photoUrl) : null,
-                  onBackgroundImageError: hasPhoto ? (_, _) {} : null,
-                  child: const Icon(
-                    Icons.person,
-                    color: AppColors.onPrimary,
-                    size: 30,
-                  ),
-                ),
-                const SizedBox(width: 16),
-                Expanded(
-                  child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      Text(driverName, style: AppTextStyles.title),
-                      if (vehicleLine != null)
-                        Text(
-                          vehicleLine,
-                          style: AppTextStyles.body.copyWith(
-                            color: AppColors.muted,
-                          ),
-                        ),
-                      if (ratingLine != null)
-                        Text(
-                          '★ $ratingLine',
-                          style: AppTextStyles.label.copyWith(
-                            color: AppColors.muted,
-                          ),
-                        ),
-                    ],
-                  ),
-                ),
-                AppStatusChip(label: statusText),
-              ],
-            ),
-            const SizedBox(height: 12),
-            _buildStatusDetail(rideState),
-            _buildNearbyNotice(rideState),
-            if (driverPosition != null) ...[
-              const SizedBox(height: 16),
-              AppButton(
-                label: 'View receipt',
-                variant: AppButtonVariant.secondary,
-                expand: true,
-                onPressed: _showReceiptOnTap,
+    return Column(
+      mainAxisSize: MainAxisSize.min,
+      children: [
+        const AppSheetHandle(),
+        const SizedBox(height: 20),
+        Row(
+          children: [
+            CircleAvatar(
+              radius: 30,
+              backgroundColor: AppColors.muted,
+              // LC-4: the typed `photo_url`. A photo that 404s (or is
+              // unreachable) must not take the trip screen down — the
+              // `Icon` child below is the fallback.
+              backgroundImage: hasPhoto ? NetworkImage(photoUrl) : null,
+              onBackgroundImageError: hasPhoto ? (_, _) {} : null,
+              child: const Icon(
+                Icons.person,
+                color: AppColors.onPrimary,
+                size: 30,
               ),
-            ],
-            if (isDestinationChangeable(rideState.status)) ...[
-              const SizedBox(height: 16),
-              _buildChangeDestinationButton(),
-            ],
-            const SizedBox(height: 16),
-            AppButton(
-              label: 'Cancel Ride',
-              variant: AppButtonVariant.danger,
-              expand: true,
-              onPressed: _cancelInFlight ? null : _cancelRide,
             ),
+            const SizedBox(width: 16),
+            Expanded(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(driverName, style: AppTextStyles.title),
+                  if (vehicleLine != null)
+                    Text(
+                      vehicleLine,
+                      style: AppTextStyles.body.copyWith(
+                        color: AppColors.muted,
+                      ),
+                    ),
+                  if (ratingLine != null)
+                    Text(
+                      '★ $ratingLine',
+                      style: AppTextStyles.label.copyWith(
+                        color: AppColors.muted,
+                      ),
+                    ),
+                ],
+              ),
+            ),
+            AppStatusChip(label: statusText),
+          ],
+        ),
+        const SizedBox(height: 12),
+        _buildStatusDetail(rideState),
+        _buildNearbyNotice(rideState),
+        if (driverPosition != null) ...[
+          const SizedBox(height: 16),
+          AppButton(
+            label: 'View receipt',
+            variant: AppButtonVariant.secondary,
+            expand: true,
+            onPressed: _showReceiptOnTap,
+          ),
         ],
-      ),
+        if (isDestinationChangeable(rideState.status)) ...[
+          const SizedBox(height: 16),
+          _buildChangeDestinationButton(),
+        ],
+      ],
     );
   }
 
@@ -1142,9 +1172,11 @@ class _ActiveRideScreenState extends ConsumerState<ActiveRideScreen>
   /// "Unknown Vehicle").
   String? _vehicleLine(DriverVehicle? vehicle) {
     if (vehicle == null) return null;
-    final descriptor = [vehicle.color, vehicle.make, vehicle.model]
-        .where((part) => part.isNotEmpty)
-        .join(' ');
+    final descriptor = [
+      vehicle.color,
+      vehicle.make,
+      vehicle.model,
+    ].where((part) => part.isNotEmpty).join(' ');
     final parts = [
       if (descriptor.isNotEmpty) descriptor,
       if (vehicle.plateNumber.isNotEmpty) vehicle.plateNumber,
@@ -1229,8 +1261,8 @@ class _ActiveRideScreenState extends ConsumerState<ActiveRideScreen>
     final distanceText = distance == null
         ? null
         : distance >= 1000
-            ? '${(distance / 1000).toStringAsFixed(1)} km away'
-            : '${distance.round()} m away';
+        ? '${(distance / 1000).toStringAsFixed(1)} km away'
+        : '${distance.round()} m away';
     return Container(
       key: const ValueKey<String>('driver-nearby-notice'),
       margin: const EdgeInsets.only(top: 12),
