@@ -17,8 +17,13 @@ all: build
 build:
 	go build -o $(BUILD_DIR)/$(APP_NAME) ./cmd/server
 
+# The Valle Central deployment enforces its v1 basin boundary at 500 m: a pin
+# farther than that from the imported graph is an honest 200 is_estimate. The
+# code default stays 50,000 (internal/config/config.go); override per deploy.
+ROUTING_SNAP_RADIUS_M ?= 500
+
 run:
-	DEBUG_LOGGING=true go run ./cmd/server
+	DEBUG_LOGGING=true ROUTING_SNAP_RADIUS_M=$(ROUTING_SNAP_RADIUS_M) go run ./cmd/server
 
 test:
 	go test -v -count=1 ./...
@@ -48,7 +53,7 @@ seed:
 # per region before it can price rides: a region with no fare card answers 5xx
 # by design (fail closed). The timezone is explicit and never guessed; override
 # with make seed-fares SEED_FARES_REGION=cr-lc SEED_FARES_TIMEZONE=America/Costa_Rica.
-SEED_FARES_REGION ?= cr-sj
+SEED_FARES_REGION ?= valle_central
 SEED_FARES_TIMEZONE ?= America/Costa_Rica
 FARE_CURRENCY ?= USD
 

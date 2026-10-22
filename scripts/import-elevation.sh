@@ -68,8 +68,11 @@ go run ./cmd/elevtool "${ARGS[@]}" "$@"
 # its own vertices); the unscoped form warns that it mixes every region.
 if [ -n "$REGION" ]; then
   COVERAGE=$(PGPASSWORD="$DB_PASSWORD" psql -h "$DB_HOST" -p "$DB_PORT" -U "$DB_USER" \
-    -d "$DB_NAME" -Atq -v region="$REGION" -c \
-    "SELECT CASE WHEN count(*)=0 THEN 1.0 ELSE count(elevation_m)::float/count(*) END FROM road_network_vertices_pgr WHERE region_id = :'region';")
+    -d "$DB_NAME" -Atq -v region="$REGION" <<'SQL'
+SELECT CASE WHEN count(*)=0 THEN 1.0 ELSE count(elevation_m)::float/count(*) END
+FROM road_network_vertices_pgr WHERE region_id = :'region';
+SQL
+)
   echo "==> coverage for region '$REGION' after backfill: $(awk -v c="$COVERAGE" 'BEGIN { printf "%.2f%%", c*100 }')"
 else
   COVERAGE=$(PGPASSWORD="$DB_PASSWORD" psql -h "$DB_HOST" -p "$DB_PORT" -U "$DB_USER" \

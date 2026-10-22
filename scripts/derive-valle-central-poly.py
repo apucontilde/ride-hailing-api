@@ -1030,6 +1030,57 @@ def point_in_ring(lon, lat, pts):
     return inside
 
 
+def _dedupe_ring(pts, eps=1e-12):
+    out = []
+    for p in pts:
+        if not out or abs(p[0] - out[-1][0]) > eps or abs(p[1] - out[-1][1]) > eps:
+            out.append(p)
+    while len(out) > 1 and abs(out[0][0] - out[-1][0]) <= eps and abs(out[0][1] - out[-1][1]) <= eps:
+        out.pop()
+    return out
+
+
+def clip_ring_rect(pts, rect):
+    """Sutherland-Hodgman clip of a simple ring against an axis-aligned lon/lat box."""
+    xmin, ymin, xmax, ymax = rect
+
+    def cut(points, keep, cross):
+        if not points:
+            return []
+        out = []
+        prev = points[-1]
+        prev_in = keep(prev)
+        for cur in points:
+            cur_in = keep(cur)
+            if cur_in:
+                if not prev_in:
+                    out.append(cross(prev, cur))
+                out.append(cur)
+            elif prev_in:
+                out.append(cross(prev, cur))
+            prev, prev_in = cur, cur_in
+        return out
+
+    def at_x(x):
+        def cross(a, b):
+            t = (x - a[0]) / (b[0] - a[0])
+            return (x, a[1] + t * (b[1] - a[1]))
+        return cross
+
+    def at_y(y):
+        def cross(a, b):
+            t = (y - a[1]) / (b[1] - a[1])
+            return (a[0] + t * (b[0] - a[0]), y)
+        return cross
+
+    ring = _dedupe_ring(pts)
+    ring = cut(ring, lambda p: p[0] >= xmin, at_x(xmin))
+    ring = cut(ring, lambda p: p[0] <= xmax, at_x(xmax))
+    ring = cut(ring, lambda p: p[1] >= ymin, at_y(ymin))
+    ring = cut(ring, lambda p: p[1] <= ymax, at_y(ymax))
+    return _dedupe_ring(ring)
+
+
 # ---------------------------------------------------------------------------
 # writers
 # ---------------------------------------------------------------------------
@@ -1111,6 +1162,11 @@ Iteration notes:
                     help="keep valley-floor components within this distance of a seed")
     ap.add_argument("--simplify", type=float, default=150.0,
                     help="Douglas-Peucker tolerance, metres (0 disables)")
+    ap.add_argument("--clip-bbox",
+                    type=parse_bbox, default=None,
+                    help="after tracing, hard-clip the ring to this "
+                         "minLon,minLat,maxLon,maxLat box (use --clip-bbox=... "
+                         "because the value starts with '-')")
     ap.add_argument("--min-hole-km2", type=float, default=10.0,
                     help="with --fill-holes small: fill holes below this area")
     ap.add_argument("--fill-holes", choices=("all", "small"), default="all",
@@ -1386,6 +1442,17 @@ Iteration notes:
     # drop the repeated closing point if DP kept it
     if len(ring) > 1 and ring[0] == ring[-1]:
         ring = ring[:-1]
+    if args.clip_bbox:
+        before_km2 = ring_area_m2(ring) / 1e6
+        ring = clip_ring_rect(ring, args.clip_bbox)
+        if len(ring) < 3:
+            raise SystemExit("--clip-bbox removed the whole ring; widen the clip box")
+        notes.append("ring clipped to --clip-bbox %s (%.1f -> %.1f km2)"
+                     % (",".join(repr(v) for v in args.clip_bbox),
+                        before_km2, ring_area_m2(ring) / 1e6))
+        if not ring_is_simple(ring):
+            notes.append("clipped ring is SELF-INTERSECTING; widen --clip-bbox or "
+                         "increase --simplify")
     poly_area_km2 = ring_area_m2(ring) / 1e6
 
     # --- control points --------------------------------------------------
@@ -1437,6 +1504,8 @@ Iteration notes:
     lines.append("  morphology         close %d, open %d" % (args.close, args.open))
     lines.append("  seed-radius        %g km" % args.seed_radius_km)
     lines.append("  simplify           %g m" % args.simplify)
+    lines.append("  clip bbox          %s" % (
+        "none" if not args.clip_bbox else ",".join(repr(v) for v in args.clip_bbox)))
     lines.append("  fill-holes         %s (small threshold %g km2)" % (
         args.fill_holes, args.min_hole_km2))
     lines.append("  seeds              %s" % "; ".join(

@@ -326,6 +326,23 @@
   `internal/routing/`, the OSM import script / `make import-osm`, strict param validation
   `internal/handler/platform.go:516-527`). Structural note: the plan specified
   `internal/service/router/`; the engine lives in `internal/routing/`.
+- Valle Central v1 app parity (rider + driver) — both apps render the API's `200 is_estimate`
+  geometry dashed/labelled and never synthesize a client straight line: rider
+  `features/home/data/home_route_preview.dart:48-54,96`,
+  `features/home/data/trip_route_provider.dart:82,97,211`,
+  `features/home/presentation/home_screen.dart:363,669-683,1154`,
+  `features/home/presentation/active_ride_screen.dart:423,855-870,929,1004-1012`; driver
+  `features/trip/providers/trip_notifier.dart:48,535`,
+  `features/trip/presentation/trip_screen.dart:35,61,414,423,786`,
+  `features/rides/presentation/offer_sheet.dart:403-406,414`. D1 resolved **A**: keep the
+  cause-agnostic wording, **no production copy/code change** (rider `home_route_preview.dart:49`,
+  `trip_route_provider.dart:97`; driver keeps its `Estimated ` prefix); pre-GPS fallbacks stay at the
+  San José center inside the basin (`home_screen.dart:59`, `active_ride_screen.dart:51,849`,
+  `trip_screen.dart:431`). Fixture-only change: the two stale rider `region_id` fixtures renamed to
+  `valle_central` (`test/features/home/data/home_provider_test.dart:466`,
+  `test/features/home/model/ride_estimate_test.dart:23`); no app keys on `region_id` (grep 0) and
+  `shared/` untouched. Verified 2026-10-20: rider 27 + 149, driver 127 green; on-device Android
+  rendering remains **UNVERIFIABLE** in this WSL tree.
 
 ### [fare]
 - Pre-booking estimate shows the API **total** + a receipt-style breakdown — `RideEstimate` maps

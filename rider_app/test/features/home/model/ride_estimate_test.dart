@@ -20,7 +20,7 @@ Map<String, dynamic> estimateJson({
       'time_fare': timeFare,
       'surge_multiplier': surgeMultiplier,
       'total': total,
-      'region_id': 'cr-sj',
+      'region_id': 'valle_central',
       'currency': 'USD',
       'demand_multiplier': 1.0,
       'supply_multiplier': 1.0,

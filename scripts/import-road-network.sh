@@ -72,6 +72,8 @@ set -euo pipefail
 #                        region; an existing row keeps its own)
 #   --name <text>        Human-readable region name (default: the region id)
 #   --parent <id>        Parent region id for the registry hierarchy
+#   --poly <path>        Trim both schemas to this single-ring Osmosis .poly
+#                        (and keep only the largest connected component)
 #   --default            Mark the region as the resolver's default region
 #   --force              Re-run osm2pgrouting, wipe and re-copy THIS region
 #   --skip-osm2pgrouting Skip osm2pgrouting, re-copy this region from `ways`
@@ -101,6 +103,7 @@ REGION_LEVEL=""
 REGION_NAME=""
 REGION_PARENT=""
 MARK_DEFAULT=false
+POLY_FILE=""
 
 die() {
   echo "ERROR: $*" >&2
@@ -121,6 +124,11 @@ Region flags (one region per run):
   --bbox <minLon,minLat,maxLon,maxLat>
                     Admin box recorded in routing_regions (default: the San
                     José province box); refreshed from ST_Extent after import.
+  --poly <path>     Osmosis .poly (one ring). After the copy, drop every vertex
+                    and edge outside it, in BOTH the 008 and 011 schemas, so the
+                    imported graph is exactly the polygon. Keeps complete ways
+                    that osmium extract -p pulls in beyond the boundary out of
+                    the routing graph.
   --level <country|state|city>  Registry level for a NEW region (default: state).
   --name <text>     Region name in the registry (default: the region id).
   --parent <id>     Parent region id in the registry.
@@ -155,6 +163,7 @@ while [ $# -gt 0 ]; do
     --level)              [ $# -ge 2 ] || die "--level needs a value"; REGION_LEVEL="$2"; shift 2 ;;
     --name)               [ $# -ge 2 ] || die "--name needs a value"; REGION_NAME="$2"; shift 2 ;;
     --parent)             [ $# -ge 2 ] || die "--parent needs a value"; REGION_PARENT="$2"; shift 2 ;;
+    --poly)               [ $# -ge 2 ] || die "--poly needs a value"; POLY_FILE="$2"; shift 2 ;;
     --default)            MARK_DEFAULT=true; shift ;;
     -h|--help)            usage; exit 0 ;;
     -*)                   die "Unknown flag: $1 (run with --help for usage)" ;;
@@ -174,6 +183,11 @@ if [ -n "$DATASOURCE" ]; then
 fi
 if [ -n "$REGION_PARENT" ]; then
   valid_id "--parent" "$REGION_PARENT" || exit 1
+fi
+if [ -n "$POLY_FILE" ]; then
+  [ -f "$POLY_FILE" ] || die "--poly file not found: $POLY_FILE"
+  POLY_RINGS=$(awk 'NR == 2 { print $1; exit }' "$POLY_FILE")
+  [ "$POLY_RINGS" = "1" ] || die "--poly supports a single ring (found '$POLY_RINGS')"
 fi
 # Mirrors the routing_regions CHECK so an operator typo fails with a readable
 # message instead of a 23514 from the registry upsert.
@@ -319,9 +333,13 @@ filter_to_roads() {
   FILTERED_PBF="$dst"
 }
 
-# osm2pgrouting only reads .osm XML; convert the .pbf if the XML is missing.
+# osm2pgrouting only reads .osm XML; convert the .pbf if the XML is missing or
+# older than its source. A stale XML from a previous region import must never be
+# reused: it silently imports the wrong graph under the new region id.
 ensure_osm_xml() {
-  [ -f "$OSM_FILE" ] && return 0
+  if [ -f "$OSM_FILE" ] && { [ -z "$OSM_PBF" ] || [ "$OSM_FILE" -nt "$OSM_PBF" ]; }; then
+    return 0
+  fi
   if command -v osmconvert &>/dev/null; then
     echo "==> Converting $OSM_PBF -> $OSM_FILE (osmconvert)..."
     osmconvert "$OSM_PBF" -o="$OSM_FILE"
@@ -666,6 +684,105 @@ else
   copy_data
   drop_raw_tables
 fi
+
+# ---- Optional: trim the graph to the exact polygon ----------------------
+# osmium extract -p keeps COMPLETE ways, so the imported graph reaches past
+# the polygon wherever a way crosses it. The resolver snaps to roads, so those
+# out-of-polygon edges would make pins outside the region road-route. Trim:
+# drop edges that do not have BOTH endpoints inside, then vertices outside.
+# 008 has FKs (region_id, source|target) -> road_vertices, so edges go first
+# there too; 011 has no FK on source/target.
+trim_region_to_poly() {
+  [ -n "$POLY_FILE" ] || return 0
+  local wkt
+  wkt=$(awk '
+    NR == 1 || NR == 2 { next }
+    /^END/ { next }
+    NF == 2 {
+      if (!n++) { first = $1 " " $2 }
+      else { pts = pts "," }
+      pts = pts $1 " " $2
+      last = $1 " " $2
+    }
+    END {
+      if (n && first != last) pts = pts "," first
+      printf "%s", pts
+    }
+  ' "$POLY_FILE")
+  [ -n "$wkt" ] || die "--poly produced an empty ring: $POLY_FILE"
+  echo "==> Trimming region '$REGION' to $POLY_FILE..."
+  psql_data -q -v region="$REGION" -v wkt="POLYGON(($wkt))" <<'SQL'
+    WITH poly AS (
+      SELECT ST_SetSRID(ST_GeomFromText(:'wkt'), 4326) AS g
+    )
+    DELETE FROM road_edges e
+    USING poly p
+    WHERE e.region_id = :'region'
+      AND NOT ST_Covers(p.g, e.geom);
+
+    WITH poly AS (
+      SELECT ST_SetSRID(ST_GeomFromText(:'wkt'), 4326) AS g
+    )
+    DELETE FROM road_vertices v
+    USING poly p
+    WHERE v.region_id = :'region'
+      AND NOT ST_Covers(p.g, v.geom);
+
+    WITH poly AS (
+      SELECT ST_SetSRID(ST_GeomFromText(:'wkt'), 4326) AS g
+    )
+    DELETE FROM road_network_edges_pgr e
+    WHERE e.region_id = :'region'
+      AND NOT EXISTS (
+        SELECT 1
+        FROM road_network_vertices_pgr s,
+             road_network_vertices_pgr t,
+             poly p
+        WHERE s.region_id = e.region_id AND s.id = e.source
+          AND t.region_id = e.region_id AND t.id = e.target
+          AND ST_Covers(p.g, s.the_geom)
+          AND ST_Covers(p.g, t.the_geom)
+      );
+
+    WITH poly AS (
+      SELECT ST_SetSRID(ST_GeomFromText(:'wkt'), 4326) AS g
+    )
+    DELETE FROM road_network_vertices_pgr v
+    USING poly p
+    WHERE v.region_id = :'region'
+      AND NOT ST_Covers(p.g, v.the_geom);
+
+    -- Trimming can leave small disconnected slivers. A pin that snaps to one
+    -- finds no route to the rest of the graph (the API answers 500), so keep
+    -- only the largest weak component and drop the rest.
+    WITH comp AS (
+      SELECT node, component
+      FROM pgr_connectedComponents(
+        format('SELECT id, source, target, cost FROM road_network_edges_pgr WHERE region_id = %L',
+               :'region')
+      )
+    ),
+    big AS (
+      SELECT component FROM comp GROUP BY component ORDER BY count(*) DESC LIMIT 1
+    ),
+    keep AS (
+      SELECT node FROM comp WHERE component = (SELECT component FROM big)
+    )
+    DELETE FROM road_network_edges_pgr e
+    WHERE e.region_id = :'region'
+      AND (e.source NOT IN (SELECT node FROM keep)
+           OR e.target NOT IN (SELECT node FROM keep));
+
+    DELETE FROM road_network_vertices_pgr v
+    WHERE v.region_id = :'region'
+      AND NOT EXISTS (
+        SELECT 1 FROM road_network_edges_pgr e
+        WHERE e.region_id = v.region_id AND (e.source = v.id OR e.target = v.id)
+      );
+SQL
+}
+
+trim_region_to_poly
 
 # The per-region GIST index, the true bbox and the row counts are settled
 # only once the rows are in.

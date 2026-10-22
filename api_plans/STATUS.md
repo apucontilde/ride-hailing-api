@@ -82,6 +82,47 @@
   the divergence WARNING on every boot** (`pgrouting_repo.go:124-129`): elevation is on by
   default, so the factory warns that the flag has no effect on the pgRouting path. It is a
   warning, not an error; the route is still served (flat, by pgRouting's meter costs).
+- **`valle_central` region is live** — the Central Valley basin, replacing `cr-sj`. Boundary v1
+  `regions/valle_central.poly` = `regions/valle_central_v1.poly` (sha256 `85a9355e…496d`, 515 pts,
+  2,162.3 km², bbox lon `-84.45..-83.705` / lat `9.711667..10.09`; Naranjo/San Ramón/Irazú/Poás
+  outside) — `data/valle_central_tight_report.txt:134-135`, `scripts/derive-valle-central-poly.py`
+  (`--clip-bbox`). Imported region-scoped into `routing_regions` as `state`/`parent=cr`; live DB
+  110,364 routing vertices / 134,737 edges, 1 weak component, registry bbox
+  `-84.4499846,9.7313873,-83.7194726,10.0899667`. `cr` stays the empty country parent.
+- **`--poly` service boundary** — the importer trims both schemas to the polygon: 008 edges
+  `ST_Covers` then vertices; 011 keeps an edge only when **both** endpoints are covered, then the
+  largest weak component via `pgr_connectedComponents` and unreferenced-vertex cleanup
+  (`scripts/import-road-network.sh:104,125-188,693-783`). This removes the boundary-sliver
+  `500 failed to calculate route`. It is a graph boundary, not a point-in-polygon test: a pin
+  outside the polygon but within `ROUTING_SNAP_RADIUS_M` of an inside road still road-routes.
+- **Importer stale-XML fix** — `ensure_osm_xml` regenerates when the XML is older than the PBF
+  (`scripts/import-road-network.sh:337-340`); it previously reused the cr-sj
+  `data/roads-filtered.osm` and imported the wrong graph (152,665/183,372) under the new region
+  (stale artifact kept at `data/roads-filtered.osm.stale-cr-sj`).
+- **Elevation backfill gate fix** — `scripts/import-elevation.sh:69-79`; the region id now reaches
+  psql via a heredoc (`psql -c` never interpolated `:'region'`). `valle_central` backfill
+  110,364/110,364 = **100.00 %** against the 0.99 gate.
+- **Fare** — one card: `valle_central` (USD, `America/Costa_Rica`), 3 rates; `fare_regions` holds
+  only `valle_central`.
+- **`cr-sj` retired** — network rows deleted, `valle_central` is the single `default_region=TRUE`,
+  then the guarded delete (0 active cr-sj rides) removed its fare + registry rows. New routes carry
+  `RegionID=valle_central` (`internal/service/navigation.go:160-202`); historical rides keep stale
+  `cr-sj` audit refs by design (no FK).
+- **Live acceptance** — Alajuela/Heredia/Cartago/Paraíso/Santa Ana/Escazú/Sabanilla/Tres Ríos answer
+  `is_estimate=false`; Naranjo/Orotina/Turrialba/Quepos/Liberia answer `is_estimate=true`. This
+  deployment runs `ROUTING_SNAP_RADIUS_M=500`, now persisted for `make run`
+  (`Makefile:23,26`); the code default stays **50,000** (`internal/config/config.go:205`).
+
+```bash
+# Valle Central re-import (restart the API afterwards: the graph is cached in-process)
+osmium extract -p regions/valle_central.poly data/costa-rica-latest.osm.pbf -o data/valle_central.osm.pbf
+bash scripts/import-road-network.sh --region valle_central --bbox "-84.45,9.65,-83.65,10.09" \
+  --level state --name "Valle Central" --parent cr --poly regions/valle_central.poly \
+  --force data/valle_central.osm.pbf
+./scripts/import-elevation.sh --region valle_central
+make seed-fares SEED_FARES_REGION=valle_central SEED_FARES_TIMEZONE=America/Costa_Rica
+# acceptance: make run sets ROUTING_SNAP_RADIUS_M=500 (code default 50,000)
+```
 
 ### [elevation]
 - Chain head (directional cost model): `CostWeights{AscentW,DescentW,MaxGrade,DeadbandM}` +
@@ -595,6 +636,7 @@
 | 34 | **Stale-accept skip logs on every stale accept** — request-path noise at `log.Printf` rather than debug/rate-limited | `internal/service/dispatch.go:788` | low | [arrival] |
 | 35 | **Legal `ErrInvalidTransition` interleaving not separately raced** — when the concurrent PUT already committed `driver_arrived`, the accept-side evaluator's illegal-edge error is swallowed but no test races that specific interleaving | `internal/service/arrival.go:121-131`; `internal/service/ride.go:595` | low | [arrival] |
 | 36 | ~~Orphaned `pending` rides are returned by `GET /rides/current` forever, so a rider whose previous dispatch died on a process restart (or whose terminal write failed) is restored to `/driver-matching` on login even though no live search exists. The app's `pending → matching` mapping is correct; the API's read was not age-bounded~~ — **FIXED 2026-10-20, adversarially CONFIRMED-LANDED.** The read guard, synchronous boot reconciliation and periodic sweep now bound every `pending` row; `GET /rides/current` answers `200 {"ride":null,"stops":[]}` for a stale row instead of reviving the matching screen. A failed terminal write still leaves the ride `pending` (`internal/service/dispatch.go:224-244`), but the sweep now closes it | **Post-fix:** age-bounded read `internal/repository/ride_repo.go:303-312` (option `:87-94`); handler contract `internal/handler/ride.go:240-283`; sweeper `internal/service/ride_stale.go:49,76,107,122-163`; config `internal/config/config.go:116-138,415-418,460-466,508-516`; wiring `cmd/server/main.go:99-105`, `internal/router/router.go:84`; migration `025_pending_ride_sweep_index.up.sql`; tests `internal/service/ride_stale_test.go`, `internal/repository/ride_stale_integration_test.go`, `tests/ride_current_stale_integration_test.go`, `tests/ride_current_stale_mock_test.go:23`. **Live proof 2026-10-20:** the three stuck rows are `no_driver_available`, each with a `ride_events` row `actor=system`, `reason=boot_reconcile`; stale `pending` count 0. **Residual risks:** (a) multi-replica boot clobber — `RIDE_BOOT_RECONCILE=off` is the escape hatch (age guard + tick still fix the bug with a delay); (b) no signal-driven graceful shutdown (pre-existing) — `defer sweeper.Stop()` runs only on normal return; (c) the mock threshold is pinned to the default (`tests/testutil/mock_repos.go:331-334,365,528-538`), so only the integration test exercises a configured TTL; (d) the migration `025` partial index was verified manually on the dev DB (`idx_rides_pending_created`), with no automated index test | closed | [rides] |
+| 37 | ~~**`make seed-fares` still defaults to the deleted `cr-sj` region**~~ — **fixed 2026-10-20:** the Makefile default is now `valle_central`, so a bare `make seed-fares` hits a live registry row (the FK on `fare_regions.region_id` still fails closed for any unknown id) | `Makefile:56` (`SEED_FARES_REGION ?= valle_central`), `internal/database/migrations/019_region_fares.up.sql:23` | resolved | [routing] |
 
 ## Test-audit follow-ups
 
@@ -648,7 +690,6 @@
 | `01_[elevation]_duration_model.md` | elevation | open `[elevation]_duration_calibration_data.md` | Grade-aware `total_duration_s`; **blocked** on the calibration-data head. Distance stays true meters and the flip changes no duration |
 | `[elevation]_pgrouting_parity.md` | elevation | pgrouting engine + elevation columns (landed) | **deferred**; add `reverse_cost`/`cost_ascent` migration + elevation-aware edges SQL, backfilled by a script referenced from `import-osm` |
 | `[routing]_intercity.md` | routing | routing region resolution (STATUS.md) | **deferred**; holds the archived overlay-ports/planner design |
-| `[routing]_valle_central.md` | routing | landed `[routing]` gate correctness + snap-radius coverage (STATUS.md) | **open (independent, unnumbered — renamed back from `01_` now that its prerequisite is landed)** — one `valle_central` region (`level=state`, `parent_region='cr'`) covering the **Central Valley BASIN** (supersedes the nationwide/province question; the 4 full provinces are **out** — Alajuela reaches the northern border, San José the Pacific). Within-basin trips road-follow; any pin outside the basin (incl. the rest of the 4 provinces and cross-basin trips) → 200 `is_estimate`. **TOP OPEN INPUT:** the exact basin polygon (`regions/valle_central.poly`, CONFIRM-BEFORE-IMPORT) vs the bbox fallback `-84.45,9.65,-83.65,10.25`. Remaining: clip + import `valle_central`; the elevation gate fix (bug #24) is now **landed** (STATUS.md → Landed `[routing]` gate correctness), so run the `--region valle_central` backfill; one fare card (`make seed-fares SEED_FARES_REGION=valle_central`); retire the `cr-sj` **network** rows (edges before vertices) + single `default_region` owner; restart; then the **final `cr-sj` delete** (`fare_rates`→`fare_demand_windows`→`fare_regions`→`routing_regions`, FK order, guarded on no active `cr-sj` ride; historical `rides.fare_region_id` audit refs go stale by design — no FK); acceptance tests. Still open: any downstream keying on `cr-sj`. **No app contract change** beyond `region_id` moving `cr-sj`→`valle_central` for new rides (completed keep booked `cr-sj`; no app keys on it) |
 | `[push]_production_provider.md` | push | push delivery pipeline + device-token registration seam (STATUS.md) | **deferred** — wire real FCM/APNs/web providers behind `push.Provider`/`MultiProvider` (the shipped `LogProvider` is a no-op) and real token sources (both apps ship `NoopPushTokenSource`); no credentials/SDK exist in this harness. Canonical push file; the rider/driver halves are referenced by path from their own STATUS, not duplicated |
 | `[auth]_web_session_token_contract.md` | auth | — | **contract record, no API change**: the rider-web session bug is fixed Flutter-only. Documents the Bearer refresh contract (15m access / 720h refresh, rotate-and-revoke, 401-vs-5xx, `AllowAllOrigins` rules out cookies) + the client obligations (cold-start exchange, atomic rotated-token persist, single-flight refresh) and contract guardrails |
 
@@ -681,6 +722,9 @@ asks, preserving the single-summed-price semantics and the estimate `legs` contr
 - **`ROUTING_SNAP_RADIUS_M` default becomes `50000` m** (was `0` = always-snap) so the
   no-coverage `is_estimate` path can fire; `0` stays as an explicit always-snap opt-in. See
   Landed → [routing] stage 05.
+- **One production region: `valle_central` (Central Valley basin), boundary v1, `cr-sj` retired.**
+  The basin `.poly` is the service boundary; a pin outside it is an honest 200 `is_estimate`, not
+  a coverage bug. Nationwide / per-province coverage is out of scope; intercity stays deferred.
 
 ## Decisions already taken — [payout] (do not re-litigate)
 

@@ -463,7 +463,7 @@ void main() {
               'time_fare': 0.9,
               'surge_multiplier': 1.2,
               'total': total,
-              'region_id': 'cr-sj',
+              'region_id': 'valle_central',
               'currency': 'USD',
               'demand_multiplier': 1.2,
               'supply_multiplier': 1.0,

@@ -411,7 +411,7 @@ else on the JSON boundary, the amounts are **major currency units** (dollars), n
     "time_fare": 0.9,
     "surge_multiplier": 1.0,
     "total": 6.5,
-    "region_id": "cr-sj",
+    "region_id": "valle_central",
     "currency": "USD",
     "grade_uplift_pct": 0.0
   }
@@ -638,7 +638,7 @@ Response (additive only — every pre-existing field keeps its meaning):
       "time_fare": 0.9,
       "surge_multiplier": 1.0,
       "total": 7.11,
-      "region_id": "cr-sj",
+      "region_id": "valle_central",
       "currency": "USD",
       "demand_multiplier": 1.0,
       "supply_multiplier": 1.0,
